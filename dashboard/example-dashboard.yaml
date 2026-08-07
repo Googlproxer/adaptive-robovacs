@@ -5,3 +5,4 @@ views:
     icon: mdi:robot-vacuum
     cards:
       - type: custom:adaptive-robovacs-dashboard
+        columns: 4

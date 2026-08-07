@@ -40,18 +40,25 @@ class AdaptiveRoboVacsDashboard extends HTMLElement {
       : null;
   }
 
+  _humanize(value) {
+    return String(value || "Unassigned")
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+
+  _roomGroups(rooms) {
+    return rooms.flatMap(({ name, entityIds }) => [
+      { type: "section", label: name },
+      ...entityIds,
+    ]);
+  }
+
   _configuration() {
     const entities = this._entities();
     const hiddenAreaIds = new Set(this._config.hidden_area_ids || []);
     const byRole = (role) => entities
       .filter((item) => item.attrs.adaptive_robovacs_role === role)
       .map((item) => item.entity_id);
-    const cards = [];
-    cards.push(this._section("Scheduler", [
-      ...byRole("scheduler_status"),
-      ...byRole("global_control"),
-      ...byRole("scheduler_control"),
-    ]));
 
     const robots = new Map();
     const rooms = new Map();
@@ -65,18 +72,51 @@ class AdaptiveRoboVacsDashboard extends HTMLElement {
         rooms.set(room, [...(rooms.get(room) || []), item.entity_id]);
       }
     });
-    robots.forEach((entityIds, robot) => {
+
+    const schedulerAndRobots = [
+      { type: "section", label: "Scheduler" },
+      ...byRole("scheduler_status"),
+      ...byRole("global_control"),
+      ...byRole("scheduler_control"),
+    ];
+    [...robots.entries()].forEach(([robot, entityIds]) => {
       const state = this._hass.states[robot];
-      cards.push(this._section(state?.attributes?.friendly_name || robot, entityIds));
+      schedulerAndRobots.push(
+        { type: "section", label: state?.attributes?.friendly_name || robot },
+        ...entityIds,
+      );
     });
-    rooms.forEach((entityIds, areaId) => {
+
+    const floors = new Map();
+    const bedrooms = [];
+    [...rooms.entries()].forEach(([areaId, entityIds]) => {
       if (hiddenAreaIds.has(areaId)) return;
       const schedule = entities.find((item) =>
         item.attrs.area_id === areaId && item.attrs.adaptive_robovacs_role === "room_schedule"
       );
-      cards.push(this._section(schedule?.attrs?.room || areaId, entityIds));
+      if (!schedule) return;
+      const room = { name: schedule.attrs.room || areaId, entityIds };
+      if (schedule.attrs.bedroom) {
+        bedrooms.push(room);
+        return;
+      }
+      const floorId = schedule.attrs.floor_id || "unassigned";
+      floors.set(floorId, [...(floors.get(floorId) || []), room]);
     });
-    return { type: "vertical-stack", cards: cards.filter(Boolean) };
+
+    const cards = [this._section("Scheduler & robot settings", schedulerAndRobots)];
+    [...floors.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .forEach(([floorId, roomGroups]) => {
+        cards.push(this._section(this._humanize(floorId), this._roomGroups(roomGroups)));
+      });
+    cards.push(this._section("Bedrooms", this._roomGroups(bedrooms)));
+
+    const requestedColumns = Number(this._config.columns);
+    const columns = Number.isInteger(requestedColumns) && requestedColumns > 0
+      ? requestedColumns
+      : 3;
+    return { type: "grid", columns, square: false, cards: cards.filter(Boolean) };
   }
 
   async _render() {

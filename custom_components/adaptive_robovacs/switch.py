@@ -60,19 +60,20 @@ class _RobotSwitch(_AdaptiveSwitch):
 
 
 class _RoomSwitch(_AdaptiveSwitch):
-    def __init__(self, coordinator, area_id: str, name: str) -> None:
-        super().__init__(coordinator, f"room_{area_id}_enabled", name, "room_control", area_id=area_id)
+    def __init__(self, coordinator, area_id: str, key: str, name: str) -> None:
+        super().__init__(coordinator, f"room_{area_id}_{key}", name, "room_control", area_id=area_id)
         self.area_id = area_id
+        self.setting_key = key
 
     @property
     def is_on(self) -> bool:
-        return bool(self.coordinator.room_state(self.area_id)["enabled"])
+        return bool(self.coordinator.room_state(self.area_id)[self.setting_key])
 
     async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.async_set_room_setting(self.area_id, "enabled", True)
+        await self.coordinator.async_set_room_setting(self.area_id, self.setting_key, True)
 
     async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.async_set_room_setting(self.area_id, "enabled", False)
+        await self.coordinator.async_set_room_setting(self.area_id, self.setting_key, False)
 
 
 def _entities(coordinator) -> list[AdaptiveEntity]:
@@ -91,7 +92,12 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
                 _RobotSwitch(coordinator, robot.entity_id, "double_pass", f"{robot.name} double pass")
             )
     for room in coordinator.discovery.rooms.values():
-        entities.append(_RoomSwitch(coordinator, room.area_id, f"{room.name} enabled"))
+        entities.extend(
+            [
+                _RoomSwitch(coordinator, room.area_id, "enabled", f"{room.name} enabled"),
+                _RoomSwitch(coordinator, room.area_id, "carpet", f"{room.name} carpet (no mopping)"),
+            ]
+        )
     return entities
 
 

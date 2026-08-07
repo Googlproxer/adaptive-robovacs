@@ -23,6 +23,8 @@ from .const import (
     CONF_HALL_END,
     CONF_HALL_START,
     CONF_OBSERVE_ONLY,
+    CONF_UNRESOLVED_END,
+    CONF_UNRESOLVED_START,
     DEFAULT_BEDROOM_INTERVAL,
     DEFAULT_COMMON_INTERVAL,
     DEFAULT_EXPECTED_MINUTES,
@@ -31,6 +33,8 @@ from .const import (
     DEFAULT_HALL_START,
     DEFAULT_MINIMUM_BATTERY,
     DEFAULT_MOP_INTERVAL,
+    DEFAULT_UNRESOLVED_END,
+    DEFAULT_UNRESOLVED_START,
     DOMAIN,
     EVENT_EVALUATION,
     EXTRA_CLEAR_MINUTES,
@@ -41,7 +45,16 @@ from .const import (
     VERSION,
 )
 from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoveryResult, async_discover
-from .models import Forecast, due_at, forecast_vacancy, in_daytime_window, manual_deferral, resolve_occupancy
+from .models import (
+    Forecast,
+    due_at,
+    forecast_vacancy,
+    in_daytime_window,
+    manual_deferral,
+    resolve_occupancy,
+    select_operation,
+    unresolved_occupancy_allowed,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,6 +111,8 @@ def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
         ),
         "hall_start": entry.data.get(CONF_HALL_START, DEFAULT_HALL_START),
         "hall_end": entry.data.get(CONF_HALL_END, DEFAULT_HALL_END),
+        "unresolved_start": entry.data.get(CONF_UNRESOLVED_START, DEFAULT_UNRESOLVED_START),
+        "unresolved_end": entry.data.get(CONF_UNRESOLVED_END, DEFAULT_UNRESOLVED_END),
         "settings": {"robots": {}, "rooms": {}},
         "rooms": {},
         "active": {},
@@ -227,8 +242,11 @@ class AdaptiveRoboVacCoordinator:
                 ),
                 "mop_interval": DEFAULT_MOP_INTERVAL,
                 "expected_minutes": DEFAULT_EXPECTED_MINUTES,
+                "carpet": False,
             },
         )
+        # Existing persisted settings predate newer optional room controls.
+        settings.setdefault("carpet", False)
         return settings
 
     def _robot_settings(self, robot: DiscoveredRobot) -> dict[str, Any]:
@@ -256,7 +274,15 @@ class AdaptiveRoboVacCoordinator:
     async def async_set_global(self, key: str, value: Any) -> None:
         """Update a global control exposed by a native entity."""
 
-        if key not in {"observe_only", "party_mode", "forecast_confidence", "hall_start", "hall_end"}:
+        if key not in {
+            "observe_only",
+            "party_mode",
+            "forecast_confidence",
+            "hall_start",
+            "hall_end",
+            "unresolved_start",
+            "unresolved_end",
+        }:
             raise ValueError(f"Unknown global setting: {key}")
         self.data[key] = value
         await self._async_save()
@@ -268,7 +294,7 @@ class AdaptiveRoboVacCoordinator:
 
         if area_id not in self.discovery.rooms:
             raise ValueError(f"Unknown room area: {area_id}")
-        if key not in {"enabled", "vacuum_interval", "mop_interval", "expected_minutes"}:
+        if key not in {"enabled", "vacuum_interval", "mop_interval", "expected_minutes", "carpet"}:
             raise ValueError(f"Unknown room setting: {key}")
         self._room_settings(self.discovery.rooms[area_id])[key] = value
         await self._async_save()
@@ -488,6 +514,17 @@ class AdaptiveRoboVacCoordinator:
         ]
         return (False, "bedrooms not clear: " + ", ".join(blocked)) if blocked else (True, "bedrooms clear")
 
+    def _unresolved_allowed(self, room: DiscoveredRoom, now: datetime) -> bool:
+        """Permit only non-transit unresolved rooms during the quiet night window."""
+
+        return unresolved_occupancy_allowed(
+            str(self._room_data(room.area_id).get("occupancy")),
+            room.is_bedroom_transit,
+            _local(now),
+            str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START)),
+            str(self.data.get("unresolved_end", DEFAULT_UNRESOLVED_END)),
+        )
+
     def _room_candidate(self, room: DiscoveredRoom, now: datetime) -> tuple[dict[str, Any] | None, str]:
         settings = self._room_settings(room)
         detail = self._room_data(room.area_id)
@@ -496,32 +533,40 @@ class AdaptiveRoboVacCoordinator:
         if detail.get("map_status") == "unmapped":
             return None, "unmapped; awaiting native map repair"
         vacuum_due = self._room_due(room, "vacuum", now)
-        mop_due = self._room_due(room, "mop", now)
+        carpet = bool(settings.get("carpet", False))
+        mop_due = None if carpet else self._room_due(room, "mop", now)
         capable = [
             robot
             for robot in self.discovery.robots.values()
             if robot.floor_id == room.floor_id and robot.supports_area_clean
         ]
         can_mop = any(self._mop_ready(robot) for robot in capable)
-        if vacuum_due > now and (mop_due > now or not can_mop):
+        mop_makes_room_due = not carpet and can_mop and mop_due is not None and mop_due <= now
+        if vacuum_due > now and not mop_makes_room_due:
             return None, "not due"
-        if detail.get("occupancy") != "unoccupied":
+        unresolved_night = self._unresolved_allowed(room, now)
+        if detail.get("occupancy") != "unoccupied" and not unresolved_night:
+            if detail.get("occupancy") == "unresolved":
+                if room.is_bedroom_transit:
+                    return None, "unresolved occupancy; bedroom-transit excluded overnight"
+                return None, (
+                    "unresolved occupancy; waiting for "
+                    f"{self.data.get('unresolved_start', DEFAULT_UNRESOLVED_START)}-"
+                    f"{self.data.get('unresolved_end', DEFAULT_UNRESOLVED_END)}"
+                )
             return None, f"occupancy {detail.get('occupancy')} ({detail.get('source')})"
         if room.is_bedroom_transit:
             allowed, reason = self._hall_allowed(now)
             if not allowed:
                 return None, reason
-        forecast = self._forecast(room, now)
+        forecast = (
+            Forecast(True, 0.0, "unresolved occupancy overnight policy")
+            if unresolved_night
+            else self._forecast(room, now)
+        )
         if not forecast.allowed:
             return None, forecast.reason
-        operation = "vacuum"
-        due = vacuum_due
-        if can_mop and mop_due <= now and vacuum_due <= now:
-            operation = "vac_and_mop"
-            due = min(vacuum_due, mop_due)
-        elif can_mop and mop_due <= now:
-            operation = "mop"
-            due = mop_due
+        operation, due = select_operation(vacuum_due, mop_due, can_mop, carpet, now)
         return {
             "room": room,
             "operation": operation,
@@ -755,6 +800,8 @@ class AdaptiveRoboVacCoordinator:
             for operation in operations:
                 if operation not in {"vacuum", "mop"}:
                     continue
+                if operation == "mop" and self._room_settings(room).get("carpet", False):
+                    continue
                 next_due = self._room_due(room, operation, now)
                 deferred = manual_deferral(now, next_due)
                 if deferred:
@@ -799,7 +846,7 @@ class AdaptiveRoboVacCoordinator:
         settings = self._room_settings(room)
         now = _now()
         vacuum_due = self._room_due(room, "vacuum", now)
-        mop_due = self._room_due(room, "mop", now)
+        mop_due = None if settings.get("carpet", False) else self._room_due(room, "mop", now)
         candidate, reason = self._room_candidate(room, now)
         return {
             "name": room.name,
@@ -813,6 +860,7 @@ class AdaptiveRoboVacCoordinator:
             "vacuum_interval": settings["vacuum_interval"],
             "mop_interval": settings["mop_interval"],
             "expected_minutes": settings["expected_minutes"],
+            "carpet": settings["carpet"],
             "occupancy": detail["occupancy"],
             "occupancy_source": detail["source"],
             "unavailable_radars": detail["unavailable_radars"],

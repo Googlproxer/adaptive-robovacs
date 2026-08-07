@@ -32,6 +32,8 @@ DEFAULT_MINIMUM_BATTERY: Final = 80
 DEFAULT_FORECAST_CONFIDENCE: Final = 80
 DEFAULT_HALL_START: Final = "09:00"
 DEFAULT_HALL_END: Final = "20:00"
+DEFAULT_UNRESOLVED_START: Final = "01:00"
+DEFAULT_UNRESOLVED_END: Final = "05:00"
 
 SERVICE_EVALUATE: Final = "evaluate"
 SERVICE_RECORD_MANUAL_CLEAN: Final = "record_manual_clean"
@@ -43,5 +45,7 @@ CONF_OBSERVE_ONLY: Final = "observe_only"
 CONF_FORECAST_CONFIDENCE: Final = "forecast_confidence"
 CONF_HALL_START: Final = "hall_start"
 CONF_HALL_END: Final = "hall_end"
+CONF_UNRESOLVED_START: Final = "unresolved_start"
+CONF_UNRESOLVED_END: Final = "unresolved_end"
 
 EVENT_EVALUATION: Final = f"{DOMAIN}_evaluation"

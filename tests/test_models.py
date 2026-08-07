@@ -73,6 +73,34 @@ class CadenceTests(unittest.TestCase):
         self.assertTrue(models.in_daytime_window(self.now, "09:00", "20:00"))
         self.assertFalse(models.in_daytime_window(self.now.replace(hour=20), "09:00", "20:00"))
 
+    def test_night_window_can_cross_midnight(self) -> None:
+        self.assertTrue(models.in_daytime_window(self.now.replace(hour=2), "22:00", "05:00"))
+        self.assertFalse(models.in_daytime_window(self.now.replace(hour=12), "22:00", "05:00"))
+
+    def test_unresolved_occupancy_is_only_allowed_overnight_for_non_transit_rooms(self) -> None:
+        overnight = self.now.replace(hour=2)
+        self.assertTrue(
+            models.unresolved_occupancy_allowed("unresolved", False, overnight, "01:00", "05:00")
+        )
+        self.assertFalse(
+            models.unresolved_occupancy_allowed("unresolved", True, overnight, "01:00", "05:00")
+        )
+        self.assertFalse(
+            models.unresolved_occupancy_allowed("occupied", False, overnight, "01:00", "05:00")
+        )
+
+    def test_carpet_rooms_never_choose_a_mopping_operation(self) -> None:
+        mop_due = self.now - timedelta(hours=1)
+        vacuum_due = self.now + timedelta(hours=4)
+        self.assertEqual(
+            models.select_operation(vacuum_due, mop_due, True, True, self.now),
+            ("vacuum", vacuum_due),
+        )
+        self.assertEqual(
+            models.select_operation(vacuum_due, mop_due, True, False, self.now),
+            ("mop", mop_due),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

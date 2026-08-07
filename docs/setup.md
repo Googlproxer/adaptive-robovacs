@@ -36,7 +36,9 @@ On first setup, the integration reads the legacy persisted scheduler state if it
 exists. It imports only rooms whose legacy room key matches a current area name
 after normalisation. Matching completion times, deferrals, vacancy samples, and
 helper values are preserved. The migration records its result on the Scheduler
-sensor.
+sensor. From then on, scheduler settings, room history, learned vacancy
+samples, and active-job checkpoints are written through Home Assistant's
+persistent storage and survive Home Assistant restarts.
 
 The integration always starts in observe-only mode. Leave the legacy scheduler
 enabled while you compare previews. For cutover, let any old job finish, disable
@@ -49,3 +51,14 @@ All radars must be clear to mark a room vacant. If one is unavailable, the
 integration can use a complete all-clear legacy motion/occupancy fallback. A
 room without any occupancy source is eligible when due. A new entry after a
 clean starts does not interrupt it.
+
+When an occupancy source is unresolved, the room remains blocked during the
+day and is retried only in the configured quiet-night window (01:00–05:00 by
+default). Bedroom-transit areas are never included in that exception: they
+remain daytime-only and still require every bedroom to be clear. The dashboard
+provides start and end controls for the quiet-night window.
+
+Enable a room's **Carpet (no mopping)** switch to make that room vacuum-only.
+Its stored mopping cadence and history are retained so turning the switch back
+off restores the prior mop schedule; carpeted rooms never receive a mop-only or
+vacuum-and-mop dispatch while the switch is on.

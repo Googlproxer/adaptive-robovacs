@@ -8,7 +8,9 @@
           "observe_only": "Observe-only mode",
           "forecast_confidence": "Forecast confidence (%)",
           "hall_start": "Bedroom-transit start time",
-          "hall_end": "Bedroom-transit end time"
+          "hall_end": "Bedroom-transit end time",
+          "unresolved_start": "Unresolved-occupancy night start time",
+          "unresolved_end": "Unresolved-occupancy night end time"
         }
       }
     }

@@ -14,9 +14,13 @@ from .const import (
     CONF_HALL_END,
     CONF_HALL_START,
     CONF_OBSERVE_ONLY,
+    CONF_UNRESOLVED_END,
+    CONF_UNRESOLVED_START,
     DEFAULT_FORECAST_CONFIDENCE,
     DEFAULT_HALL_END,
     DEFAULT_HALL_START,
+    DEFAULT_UNRESOLVED_END,
+    DEFAULT_UNRESOLVED_START,
     DOMAIN,
     NAME,
 )
@@ -46,6 +50,8 @@ class AdaptiveRoboVacsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ): vol.All(vol.Coerce(int), vol.Range(min=50, max=95)),
                 vol.Required(CONF_HALL_START, default=DEFAULT_HALL_START): str,
                 vol.Required(CONF_HALL_END, default=DEFAULT_HALL_END): str,
+                vol.Required(CONF_UNRESOLVED_START, default=DEFAULT_UNRESOLVED_START): str,
+                vol.Required(CONF_UNRESOLVED_END, default=DEFAULT_UNRESOLVED_END): str,
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema)

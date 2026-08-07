@@ -14,7 +14,7 @@ require editing scheduler code.
   binary sensors in the same area as a fallback.
 - Supports party mode, manual-clean deferrals, learned vacancy forecasts,
   restart recovery, multi-robot ready-first allocation, double-pass settings,
-  and capability-driven mopping controls.
+  carpet-aware vacuum-only rooms, and capability-driven mopping controls.
 - Provides a self-updating Lovelace card and generated room/robot controls.
 
 ## Installation
@@ -40,9 +40,11 @@ and [legacy decommissioning](docs/decommissioning.md).
 ## Safety
 
 The integration does not stop a clean already in progress if a room becomes
-occupied. It never dispatches work in observe-only mode, Party Mode, or where
-occupancy is unresolved. Rooms that fail native area dispatch are marked
-unmapped and skipped until their map binding is repaired.
+occupied. It never dispatches work in observe-only mode or Party Mode. A room
+with unresolved occupancy is retried only in the configured quiet-night window;
+bedroom-transit rooms remain excluded from that exception. Rooms that fail
+native area dispatch are marked unmapped and skipped until their map binding is
+repaired.
 
 ## License
 

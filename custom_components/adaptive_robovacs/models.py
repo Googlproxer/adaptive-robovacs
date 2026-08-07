@@ -133,7 +133,48 @@ def manual_deferral(now: datetime, next_due: datetime) -> datetime | None:
 
 
 def in_daytime_window(now: datetime, start: str, end: str) -> bool:
-    """Return whether a local time is in a half-open daytime range."""
+    """Return whether a local time is in a configured half-open time range.
 
+    The scheduler uses the same helper for the daytime bedroom-transit policy
+    and the overnight unresolved-occupancy policy.  Supporting windows that
+    cross midnight avoids treating a valid night range as empty.
+    """
+
+    if start == end:
+        return False
     time_text = now.strftime("%H:%M")
-    return start <= time_text < end
+    if start < end:
+        return start <= time_text < end
+    return time_text >= start or time_text < end
+
+
+def unresolved_occupancy_allowed(
+    occupancy: str,
+    is_bedroom_transit: bool,
+    now: datetime,
+    start: str,
+    end: str,
+) -> bool:
+    """Allow only ordinary unresolved rooms in the configured night window."""
+
+    return (
+        occupancy == "unresolved"
+        and not is_bedroom_transit
+        and in_daytime_window(now, start, end)
+    )
+
+
+def select_operation(
+    vacuum_due: datetime,
+    mop_due: datetime | None,
+    can_mop: bool,
+    carpet: bool,
+    now: datetime,
+) -> tuple[str, datetime]:
+    """Choose a safe operation, never selecting mopping for carpeted rooms."""
+
+    if not carpet and can_mop and mop_due is not None and mop_due <= now:
+        if vacuum_due <= now:
+            return "vac_and_mop", min(vacuum_due, mop_due)
+        return "mop", mop_due
+    return "vacuum", vacuum_due
