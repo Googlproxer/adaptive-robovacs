@@ -11,18 +11,12 @@ secrets.yaml
 .env
 .env.*
 
-# Legacy deployment remains available locally for rollback only
-pyscript/
-ha-config/
-PLAN.md
-
 # Local development artefacts
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
 .venv/
-.legacy/
 
 # Editor and operating system artefacts
 .vscode/
