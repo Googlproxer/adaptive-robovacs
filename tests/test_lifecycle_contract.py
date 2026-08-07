@@ -29,6 +29,7 @@ class LifecycleContractTests(unittest.TestCase):
         source = SENSOR_PATH.read_text(encoding="utf-8")
         self.assertIn('return "In Progress"', source)
         self.assertIn('"expected_end_at"', source)
+        self.assertIn('if state["active"] else None', source)
         self.assertIn('"learned_duration_minutes"', source)
 
     def test_cleaning_timer_is_discovered_from_the_robot_device(self) -> None:

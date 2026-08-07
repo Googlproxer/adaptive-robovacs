@@ -111,7 +111,14 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "map_error": state["map_error"],
             "block_reason": state["block_reason"],
             "active_job_source": state["active"].get("source") if state["active"] else None,
-            "active_robot": next((robot_id for robot_id, job in self.coordinator.data["active"].items() if job is state["active"]), None),
+            "active_robot": (
+                next(
+                    (robot_id for robot_id, job in self.coordinator.data["active"].items() if job is state["active"]),
+                    None,
+                )
+                if state["active"]
+                else None
+            ),
             "active_operation": state["active"].get("operation") if state["active"] else None,
             "active_started_at": state["active"].get("observed_started") if state["active"] else None,
             "expected_end_at": state["active"].get("expected_end") if state["active"] else None,
