@@ -38,13 +38,9 @@ automatically on supported versions.
 6. Add the supplied dashboard card resource and use the example dashboard
    configuration. Review schedule previews before turning off observe-only mode.
 
-See [setup and migration](docs/setup.md), [dashboard setup](docs/dashboard.md),
-and [legacy decommissioning](docs/decommissioning.md). The deferred plan for
-Home Assistant user-initiated room cleans are tracked automatically; native
-vacuum-app starts are intentionally left untracked. The implementation notes
-are in [docs/manual-ha-clean-tracking-plan.md](docs/manual-ha-clean-tracking-plan.md),
-and the restart-safe job lifecycle plan is in
-[docs/cleaning-lifecycle-recovery-plan.md](docs/cleaning-lifecycle-recovery-plan.md).
+See [setup](docs/setup.md) and [dashboard setup](docs/dashboard.md). Home
+Assistant user-initiated room cleans are tracked automatically; native
+vacuum-app starts are intentionally left untracked.
 
 ## Safety
 

@@ -1,4 +1,4 @@
-# Setup and migration
+# Setup
 
 ## Labels and room discovery
 
@@ -29,21 +29,6 @@ Home Assistant areas. This is Home Assistant's built-in mapping used by
 An unsupported or failed room dispatch is shown as **Unmapped** and is skipped.
 Repair the native mapping, then use **Preview schedule**. The scheduler will
 retry the room automatically on its next due evaluation.
-
-## Migration from the Pyscript scheduler
-
-On first setup, the integration reads the legacy persisted scheduler state if it
-exists. It imports only rooms whose legacy room key matches a current area name
-after normalisation. Matching completion times, deferrals, vacancy samples, and
-helper values are preserved. The migration records its result on the Scheduler
-sensor. From then on, scheduler settings, room history, learned vacancy
-samples, and active-job checkpoints are written through Home Assistant's
-persistent storage and survive Home Assistant restarts.
-
-The integration always starts in observe-only mode. Leave the legacy scheduler
-enabled while you compare previews. For cutover, let any old job finish, disable
-the legacy robot master helpers, then turn off **Observe-only mode** in the new
-dashboard.
 
 ## Occupancy rules
 
