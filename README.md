@@ -5,6 +5,10 @@ occupancy-aware room cleaning. It discovers vacuum cleaners, floors, areas, and
 occupancy sensors at runtime, so replacing hardware or adding a room does not
 require editing scheduler code.
 
+The integration includes a local Home Assistant brand icon in
+`custom_components/adaptive_robovacs/brand/`; Home Assistant loads it
+automatically on supported versions.
+
 ## What it does
 
 - Schedules common rooms and opt-in bedrooms using adjustable per-area cadence.
