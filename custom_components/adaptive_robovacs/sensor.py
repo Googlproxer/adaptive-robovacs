@@ -80,6 +80,8 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         state = self.coordinator.room_state(self.area_id)
+        if state["active"]:
+            return "In Progress"
         candidate = state["next_candidate"]
         if candidate:
             return "ready now"
@@ -108,6 +110,14 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "map_status": state["map_status"],
             "map_error": state["map_error"],
             "block_reason": state["block_reason"],
+            "active_job_source": state["active"].get("source") if state["active"] else None,
+            "active_robot": next((robot_id for robot_id, job in self.coordinator.data["active"].items() if job is state["active"]), None),
+            "active_operation": state["active"].get("operation") if state["active"] else None,
+            "active_started_at": state["active"].get("observed_started") if state["active"] else None,
+            "expected_end_at": state["active"].get("expected_end") if state["active"] else None,
+            "active_completion_confidence": state["active"].get("completion_confidence") if state["active"] else None,
+            "learned_duration_minutes": state["effective_duration_minutes"],
+            "duration_sample_count": state["duration_sample_count"],
         }
 
 

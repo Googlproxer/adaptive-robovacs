@@ -50,6 +50,7 @@ from .models import (
     due_at,
     forecast_vacancy,
     in_daytime_window,
+    learned_duration_minutes,
     manual_deferral,
     resolve_occupancy,
     select_operation,
@@ -98,6 +99,7 @@ def _blank_room() -> dict[str, Any]:
         "source_fingerprint": None,
         "map_status": "unknown",
         "map_error": None,
+        "duration_samples": [],
     }
 
 
@@ -244,6 +246,8 @@ class AdaptiveRoboVacCoordinator:
         for robot in self.discovery.robots.values():
             if robot.profile.battery_entity_id:
                 self._watch_entity_ids.add(robot.profile.battery_entity_id)
+            if robot.profile.cleaning_time_entity_id:
+                self._watch_entity_ids.add(robot.profile.cleaning_time_entity_id)
 
         if prior_rooms != set(self.discovery.rooms) or prior_robots != set(self.discovery.robots):
             async_dispatcher_send(self.hass, SIGNAL_DISCOVERY_UPDATED, self.entry.entry_id)
@@ -395,16 +399,54 @@ class AdaptiveRoboVacCoordinator:
         for entity_id, active in list(self.data["active"].items()):
             if not active:
                 continue
+            self._normalise_active_job(active, now)
             state = self.hass.states.get(entity_id)
             if state and state.state in {"cleaning", "returning"}:
                 active["recovered_at"] = _iso(now)
+                if state.state == "returning":
+                    # Returning is reliable evidence that an accepted room command did run,
+                    # even if Home Assistant was unavailable for the cleaning transition.
+                    active["seen_cleaning"] = True
+                    expected_end = _as_datetime(active.get("expected_end"))
+                    if expected_end and now >= expected_end:
+                        active["cleaning_finished"] = _iso(expected_end)
+                        active["completion_confidence"] = "recovered_expected_end"
+                        active["phase"] = "returning"
+                    else:
+                        # Do not turn a reconnect into an artificially late (or future)
+                        # completion.  The reconciliation loop will complete at expected_end.
+                        active["phase"] = "recovery_waiting"
+                else:
+                    active["phase"] = "cleaning"
+                continue
+            expected_end = _as_datetime(active.get("expected_end"))
+            if active.get("seen_cleaning") and state and state.state in {"docked", "idle"}:
+                if expected_end and now >= expected_end:
+                    self._complete_job(entity_id, active, expected_end, "recovered_expected_end")
+                else:
+                    active["phase"] = "recovery_waiting"
+                    active["recovered_at"] = _iso(now)
+                continue
+            if state is None or state.state in {"unavailable", "unknown"}:
+                active["phase"] = "recovery_waiting"
+                active["recovered_at"] = _iso(now)
                 continue
             self.data["active"][entity_id] = None
-            self.data["recovery_events"].append(
-                {"robot": entity_id, "at": _iso(now), "reason": "cleared stale checkpoint"}
-            )
+            self.data["recovery_events"].append({"robot": entity_id, "at": _iso(now), "reason": "unconfirmed checkpoint"})
         self.data["recovery_events"] = self.data["recovery_events"][-20:]
         await self._async_save()
+
+    def _normalise_active_job(self, active: dict[str, Any], now: datetime) -> None:
+        """Backfill lifecycle fields for checkpoints written by older releases."""
+
+        room = self.discovery.rooms.get(active.get("room"))
+        fallback = float(self._room_settings(room)["expected_minutes"]) if room else DEFAULT_EXPECTED_MINUTES
+        active.setdefault("source", "scheduler")
+        active.setdefault("passes", 1)
+        active.setdefault("expected_minutes", fallback)
+        if not active.get("expected_end"):
+            started = _as_datetime(active.get("observed_started") or active.get("accepted_at") or active.get("started")) or now
+            active["expected_end"] = _iso(started + timedelta(minutes=float(active["expected_minutes"])))
 
     @callback
     def _on_home_assistant_started(self, _event: Event) -> None:
@@ -500,7 +542,24 @@ class AdaptiveRoboVacCoordinator:
             now,
         )
 
-    def _forecast(self, room: DiscoveredRoom, now: datetime) -> Forecast:
+    def _effective_duration(
+        self, room: DiscoveredRoom, operation: str, passes: int, robot_id: str | None = None
+    ) -> tuple[float, int]:
+        detail = self._room_data(room.area_id)
+        samples: list[float] = []
+        for sample in detail.get("duration_samples", []):
+            if sample.get("operation") != operation or sample.get("source") not in {"robot_timer", "state_transition"}:
+                continue
+            if robot_id is not None and sample.get("robot") != robot_id:
+                continue
+            try:
+                if int(sample.get("passes", 1)) == passes:
+                    samples.append(float(sample["minutes"]))
+            except (TypeError, ValueError, KeyError):
+                continue
+        return learned_duration_minutes(samples, float(self._room_settings(room)["expected_minutes"]))
+
+    def _forecast(self, room: DiscoveredRoom, now: datetime, duration_minutes: float) -> Forecast:
         detail = self._room_data(room.area_id)
         if detail["source"] == "no_sensor":
             return Forecast(True, 1.0, "no-sensor policy")
@@ -515,7 +574,7 @@ class AdaptiveRoboVacCoordinator:
             _local(_as_datetime(detail["unoccupied_since"]))
             if _as_datetime(detail.get("unoccupied_since"))
             else None,
-            int(self._room_settings(room)["expected_minutes"]) + EXTRA_CLEAR_MINUTES,
+            int(duration_minutes) + EXTRA_CLEAR_MINUTES,
             float(self.data.get("forecast_confidence", DEFAULT_FORECAST_CONFIDENCE)),
             FALLBACK_SAMPLE_COUNT,
         )
@@ -579,20 +638,25 @@ class AdaptiveRoboVacCoordinator:
             allowed, reason = self._hall_allowed(now)
             if not allowed:
                 return None, reason
+        operation, due = select_operation(vacuum_due, mop_due, can_mop, carpet, now)
+        passes = 2 if any(bool(self._robot_settings(robot).get("double_pass")) for robot in capable) else 1
+        duration_minutes, duration_sample_count = self._effective_duration(room, operation, passes)
         forecast = (
             Forecast(True, 0.0, "unresolved occupancy overnight policy")
             if unresolved_night
-            else self._forecast(room, now)
+            else self._forecast(room, now, duration_minutes)
         )
         if not forecast.allowed:
             return None, forecast.reason
-        operation, due = select_operation(vacuum_due, mop_due, can_mop, carpet, now)
         return {
             "room": room,
             "operation": operation,
             "due_at": due,
             "confidence": forecast.confidence,
             "reason": forecast.reason,
+            "duration_minutes": duration_minutes,
+            "duration_sample_count": duration_sample_count,
+            "passes": passes,
         }, "ready"
 
     async def _async_apply_profile(self, robot: DiscoveredRobot, operation: str) -> None:
@@ -637,6 +701,10 @@ class AdaptiveRoboVacCoordinator:
             "started": _iso(now),
             "seen_cleaning": False,
             "phase": "dispatching",
+            "source": "scheduler",
+            "expected_minutes": candidate["duration_minutes"],
+            "expected_end": _iso(now + timedelta(minutes=candidate["duration_minutes"])),
+            "passes": candidate["passes"],
         }
         self.data["active"][robot.entity_id] = active
         await self._async_save()
@@ -672,18 +740,46 @@ class AdaptiveRoboVacCoordinator:
             state = self.hass.states.get(robot_id)
             state_text = state.state if state else "unavailable"
             if state_text == "cleaning":
+                if not active.get("seen_cleaning"):
+                    observed_start = state.last_changed if state else now
+                    active["observed_started"] = _iso(observed_start)
+                    active["expected_end"] = _iso(
+                        observed_start + timedelta(minutes=float(active.get("expected_minutes", 0)))
+                    )
+                    timer = self._cleaning_timer_minutes(robot_id)
+                    if timer is not None and timer <= 1:
+                        active["timer_start"] = timer
                 active["seen_cleaning"] = True
                 active["phase"] = "cleaning"
                 changed = True
                 continue
+            if active.get("seen_cleaning") and state_text == "returning":
+                expected_end = _as_datetime(active.get("expected_end"))
+                if active.get("phase") == "recovery_waiting":
+                    if expected_end and now >= expected_end:
+                        active["cleaning_finished"] = _iso(expected_end)
+                        active["completion_confidence"] = "recovered_expected_end"
+                        active["phase"] = "returning"
+                        changed = True
+                    continue
+                if not active.get("cleaning_finished"):
+                    active["cleaning_finished"] = _iso(state.last_changed if state else now)
+                    active["measured_minutes"] = self._measured_duration_minutes(robot_id, active)
+                    active["completion_confidence"] = "observed"
+                active["phase"] = "returning"
+                changed = True
+                continue
             if active.get("seen_cleaning") and state_text in {"docked", "idle"}:
-                detail = self._room_data(active["room"])
-                operation = active["operation"]
-                if operation in {"vacuum", "vac_and_mop"}:
-                    detail["vacuum"] = _iso(now)
-                if operation in {"mop", "vac_and_mop"}:
-                    detail["mop"] = _iso(now)
-                self.data["active"][robot_id] = None
+                expected_end = _as_datetime(active.get("expected_end"))
+                if active.get("phase") == "recovery_waiting" and expected_end and now < expected_end:
+                    continue
+                completion = _as_datetime(active.get("cleaning_finished")) or (state.last_changed if state else now)
+                if active.get("phase") == "recovery_waiting" and expected_end and now >= expected_end:
+                    completion = expected_end
+                    confidence = "recovered_expected_end"
+                else:
+                    confidence = str(active.get("completion_confidence", "observed"))
+                self._complete_job(robot_id, active, completion, confidence)
                 changed = True
                 continue
             started = _as_datetime(active.get("started"))
@@ -699,6 +795,56 @@ class AdaptiveRoboVacCoordinator:
                 changed = True
         if changed:
             await self._async_save()
+
+    def _cleaning_timer_minutes(self, robot_id: str) -> float | None:
+        robot = self.discovery.robots.get(robot_id)
+        entity_id = robot.profile.cleaning_time_entity_id if robot else None
+        state = self.hass.states.get(entity_id) if entity_id else None
+        try:
+            value = float(state.state) if state else None
+        except (TypeError, ValueError):
+            return None
+        unit = str(state.attributes.get("unit_of_measurement", "min")).lower() if state else "min"
+        if unit in {"h", "hour", "hours"}:
+            return value * 60
+        if unit in {"s", "second", "seconds"}:
+            return value / 60
+        return value
+
+    def _measured_duration_minutes(self, robot_id: str, active: dict[str, Any]) -> float | None:
+        timer = self._cleaning_timer_minutes(robot_id)
+        timer_start = active.get("timer_start")
+        if timer is not None and timer_start is not None and timer >= float(timer_start):
+            return timer - float(timer_start)
+        started = _as_datetime(active.get("observed_started"))
+        finished = _as_datetime(active.get("cleaning_finished"))
+        if started and finished:
+            return (finished - started).total_seconds() / 60
+        return None
+
+    def _complete_job(self, robot_id: str, active: dict[str, Any], completion: datetime, confidence: str) -> None:
+        detail = self._room_data(active["room"])
+        operation = active["operation"]
+        if operation in {"vacuum", "vac_and_mop"}:
+            detail["vacuum"] = _iso(completion)
+        if operation in {"mop", "vac_and_mop"}:
+            detail["mop"] = _iso(completion)
+        measured = active.get("measured_minutes")
+        if confidence == "observed" and isinstance(measured, (float, int)) and measured > 0:
+            detail.setdefault("duration_samples", []).append(
+                {
+                    "minutes": float(measured),
+                    "operation": operation,
+                    "passes": int(active.get("passes", 1)),
+                    "robot": robot_id,
+                    "source": "robot_timer" if active.get("timer_start") is not None else "state_transition",
+                    "at": _iso(completion),
+                }
+            )
+            detail["duration_samples"] = detail["duration_samples"][-50:]
+        self.data["recovery_events"].append({"robot": robot_id, "room": active["room"], "at": _iso(completion), "reason": confidence})
+        self.data["recovery_events"] = self.data["recovery_events"][-20:]
+        self.data["active"][robot_id] = None
 
     async def async_evaluate(self, dry_run: bool = False, reason: str = "manual") -> dict[str, Any]:
         """Refresh state, publish a safe preview, and optionally dispatch work."""
@@ -751,6 +897,20 @@ class AdaptiveRoboVacCoordinator:
                     reverse=True,
                 )
                 robot = eligible[0]
+                passes = 2 if bool(self._robot_settings(robot).get("double_pass")) else 1
+                if candidate["passes"] != passes:
+                    duration_minutes, duration_sample_count = self._effective_duration(
+                        room, candidate["operation"], passes, robot.entity_id
+                    )
+                    # The candidate was conservatively checked with any configured
+                    # double-pass robot.  Use the selected robot's exact profile
+                    # for the durable job checkpoint and duration learning key.
+                    candidate = {
+                        **candidate,
+                        "passes": passes,
+                        "duration_minutes": duration_minutes,
+                        "duration_sample_count": duration_sample_count,
+                    }
                 assignments.append((robot, candidate))
                 used_robots.add(robot.entity_id)
 
@@ -868,6 +1028,17 @@ class AdaptiveRoboVacCoordinator:
         vacuum_due = self._room_due(room, "vacuum", now)
         mop_due = None if settings.get("carpet", False) else self._room_due(room, "mop", now)
         candidate, reason = self._room_candidate(room, now)
+        active_robot_id, active = next(
+            ((robot_id, job) for robot_id, job in self.data["active"].items() if job and job.get("room") == area_id),
+            (None, None),
+        )
+        duration_operation = (
+            active["operation"] if active else candidate["operation"] if candidate else "vacuum"
+        )
+        duration_passes = int(active.get("passes", 1)) if active else candidate["passes"] if candidate else 1
+        duration_minutes, duration_sample_count = self._effective_duration(
+            room, duration_operation, duration_passes, active_robot_id
+        )
         return {
             "name": room.name,
             "area_id": room.area_id,
@@ -890,6 +1061,9 @@ class AdaptiveRoboVacCoordinator:
             "vacuum_due": vacuum_due,
             "mop_due": mop_due,
             "next_candidate": candidate,
+            "active": active,
+            "effective_duration_minutes": duration_minutes,
+            "duration_sample_count": duration_sample_count,
             "block_reason": reason,
             "map_status": detail.get("map_status", "unknown"),
             "map_error": detail.get("map_error"),

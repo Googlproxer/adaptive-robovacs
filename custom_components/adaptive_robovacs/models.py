@@ -132,6 +132,28 @@ def manual_deferral(now: datetime, next_due: datetime) -> datetime | None:
     return None
 
 
+def learned_duration_minutes(samples: Iterable[float], fallback: float, minimum: int = 3) -> tuple[float, int]:
+    """Return a conservative learned duration without letting outliers dominate.
+
+    The configured duration remains the prior until enough direct observations
+    exist.  Thereafter use an upper percentile so vacancy prediction is safe
+    rather than optimistic.
+    """
+
+    values = sorted(value for value in samples if 0 < value <= 240)
+    if len(values) < minimum:
+        return fallback, len(values)
+    median = values[len(values) // 2]
+    deviations = sorted(abs(value - median) for value in values)
+    mad = deviations[len(deviations) // 2]
+    tolerance = max(2.0, mad * 3)
+    values = [value for value in values if abs(value - median) <= tolerance]
+    if len(values) < minimum:
+        return fallback, len(values)
+    index = min(len(values) - 1, max(0, int(len(values) * 0.8 + 0.999999) - 1))
+    return values[index], len(values)
+
+
 def in_daytime_window(now: datetime, start: str, end: str) -> bool:
     """Return whether a local time is in a configured half-open time range.
 

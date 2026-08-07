@@ -102,6 +102,14 @@ class CadenceTests(unittest.TestCase):
             ("mop", mop_due),
         )
 
+    def test_learned_duration_keeps_the_user_prior_until_samples_are_sufficient(self) -> None:
+        self.assertEqual(models.learned_duration_minutes([12, 14], 30), (30, 2))
+
+    def test_learned_duration_uses_a_conservative_outlier_resistant_percentile(self) -> None:
+        duration, samples = models.learned_duration_minutes([20, 22, 24, 180], 30)
+        self.assertEqual(duration, 24)
+        self.assertEqual(samples, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ class RobotProfile:
     """Generic controls discovered from a vacuum's device entities."""
 
     battery_entity_id: str | None = None
+    cleaning_time_entity_id: str | None = None
     mode_select_entity_id: str | None = None
     mop_mode_select_entity_id: str | None = None
     mop_intensity_select_entity_id: str | None = None
@@ -161,9 +162,21 @@ def _find_profile(
         device_class = (
             state.attributes.get("device_class") if state else None
         ) or getattr(entry, "original_device_class", None)
-        if domain == "sensor" and device_class == "battery" and not profile.battery_entity_id:
-            profile.battery_entity_id = entry.entity_id
-            continue
+        if domain == "sensor":
+            if device_class == "battery" and not profile.battery_entity_id:
+                profile.battery_entity_id = entry.entity_id
+                continue
+            sensor_name = " ".join(
+                str(value or "")
+                for value in (state.name if state else None, entry.name, entry.original_name, entry.entity_id)
+            ).replace("_", " ").lower()
+            if (
+                device_class == "duration"
+                and not profile.cleaning_time_entity_id
+                and ("cleaning time" in sensor_name or "clean time" in sensor_name)
+            ):
+                profile.cleaning_time_entity_id = entry.entity_id
+                continue
         if domain != "select":
             continue
 

@@ -10,6 +10,12 @@ scheduler-started clean, excluding starts from the native vacuum app.
 This lifecycle will also be the shared foundation for future tracked manual
 Home Assistant room cleans.
 
+## Implementation status
+
+Implemented in integration version 1.0.2. Scheduler-started jobs now use the
+durable lifecycle below; manual Home Assistant clean tracking remains the
+separate follow-up described in `manual-ha-clean-tracking-plan.md`.
+
 ## Durable job checkpoint
 
 Persist a checkpoint before dispatch and after every meaningful transition.
