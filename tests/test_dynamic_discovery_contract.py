@@ -5,6 +5,7 @@ import unittest
 
 
 ENTITY_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "entity.py"
+DISCOVERY_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "discovery_core.py"
 DASHBOARD_PATH = (
     Path(__file__).parents[1]
     / "custom_components"
@@ -45,6 +46,13 @@ class DynamicDiscoveryContractTests(unittest.TestCase):
             DASHBOARD_PATH.read_text(encoding="utf-8"),
             local_copy.read_text(encoding="utf-8"),
         )
+
+    def test_robot_entities_follow_the_robot_friendly_name(self) -> None:
+        entity_source = ENTITY_PATH.read_text(encoding="utf-8")
+        discovery_source = DISCOVERY_PATH.read_text(encoding="utf-8")
+        self.assertIn("robot_name_suffix", entity_source)
+        self.assertIn("robot.name if robot else self._robot_entity_id", entity_source)
+        self.assertIn("device.name_by_user", discovery_source)
 
 
 if __name__ == "__main__":

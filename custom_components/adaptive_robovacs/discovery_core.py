@@ -98,6 +98,29 @@ def _entity_area_id(entry: er.RegistryEntry, devices: dr.DeviceRegistry) -> str 
     return None
 
 
+def _robot_name(
+    entry: er.RegistryEntry, devices: dr.DeviceRegistry, hass: HomeAssistant
+) -> str:
+    """Resolve a stable friendly robot name even while its entity is restoring.
+
+    A vacuum can briefly have no state attributes while Home Assistant starts.
+    Falling back through its registry and device names prevents scheduler
+    entities from being permanently created with ``vacuum.example`` as their
+    display name during that short window.
+    """
+
+    state = hass.states.get(entry.entity_id)
+    device = devices.async_get(entry.device_id) if entry.device_id else None
+    candidates = (
+        state.name if state and state.name != entry.entity_id else None,
+        entry.name,
+        device.name_by_user if device else None,
+        device.name if device else None,
+        entry.original_name,
+    )
+    return next((str(name) for name in candidates if name), entry.entity_id)
+
+
 def _normalised_label(name: str) -> str:
     return name.strip().lower().replace(" ", "-").replace("_", "-")
 
@@ -206,7 +229,7 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
         )
         result.robots[entry.entity_id] = DiscoveredRobot(
             entity_id=entry.entity_id,
-            name=(state.name if state else entry.original_name or entry.entity_id),
+            name=_robot_name(entry, devices, hass),
             device_id=entry.device_id,
             dock_area_id=dock_area_id,
             floor_id=dock_area.floor_id if dock_area else None,

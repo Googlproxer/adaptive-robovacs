@@ -26,13 +26,14 @@ class _TimeSelect(AdaptiveEntity, SelectEntity):
 
 
 class _RobotSelect(AdaptiveEntity, SelectEntity):
-    def __init__(self, coordinator, robot_entity_id: str, key: str, options: tuple[str, ...], name: str) -> None:
+    def __init__(self, coordinator, robot_entity_id: str, key: str, options: tuple[str, ...], label: str) -> None:
         super().__init__(
             coordinator,
             f"robot_{robot_entity_id}_{key}",
-            name,
+            label,
             "robot_control",
             robot_entity_id=robot_entity_id,
+            robot_name_suffix=label,
         )
         self.robot_entity_id = robot_entity_id
         self.key = key
@@ -57,11 +58,11 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
     for robot in coordinator.discovery.robots.values():
         profile = robot.profile
         if profile.mode_select_entity_id and profile.mode_options:
-            entities.append(_RobotSelect(coordinator, robot.entity_id, "mode", profile.mode_options, f"{robot.name} mode"))
+            entities.append(_RobotSelect(coordinator, robot.entity_id, "mode", profile.mode_options, "mode"))
         if profile.mop_mode_select_entity_id and profile.mop_mode_options:
-            entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_mode", profile.mop_mode_options, f"{robot.name} mop mode"))
+            entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_mode", profile.mop_mode_options, "mop mode"))
         if profile.mop_intensity_select_entity_id and profile.mop_intensity_options:
-            entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_intensity", profile.mop_intensity_options, f"{robot.name} mop intensity"))
+            entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_intensity", profile.mop_intensity_options, "mop intensity"))
     return entities
 
 

@@ -112,7 +112,7 @@ def forecast_vacancy(
         return Forecast(
             clear_minutes >= required_minutes,
             0.0,
-            f"waiting for {required_minutes} clear minutes ({len(comparable)} comparable samples)",
+            f"waiting for {required_minutes} clear minutes",
         )
 
     successes = sum(float(sample.get("minutes", 0)) >= required_minutes for sample in comparable)

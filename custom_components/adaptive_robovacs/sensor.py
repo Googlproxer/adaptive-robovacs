@@ -39,13 +39,14 @@ class _SchedulerSensor(AdaptiveEntity, SensorEntity):
 
 
 class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
-    def __init__(self, coordinator, robot_entity_id: str, name: str) -> None:
+    def __init__(self, coordinator, robot_entity_id: str) -> None:
         super().__init__(
             coordinator,
             f"robot_{robot_entity_id}_status",
-            f"{name} status",
+            "status",
             "robot_status",
             robot_entity_id=robot_entity_id,
+            robot_name_suffix="status",
         )
         self.robot_entity_id = robot_entity_id
 
@@ -155,7 +156,7 @@ class _RoomOccupancySensor(AdaptiveEntity, SensorEntity):
 def _entities(coordinator) -> list[AdaptiveEntity]:
     entities: list[AdaptiveEntity] = [_SchedulerSensor(coordinator)]
     for robot in coordinator.discovery.robots.values():
-        entities.append(_RobotStatusSensor(coordinator, robot.entity_id, robot.name))
+        entities.append(_RobotStatusSensor(coordinator, robot.entity_id))
     for room in coordinator.discovery.rooms.values():
         entities.extend(
             [

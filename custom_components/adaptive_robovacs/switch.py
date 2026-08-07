@@ -37,13 +37,14 @@ class _GlobalSwitch(_AdaptiveSwitch):
 
 
 class _RobotSwitch(_AdaptiveSwitch):
-    def __init__(self, coordinator, robot_entity_id: str, key: str, name: str) -> None:
+    def __init__(self, coordinator, robot_entity_id: str, key: str, label: str) -> None:
         super().__init__(
             coordinator,
             f"robot_{robot_entity_id}_{key}",
-            name,
+            label,
             "robot_control",
             robot_entity_id=robot_entity_id,
+            robot_name_suffix=label,
         )
         self.robot_entity_id = robot_entity_id
         self.setting_key = key
@@ -82,14 +83,14 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
         _GlobalSwitch(coordinator, "observe_only", "Observe-only mode"),
     ]
     for robot in coordinator.discovery.robots.values():
-        entities.append(_RobotSwitch(coordinator, robot.entity_id, "enabled", f"{robot.name} enabled"))
+        entities.append(_RobotSwitch(coordinator, robot.entity_id, "enabled", "enabled"))
         if robot.profile.supports_mopping:
             entities.append(
-                _RobotSwitch(coordinator, robot.entity_id, "mopping_enabled", f"{robot.name} mopping enabled")
+                _RobotSwitch(coordinator, robot.entity_id, "mopping_enabled", "mopping enabled")
             )
         if robot.profile.supports_double_pass:
             entities.append(
-                _RobotSwitch(coordinator, robot.entity_id, "double_pass", f"{robot.name} double pass")
+                _RobotSwitch(coordinator, robot.entity_id, "double_pass", "double pass")
             )
     for room in coordinator.discovery.rooms.values():
         entities.extend(

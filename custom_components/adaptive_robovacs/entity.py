@@ -28,6 +28,7 @@ class AdaptiveEntity(Entity):
         role: str,
         area_id: str | None = None,
         robot_entity_id: str | None = None,
+        robot_name_suffix: str | None = None,
     ) -> None:
         self.coordinator = coordinator
         self._attr_unique_id = f"{coordinator.entry.entry_id}_{unique_key}"
@@ -35,6 +36,17 @@ class AdaptiveEntity(Entity):
         self._role = role
         self._area_id = area_id
         self._robot_entity_id = robot_entity_id
+        self._robot_name_suffix = robot_name_suffix
+
+    @property
+    def name(self) -> str | None:
+        """Keep robot-owned entity labels aligned with the live robot name."""
+
+        if self._robot_entity_id and self._robot_name_suffix:
+            robot = self.coordinator.discovery.robots.get(self._robot_entity_id)
+            robot_name = robot.name if robot else self._robot_entity_id
+            return f"{robot_name} {self._robot_name_suffix}"
+        return self._attr_name
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to scheduler updates."""

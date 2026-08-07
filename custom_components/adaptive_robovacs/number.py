@@ -37,13 +37,14 @@ class _RobotNumber(_AdaptiveNumber):
     _attr_native_step = 5
     _attr_native_unit_of_measurement = "%"
 
-    def __init__(self, coordinator, robot_entity_id: str, name: str) -> None:
+    def __init__(self, coordinator, robot_entity_id: str) -> None:
         super().__init__(
             coordinator,
             f"robot_{robot_entity_id}_minimum_battery",
-            name,
+            "minimum battery",
             "robot_control",
             robot_entity_id=robot_entity_id,
+            robot_name_suffix="minimum battery",
         )
         self.robot_entity_id = robot_entity_id
 
@@ -82,7 +83,7 @@ class _RoomNumber(_AdaptiveNumber):
 def _entities(coordinator) -> list[AdaptiveEntity]:
     entities: list[AdaptiveEntity] = [_GlobalNumber(coordinator)]
     for robot in coordinator.discovery.robots.values():
-        entities.append(_RobotNumber(coordinator, robot.entity_id, f"{robot.name} minimum battery"))
+        entities.append(_RobotNumber(coordinator, robot.entity_id))
     for room in coordinator.discovery.rooms.values():
         entities.extend(
             [

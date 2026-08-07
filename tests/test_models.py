@@ -64,6 +64,7 @@ class CadenceTests(unittest.TestCase):
             [], self.now, self.now - timedelta(minutes=20), 30, 80, 6
         )
         self.assertFalse(result.allowed)
+        self.assertEqual(result.reason, "waiting for 30 clear minutes")
         result = models.forecast_vacancy(
             [], self.now, self.now - timedelta(minutes=30), 30, 80, 6
         )
