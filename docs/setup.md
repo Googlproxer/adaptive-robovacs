@@ -12,6 +12,10 @@ floor as a room. Use labels instead of editing configuration files:
 | `robovac-exclude` | Area | Never scheduled. |
 | `robovac-radar` | Occupancy binary sensor | Preferred over older occupancy/motion sensors. |
 
+Home Assistant normalizes the label registry IDs to underscores (for example,
+`robovac_bedroom`). The names above are what you create in the UI; the
+integration matches the normalized IDs.
+
 Set every vacuum's device or entity area to its dock area. The integration gets
 the served floor from that area's floor assignment. A newly assigned vacuum,
 room, or sensor is picked up during the next evaluation without a reload.

@@ -28,7 +28,9 @@ require editing scheduler code.
    entity's **Map vacuum segments to areas** action.
 5. Add area labels as needed:
    `robovac-bedroom`, `robovac-bedroom-transit`, and `robovac-exclude`.
-   Label radar occupancy entities `robovac-radar`.
+   Label radar occupancy entities `robovac-radar`. Home Assistant normalizes
+   their underlying IDs to underscores (for example, `robovac_bedroom`), which
+   the integration handles automatically.
 6. Add the supplied dashboard card resource and use the example dashboard
    configuration. Review schedule previews before turning off observe-only mode.
 

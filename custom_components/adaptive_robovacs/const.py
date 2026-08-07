@@ -16,10 +16,13 @@ HISTORY_DAYS: Final = 56
 FALLBACK_SAMPLE_COUNT: Final = 6
 EXTRA_CLEAR_MINUTES: Final = 10
 
-LABEL_BEDROOM: Final = "robovac-bedroom"
-LABEL_BEDROOM_TRANSIT: Final = "robovac-bedroom-transit"
-LABEL_EXCLUDE: Final = "robovac-exclude"
-LABEL_RADAR: Final = "robovac-radar"
+# Home Assistant normalizes label IDs from display names with underscores.
+# The documented labels may be shown as ``robovac-bedroom`` in the UI, but
+# their registry IDs are ``robovac_bedroom`` and so on.
+LABEL_BEDROOM: Final = "robovac_bedroom"
+LABEL_BEDROOM_TRANSIT: Final = "robovac_bedroom_transit"
+LABEL_EXCLUDE: Final = "robovac_exclude"
+LABEL_RADAR: Final = "robovac_radar"
 
 DEFAULT_COMMON_INTERVAL: Final = 84
 DEFAULT_BEDROOM_INTERVAL: Final = 168
