@@ -153,6 +153,7 @@ class AdaptiveRoboVacCoordinator:
             self.data.setdefault("recovery_events", [])
 
         await self.async_refresh_discovery()
+        await self._async_clear_legacy_dispatch_schema_errors()
         await self._async_migrate_legacy_once()
         await self._async_recover_active_jobs()
         self._unsubscribers.extend(
@@ -192,6 +193,25 @@ class AdaptiveRoboVacCoordinator:
     async def _async_save(self) -> None:
         self.data["version"] = VERSION
         await self.store.async_save(self.data)
+
+    async def _async_clear_legacy_dispatch_schema_errors(self) -> None:
+        """Unblock rooms affected by the pre-1.0.1 clean-area payload.
+
+        Older releases sent ``area_id`` to ``vacuum.clean_area``. Current
+        Home Assistant expects ``cleaning_area_id`` instead. That schema
+        error was incorrectly persisted as an unmapped native area, which
+        would otherwise prevent the corrected command from being retried.
+        """
+
+        changed = False
+        for detail in self.data["rooms"].values():
+            if detail.get("map_error") != "required key not provided @ data['cleaning_area_id']":
+                continue
+            detail["map_status"] = "unknown"
+            detail["map_error"] = None
+            changed = True
+        if changed:
+            await self._async_save()
 
     async def async_refresh_discovery(self) -> None:
         """Refresh registry state and reset only changed room occupancy models."""
@@ -625,7 +645,7 @@ class AdaptiveRoboVacCoordinator:
             await self.hass.services.async_call(
                 "vacuum",
                 "clean_area",
-                {"entity_id": robot.entity_id, "area_id": [room.area_id]},
+                {"entity_id": robot.entity_id, "cleaning_area_id": [room.area_id]},
                 blocking=True,
             )
         except Exception as err:  # ServiceValidationError varies between HA versions.
