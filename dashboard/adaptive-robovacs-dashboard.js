@@ -35,8 +35,9 @@ class AdaptiveRoboVacsDashboard extends HTMLElement {
   }
 
   _section(title, entities) {
-    if (!entities.length) return null;
-    return { type: "entities", title, show_header_toggle: false, entities };
+    return entities.length
+      ? { type: "entities", title, show_header_toggle: false, entities }
+      : null;
   }
 
   _configuration() {
@@ -45,33 +46,33 @@ class AdaptiveRoboVacsDashboard extends HTMLElement {
       .filter((item) => item.attrs.adaptive_robovacs_role === role)
       .map((item) => item.entity_id);
     const cards = [];
-
-    const overview = [
+    cards.push(this._section("Scheduler", [
       ...byRole("scheduler_status"),
       ...byRole("global_control"),
       ...byRole("scheduler_control"),
-    ];
-    cards.push(this._section("Scheduler", overview));
+    ]));
 
     const robots = new Map();
     const rooms = new Map();
     entities.forEach((item) => {
-      const robot = item.attrs.robot_entity_id;
-      const area = item.attrs.area_id;
-      if (robot) robots.set(robot, [...(robots.get(robot) || []), item.entity_id]);
-      if (area) rooms.set(area, [...(rooms.get(area) || []), item.entity_id]);
+      if (item.attrs.robot_entity_id) {
+        const robot = item.attrs.robot_entity_id;
+        robots.set(robot, [...(robots.get(robot) || []), item.entity_id]);
+      }
+      if (item.attrs.area_id) {
+        const room = item.attrs.area_id;
+        rooms.set(room, [...(rooms.get(room) || []), item.entity_id]);
+      }
     });
     robots.forEach((entityIds, robot) => {
       const state = this._hass.states[robot];
-      const title = state?.attributes?.friendly_name || robot;
-      cards.push(this._section(title, entityIds));
+      cards.push(this._section(state?.attributes?.friendly_name || robot, entityIds));
     });
     rooms.forEach((entityIds, areaId) => {
       const schedule = entities.find((item) =>
         item.attrs.area_id === areaId && item.attrs.adaptive_robovacs_role === "room_schedule"
       );
-      const title = schedule?.attrs?.room || areaId;
-      cards.push(this._section(title, entityIds));
+      cards.push(this._section(schedule?.attrs?.room || areaId, entityIds));
     });
     return { type: "vertical-stack", cards: cards.filter(Boolean) };
   }

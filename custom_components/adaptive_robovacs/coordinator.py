@@ -580,7 +580,7 @@ class AdaptiveRoboVacCoordinator:
             await self.hass.services.async_call(
                 "vacuum",
                 "clean_area",
-                {"entity_id": robot.entity_id, "cleaning_area_id": [room.area_id]},
+                {"entity_id": robot.entity_id, "area_id": [room.area_id]},
                 blocking=True,
             )
         except Exception as err:  # ServiceValidationError varies between HA versions.
