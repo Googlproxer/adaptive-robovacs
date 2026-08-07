@@ -1,0 +1,7 @@
+title: Adaptive RoboVacs
+views:
+  - title: Robovacs
+    path: robovacs
+    icon: mdi:robot-vacuum
+    cards:
+      - type: custom:adaptive-robovacs-dashboard

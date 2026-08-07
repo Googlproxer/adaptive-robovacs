@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Adaptive RoboVacs",
+        "description": "Starts in observe-only mode. Configure area labels and native vacuum segment mappings before enabling dispatch.",
+        "data": {
+          "observe_only": "Observe-only mode",
+          "forecast_confidence": "Forecast confidence (%)",
+          "hall_start": "Bedroom-transit start time",
+          "hall_end": "Bedroom-transit end time"
+        }
+      }
+    }
+  }
+}

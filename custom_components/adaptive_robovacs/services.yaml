@@ -1,0 +1,33 @@
+evaluate:
+  name: Evaluate schedule
+  description: Builds the current schedule and, unless dry run is selected, dispatches eligible work when observe-only and Party Mode are off.
+  fields:
+    dry_run:
+      name: Dry run
+      description: Build a non-dispatching schedule preview.
+      selector:
+        boolean:
+record_manual_clean:
+  name: Record manual clean
+  description: Defers known area work due in the next 24 hours by one day.
+  fields:
+    robot_entity_id:
+      required: true
+      selector:
+        entity:
+          domain: vacuum
+    area_ids:
+      required: true
+      selector:
+        area:
+          multiple: true
+    operations:
+      selector:
+        select:
+          multiple: true
+          options:
+            - vacuum
+            - mop
+decommission_report:
+  name: Legacy decommission inventory
+  description: Produces a read-only inventory of Pyscript scheduler entities and external references. It never deletes anything.

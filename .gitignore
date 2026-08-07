@@ -1,0 +1,31 @@
+# Home Assistant runtime and private deployment data
+.storage/
+*.db
+*.db-*
+*.log
+backups/
+*.tar
+*.tar.*
+*.zip
+secrets.yaml
+.env
+.env.*
+
+# Legacy deployment remains available locally for rollback only
+pyscript/
+ha-config/
+PLAN.md
+
+# Local development artefacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.venv/
+.legacy/
+
+# Editor and operating system artefacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
