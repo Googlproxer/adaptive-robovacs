@@ -42,6 +42,7 @@ class AdaptiveRoboVacsDashboard extends HTMLElement {
 
   _configuration() {
     const entities = this._entities();
+    const hiddenAreaIds = new Set(this._config.hidden_area_ids || []);
     const byRole = (role) => entities
       .filter((item) => item.attrs.adaptive_robovacs_role === role)
       .map((item) => item.entity_id);
@@ -69,6 +70,7 @@ class AdaptiveRoboVacsDashboard extends HTMLElement {
       cards.push(this._section(state?.attributes?.friendly_name || robot, entityIds));
     });
     rooms.forEach((entityIds, areaId) => {
+      if (hiddenAreaIds.has(areaId)) return;
       const schedule = entities.find((item) =>
         item.attrs.area_id === areaId && item.attrs.adaptive_robovacs_role === "room_schedule"
       );

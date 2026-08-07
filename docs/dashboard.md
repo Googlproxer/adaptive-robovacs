@@ -14,6 +14,17 @@ Then create a dashboard from `dashboard/example-dashboard.yaml`:
 type: custom:adaptive-robovacs-dashboard
 ```
 
+To keep unmapped areas out of a particular dashboard, optionally pass their
+Home Assistant area IDs. This affects presentation only; disable those rooms'
+scheduler switches as well so they cannot be scheduled:
+
+```yaml
+type: custom:adaptive-robovacs-dashboard
+hidden_area_ids:
+  - laundry
+  - garage
+```
+
 The card discovers Adaptive RoboVacs entities through their integration
 attributes. It therefore updates as a room, vacuum, or supported robot control
 appears. It presents Party Mode and observe-only state, active robot activity,

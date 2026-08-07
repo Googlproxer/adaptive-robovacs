@@ -43,6 +43,21 @@ class AdaptiveEntity(Entity):
 
     @callback
     def _handle_update(self) -> None:
+        """Publish a state change while the discovered object still exists.
+
+        Discovery is live: applying an exclusion label can remove a room while
+        its existing platform entities are still registered for this runtime.
+        Those stale entities must not call back into ``room_state`` or
+        ``robot_state`` until Home Assistant reloads the platform.
+        """
+
+        if self._area_id and self._area_id not in self.coordinator.discovery.rooms:
+            return
+        if (
+            self._robot_entity_id
+            and self._robot_entity_id not in self.coordinator.discovery.robots
+        ):
+            return
         self.async_write_ha_state()
 
     @property
