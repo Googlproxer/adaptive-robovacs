@@ -25,6 +25,39 @@ Each job records:
 
 The stored expected duration must not be changed by later dashboard edits.
 
+## Adaptive duration learning
+
+The configured expected duration is an initial prior, not a permanent truth.
+The effective duration used for vacancy planning should learn from completed,
+room-targeted jobs over time while keeping the user-configured value visible and
+unchanged as a fallback.
+
+1. Discover an optional duration-class `sensor` on the same device as each
+   robot when its metadata identifies it as cleaning time. Do not hard-code a
+   vendor entity ID.
+2. Capture the timer value at job start and when the robot leaves the cleaning
+   phase. Prefer the resulting robot-reported duration when it is plausible;
+   otherwise use the observed cleaning-to-returning interval as a lower-quality
+   sample.
+3. Store bounded, high-confidence samples per room, operation, robot profile,
+   and pass count. A vacuum-only clean, vacuum-and-mop clean, and double-pass
+   clean must not train one another's estimates.
+4. Do not train on a completion recovered solely from the persisted expected
+   end time: that estimate is for continuity after an outage, not new evidence.
+5. Until a room has at least three valid samples, keep using the configured
+   duration. Thereafter use a robust upper percentile of recent samples (for
+   example P80), with outlier rejection and gradual adjustment. This favours a
+   room being clear for long enough over an optimistic average.
+6. Calculate the vacancy requirement from the learned effective duration plus
+   the existing clear-time safety margin. Save the effective duration snapshot
+   in each job checkpoint, so a later setting change or newly learned sample
+   cannot alter an already running job's expected end.
+
+Expose the learned duration, sample count, sample source, and confidence as
+room-sensor attributes. The dashboard may show them as secondary detail, but
+the concise **Next Clean** state remains unchanged except for **`In Progress`**
+while a job is active.
+
 ## Lifecycle and recovery
 
 1. Save the dispatching checkpoint before calling the vacuum service.
@@ -74,6 +107,11 @@ Add automated lifecycle tests for:
 - normal online completion using the actual state-transition time;
 - recovered completion using the expected end rather than reconnect time;
 - telemetry-confirmed and unconfirmed recovery paths;
+- duration-sensor discovery, timer-delta capture, fallback state-duration
+  capture, outlier rejection, and operation/pass-count separation;
+- fallback-to-configured duration before three samples, robust learned-duration
+  selection after sufficient samples, and exclusion of recovered estimates from
+  training;
 - no duplicate scheduling while a checkpoint is active;
 - **`In Progress`** before, during, and after restart recovery; and
 - native-app starts remaining outside room-level tracking.
