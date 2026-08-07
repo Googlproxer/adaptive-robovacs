@@ -23,7 +23,13 @@ class LifecycleContractTests(unittest.TestCase):
         source = COORDINATOR_PATH.read_text(encoding="utf-8")
         self.assertIn('confidence == "observed"', source)
         self.assertIn('"robot": robot_id', source)
-        self.assertIn('"robot_timer" if active.get("timer_start") is not None else "state_transition"', source)
+        self.assertIn('active.get("duration_source", "state_transition")', source)
+
+    def test_live_native_transition_wins_over_a_recovery_estimate(self) -> None:
+        source = COORDINATOR_PATH.read_text(encoding="utf-8")
+        self.assertIn("async_track_point_in_utc_time", source)
+        self.assertIn("recovery_transition_is_observed", source)
+        self.assertIn("transition=transition", source)
 
     def test_room_status_is_in_progress_for_an_active_room(self) -> None:
         source = SENSOR_PATH.read_text(encoding="utf-8")
@@ -31,6 +37,8 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('"expected_end_at"', source)
         self.assertIn('if state["active"] else None', source)
         self.assertIn('"learned_duration_minutes"', source)
+        self.assertIn('return "Completion pending"', source)
+        self.assertIn('return state["state"]', source)
 
     def test_cleaning_timer_is_discovered_from_the_robot_device(self) -> None:
         source = DISCOVERY_PATH.read_text(encoding="utf-8")

@@ -53,7 +53,7 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         state = self.coordinator.robot_state(self.robot_entity_id)
-        return "cleaning" if state["active"] else state["state"]
+        return state["state"]
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -81,6 +81,10 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
     def native_value(self) -> str:
         state = self.coordinator.room_state(self.area_id)
         if state["active"]:
+            if state["active"].get("phase") == "recovery_waiting":
+                return "Completion pending"
+            if state["active_robot_state"] == "returning":
+                return "Returning"
             return "In Progress"
         candidate = state["next_candidate"]
         if candidate:
@@ -111,15 +115,10 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "map_error": state["map_error"],
             "block_reason": state["block_reason"],
             "active_job_source": state["active"].get("source") if state["active"] else None,
-            "active_robot": (
-                next(
-                    (robot_id for robot_id, job in self.coordinator.data["active"].items() if job is state["active"]),
-                    None,
-                )
-                if state["active"]
-                else None
-            ),
+            "active_robot": state["active_robot"],
+            "active_robot_state": state["active_robot_state"],
             "active_operation": state["active"].get("operation") if state["active"] else None,
+            "active_phase": state["active"].get("phase") if state["active"] else None,
             "active_started_at": state["active"].get("observed_started") if state["active"] else None,
             "expected_end_at": state["active"].get("expected_end") if state["active"] else None,
             "active_completion_confidence": state["active"].get("completion_confidence") if state["active"] else None,

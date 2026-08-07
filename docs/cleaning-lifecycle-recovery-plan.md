@@ -12,9 +12,14 @@ Home Assistant room cleans.
 
 ## Implementation status
 
-Implemented in integration version 1.0.2. Scheduler-started jobs now use the
+Implemented in integration version 1.0.3. Scheduler-started jobs now use the
 durable lifecycle below; manual Home Assistant clean tracking remains the
 separate follow-up described in `manual-ha-clean-tracking-plan.md`.
+
+Native robot state takes priority over a stored estimate whenever Home
+Assistant observes a fresh `cleaning` to `returning`/`docked` transition after
+restart.  The estimate remains the timestamp fallback only when the clean
+finished while Home Assistant was offline and no live transition is available.
 
 ## Durable job checkpoint
 
@@ -87,9 +92,12 @@ while a job is active.
 
 ## Next Clean status
 
-While any active tracked job includes a room, that room's **Next Clean** sensor
-state must be exactly **`In Progress`**. This applies to scheduler jobs and
-future tracked manual Home Assistant jobs, including after a restart.
+While a tracked job's robot reports **`cleaning`**, that room's **Next Clean**
+sensor state must be exactly **`In Progress`**. This applies to scheduler jobs
+and future tracked manual Home Assistant jobs, including after a restart. If a
+restart has left only an unobserved completion to reconcile, show
+**`Completion pending`** rather than claiming the room is still being cleaned;
+the robot-status sensor continues to show the native robot state.
 
 The sensor attributes should retain enough detail for the dashboard without
 changing the concise status text:

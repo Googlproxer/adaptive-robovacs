@@ -111,5 +111,31 @@ class CadenceTests(unittest.TestCase):
         self.assertEqual(samples, 3)
 
 
+class RecoveryTransitionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.recovered_at = datetime(2026, 8, 8, 12, 0)
+
+    def test_live_returning_transition_after_recovery_is_authoritative(self) -> None:
+        self.assertTrue(
+            models.recovery_transition_is_observed(
+                "cleaning", "returning", self.recovered_at + timedelta(minutes=2), self.recovered_at
+            )
+        )
+
+    def test_state_snapshot_without_a_cleaning_or_returning_origin_is_not_authoritative(self) -> None:
+        self.assertFalse(
+            models.recovery_transition_is_observed(
+                "unavailable", "docked", self.recovered_at + timedelta(minutes=2), self.recovered_at
+            )
+        )
+
+    def test_transition_from_before_recovery_remains_an_offline_completion(self) -> None:
+        self.assertFalse(
+            models.recovery_transition_is_observed(
+                "cleaning", "docked", self.recovered_at - timedelta(seconds=1), self.recovered_at
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

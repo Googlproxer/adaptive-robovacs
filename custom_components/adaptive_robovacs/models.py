@@ -44,6 +44,30 @@ class Candidate:
     reason: str
 
 
+def recovery_transition_is_observed(
+    old_state: str | None,
+    new_state: str | None,
+    transition_at: datetime | None,
+    recovered_at: datetime | None,
+) -> bool:
+    """Return whether a live post-restart transition proves a completion.
+
+    Home Assistant can learn a robot's *current* state while starting without
+    knowing when that state changed.  That snapshot is not enough to replace a
+    stored expected end time.  A transition delivered after recovery, however,
+    is a contemporaneous observation and is therefore the authoritative end of
+    the cleaning phase.
+    """
+
+    return bool(
+        transition_at
+        and recovered_at
+        and transition_at >= recovered_at
+        and old_state in {"cleaning", "returning"}
+        and new_state in {"returning", "docked", "idle"}
+    )
+
+
 def resolve_occupancy(
     radar_states: Iterable[str | None], fallback_states: Iterable[str | None]
 ) -> OccupancyResolution:

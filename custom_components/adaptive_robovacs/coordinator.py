@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
@@ -52,6 +52,7 @@ from .models import (
     in_daytime_window,
     learned_duration_minutes,
     manual_deferral,
+    recovery_transition_is_observed,
     resolve_occupancy,
     select_operation,
     unresolved_occupancy_allowed,
@@ -139,6 +140,7 @@ class AdaptiveRoboVacCoordinator:
         self._unsubscribers: list[Callable[[], None]] = []
         self._listeners: set[EntityListener] = set()
         self._watch_entity_ids: set[str] = set()
+        self._recovery_timers: dict[str, Callable[[], None]] = {}
 
     async def async_initialize(self) -> None:
         """Restore state, discover the house, and begin passive observation."""
@@ -173,6 +175,8 @@ class AdaptiveRoboVacCoordinator:
         """Persist and remove event listeners."""
 
         await self._async_save()
+        while self._recovery_timers:
+            self._recovery_timers.popitem()[1]()
         while self._unsubscribers:
             self._unsubscribers.pop()()
 
@@ -415,23 +419,23 @@ class AdaptiveRoboVacCoordinator:
                     else:
                         # Do not turn a reconnect into an artificially late (or future)
                         # completion.  The reconciliation loop will complete at expected_end.
-                        active["phase"] = "recovery_waiting"
+                        self._set_recovery_waiting(entity_id, active, now)
                 else:
                     active["phase"] = "cleaning"
+                    self._cancel_recovery_timer(entity_id)
                 continue
             expected_end = _as_datetime(active.get("expected_end"))
             if active.get("seen_cleaning") and state and state.state in {"docked", "idle"}:
                 if expected_end and now >= expected_end:
                     self._complete_job(entity_id, active, expected_end, "recovered_expected_end")
                 else:
-                    active["phase"] = "recovery_waiting"
-                    active["recovered_at"] = _iso(now)
+                    self._set_recovery_waiting(entity_id, active, now)
                 continue
             if state is None or state.state in {"unavailable", "unknown"}:
-                active["phase"] = "recovery_waiting"
-                active["recovered_at"] = _iso(now)
+                self._set_recovery_waiting(entity_id, active, now)
                 continue
             self.data["active"][entity_id] = None
+            self._cancel_recovery_timer(entity_id)
             self.data["recovery_events"].append({"robot": entity_id, "at": _iso(now), "reason": "unconfirmed checkpoint"})
         self.data["recovery_events"] = self.data["recovery_events"][-20:]
         await self._async_save()
@@ -448,6 +452,45 @@ class AdaptiveRoboVacCoordinator:
             started = _as_datetime(active.get("observed_started") or active.get("accepted_at") or active.get("started")) or now
             active["expected_end"] = _iso(started + timedelta(minutes=float(active["expected_minutes"])))
 
+    def _set_recovery_waiting(
+        self, robot_id: str, active: dict[str, Any], recovered_at: datetime
+    ) -> None:
+        """Keep an offline completion pending until a live transition or saved end."""
+
+        active["phase"] = "recovery_waiting"
+        active["recovered_at"] = _iso(recovered_at)
+        expected_end = _as_datetime(active.get("expected_end"))
+        if expected_end:
+            self._schedule_recovery_completion(robot_id, expected_end)
+
+    def _cancel_recovery_timer(self, robot_id: str) -> None:
+        """Remove an exact expected-end callback when live state supersedes it."""
+
+        unsubscribe = self._recovery_timers.pop(robot_id, None)
+        if unsubscribe:
+            unsubscribe()
+
+    def _schedule_recovery_completion(self, robot_id: str, expected_end: datetime) -> None:
+        """Reconcile an unobserved completion exactly at its persisted end time."""
+
+        self._cancel_recovery_timer(robot_id)
+        if expected_end <= _now():
+            self.hass.async_create_task(
+                self.async_evaluate(dry_run=False, reason=f"recovery-end:{robot_id}")
+            )
+            return
+
+        @callback
+        def reconcile_at_expected_end(_when: datetime) -> None:
+            self._recovery_timers.pop(robot_id, None)
+            self.hass.async_create_task(
+                self.async_evaluate(dry_run=False, reason=f"recovery-end:{robot_id}")
+            )
+
+        self._recovery_timers[robot_id] = async_track_point_in_utc_time(
+            self.hass, reconcile_at_expected_end, expected_end
+        )
+
     @callback
     def _on_home_assistant_started(self, _event: Event) -> None:
         self.hass.async_create_task(self.async_evaluate(dry_run=True, reason="ha_started"))
@@ -456,7 +499,23 @@ class AdaptiveRoboVacCoordinator:
     def _on_state_changed(self, event: Event) -> None:
         entity_id = event.data.get("entity_id")
         if entity_id in self._watch_entity_ids:
-            self.hass.async_create_task(self.async_evaluate(dry_run=False, reason=f"state:{entity_id}"))
+            old_state = event.data.get("old_state")
+            new_state = event.data.get("new_state")
+            transition = (
+                {
+                    "robot": entity_id,
+                    "from": old_state.state if old_state else None,
+                    "to": new_state.state if new_state else None,
+                    "at": _iso(new_state.last_changed) if new_state else None,
+                }
+                if entity_id in self.discovery.robots
+                else None
+            )
+            self.hass.async_create_task(
+                self.async_evaluate(
+                    dry_run=False, reason=f"state:{entity_id}", transition=transition
+                )
+            )
 
     async def _async_interval(self, _now_value: datetime) -> None:
         await self.async_evaluate(dry_run=False, reason="interval")
@@ -730,7 +789,9 @@ class AdaptiveRoboVacCoordinator:
         await self._async_save()
         return True, f"dispatched {room.name}"
 
-    async def _async_reconcile_jobs(self, now: datetime) -> None:
+    async def _async_reconcile_jobs(
+        self, now: datetime, transition: dict[str, Any] | None = None
+    ) -> None:
         """Persist completion only after an accepted command has actually cleaned."""
 
         changed = False
@@ -739,6 +800,29 @@ class AdaptiveRoboVacCoordinator:
                 continue
             state = self.hass.states.get(robot_id)
             state_text = state.state if state else "unavailable"
+            recovered_at = _as_datetime(active.get("recovered_at"))
+            transition_at = _as_datetime(transition.get("at")) if transition else None
+            live_recovery_transition = bool(
+                active.get("phase") == "recovery_waiting"
+                and transition
+                and transition.get("robot") == robot_id
+                and recovery_transition_is_observed(
+                    transition.get("from"),
+                    transition.get("to"),
+                    transition_at,
+                    recovered_at,
+                )
+            )
+            if live_recovery_transition and transition_at:
+                self._cancel_recovery_timer(robot_id)
+                if transition["to"] == "returning":
+                    self._mark_observed_completion(robot_id, active, transition_at)
+                    active["phase"] = "returning"
+                else:
+                    self._mark_observed_completion(robot_id, active, transition_at)
+                    self._complete_job(robot_id, active, transition_at, "observed")
+                changed = True
+                continue
             if state_text == "cleaning":
                 if not active.get("seen_cleaning"):
                     observed_start = state.last_changed if state else now
@@ -751,6 +835,7 @@ class AdaptiveRoboVacCoordinator:
                         active["timer_start"] = timer
                 active["seen_cleaning"] = True
                 active["phase"] = "cleaning"
+                self._cancel_recovery_timer(robot_id)
                 changed = True
                 continue
             if active.get("seen_cleaning") and state_text == "returning":
@@ -763,10 +848,11 @@ class AdaptiveRoboVacCoordinator:
                         changed = True
                     continue
                 if not active.get("cleaning_finished"):
-                    active["cleaning_finished"] = _iso(state.last_changed if state else now)
-                    active["measured_minutes"] = self._measured_duration_minutes(robot_id, active)
-                    active["completion_confidence"] = "observed"
+                    self._mark_observed_completion(
+                        robot_id, active, state.last_changed if state else now
+                    )
                 active["phase"] = "returning"
+                self._cancel_recovery_timer(robot_id)
                 changed = True
                 continue
             if active.get("seen_cleaning") and state_text in {"docked", "idle"}:
@@ -796,6 +882,15 @@ class AdaptiveRoboVacCoordinator:
         if changed:
             await self._async_save()
 
+    def _mark_observed_completion(
+        self, robot_id: str, active: dict[str, Any], completion: datetime
+    ) -> None:
+        """Record a completion from a native state transition and learn from it."""
+
+        active["cleaning_finished"] = _iso(completion)
+        active["measured_minutes"] = self._measured_duration_minutes(robot_id, active)
+        active["completion_confidence"] = "observed"
+
     def _cleaning_timer_minutes(self, robot_id: str) -> float | None:
         robot = self.discovery.robots.get(robot_id)
         entity_id = robot.profile.cleaning_time_entity_id if robot else None
@@ -815,10 +910,12 @@ class AdaptiveRoboVacCoordinator:
         timer = self._cleaning_timer_minutes(robot_id)
         timer_start = active.get("timer_start")
         if timer is not None and timer_start is not None and timer >= float(timer_start):
+            active["duration_source"] = "robot_timer"
             return timer - float(timer_start)
         started = _as_datetime(active.get("observed_started"))
         finished = _as_datetime(active.get("cleaning_finished"))
         if started and finished:
+            active["duration_source"] = "state_transition"
             return (finished - started).total_seconds() / 60
         return None
 
@@ -837,7 +934,7 @@ class AdaptiveRoboVacCoordinator:
                     "operation": operation,
                     "passes": int(active.get("passes", 1)),
                     "robot": robot_id,
-                    "source": "robot_timer" if active.get("timer_start") is not None else "state_transition",
+                    "source": active.get("duration_source", "state_transition"),
                     "at": _iso(completion),
                 }
             )
@@ -845,15 +942,21 @@ class AdaptiveRoboVacCoordinator:
         self.data["recovery_events"].append({"robot": robot_id, "room": active["room"], "at": _iso(completion), "reason": confidence})
         self.data["recovery_events"] = self.data["recovery_events"][-20:]
         self.data["active"][robot_id] = None
+        self._cancel_recovery_timer(robot_id)
 
-    async def async_evaluate(self, dry_run: bool = False, reason: str = "manual") -> dict[str, Any]:
+    async def async_evaluate(
+        self,
+        dry_run: bool = False,
+        reason: str = "manual",
+        transition: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Refresh state, publish a safe preview, and optionally dispatch work."""
 
         async with self._lock:
             now = _now()
             await self.async_refresh_discovery()
             self._observe_occupancy(now)
-            await self._async_reconcile_jobs(now)
+            await self._async_reconcile_jobs(now, transition)
             candidates: list[dict[str, Any]] = []
             reasons: dict[str, str] = {}
             for room in self.discovery.rooms.values():
@@ -1032,6 +1135,11 @@ class AdaptiveRoboVacCoordinator:
             ((robot_id, job) for robot_id, job in self.data["active"].items() if job and job.get("room") == area_id),
             (None, None),
         )
+        active_robot_state = (
+            self.hass.states.get(active_robot_id).state
+            if active_robot_id and self.hass.states.get(active_robot_id)
+            else None
+        )
         duration_operation = (
             active["operation"] if active else candidate["operation"] if candidate else "vacuum"
         )
@@ -1062,6 +1170,8 @@ class AdaptiveRoboVacCoordinator:
             "mop_due": mop_due,
             "next_candidate": candidate,
             "active": active,
+            "active_robot": active_robot_id,
+            "active_robot_state": active_robot_state,
             "effective_duration_minutes": duration_minutes,
             "duration_sample_count": duration_sample_count,
             "block_reason": reason,
