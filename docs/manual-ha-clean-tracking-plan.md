@@ -6,6 +6,9 @@ Record a manual clean when a user starts `vacuum.clean_area` from Home
 Assistant for one of the integration's managed robots and mapped areas. Keep
 native-app detection explicitly out of scope.
 
+This work depends on the shared
+[durable cleaning lifecycle and restart-recovery plan](cleaning-lifecycle-recovery-plan.md).
+
 ## Scope and rules
 
 - Accept only `vacuum.clean_area` calls with a Home Assistant user context,
