@@ -9,6 +9,18 @@ native-app detection explicitly out of scope.
 This work depends on the shared
 [durable cleaning lifecycle and restart-recovery plan](cleaning-lifecycle-recovery-plan.md).
 
+## Implementation status
+
+Implemented in integration version 1.0.4. A direct user action in Home
+Assistant that calls `vacuum.clean_area` for one managed robot and one or more
+discovered areas is tracked as `manual_home_assistant`. Native-app starts,
+automations without a user context, and whole-home cleans remain untracked.
+
+Manual jobs do not change the robot's configured cleaning profile or update a
+room's normal last-cleaned cadence. Once a tracked job has actually cleaned and
+completed, only its vacuum schedule is deferred by one day when it was due
+within the following 24 hours.
+
 ## Scope and rules
 
 - Accept only `vacuum.clean_area` calls with a Home Assistant user context,

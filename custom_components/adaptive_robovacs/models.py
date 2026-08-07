@@ -44,6 +44,55 @@ class Candidate:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class ManualCleanRequest:
+    """A room-targeted clean explicitly initiated by a Home Assistant user."""
+
+    robot_id: str
+    area_ids: list[str]
+
+
+def parse_manual_clean_request(
+    domain: str,
+    service: str,
+    user_id: str | None,
+    service_data: Mapping[str, object],
+    managed_robot_ids: Iterable[str],
+    managed_area_ids: Iterable[str],
+) -> ManualCleanRequest | None:
+    """Return only an unambiguous, user-initiated HA room-clean request.
+
+    Native-app starts do not produce a Home Assistant call-service event with a
+    user context, and whole-home ``vacuum.start`` calls never identify a room.
+    Both deliberately remain outside scheduler tracking.
+    """
+
+    if domain != "vacuum" or service != "clean_area" or not user_id:
+        return None
+
+    target = service_data.get("target")
+    target_data = target if isinstance(target, Mapping) else {}
+    raw_robot_ids = service_data.get("entity_id", target_data.get("entity_id"))
+    raw_area_ids = service_data.get("cleaning_area_id")
+
+    def identifiers(value: object) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple, set)):
+            return [item for item in value if isinstance(item, str)]
+        return []
+
+    robot_ids = identifiers(raw_robot_ids)
+    area_ids = list(dict.fromkeys(identifiers(raw_area_ids)))
+    managed_robots = set(managed_robot_ids)
+    managed_areas = set(managed_area_ids)
+    if len(robot_ids) != 1 or robot_ids[0] not in managed_robots:
+        return None
+    if not area_ids or any(area_id not in managed_areas for area_id in area_ids):
+        return None
+    return ManualCleanRequest(robot_ids[0], area_ids)
+
+
 def recovery_transition_is_observed(
     old_state: str | None,
     new_state: str | None,

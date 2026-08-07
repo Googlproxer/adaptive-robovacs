@@ -66,6 +66,8 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             "reason": state["reason"],
             "activity": state["active"],
             "room": state["active_room"],
+            "rooms": state["active_rooms"],
+            "activity_source": state["active"].get("source") if state["active"] else None,
             "cleaning_mode": state["settings"].get("mode"),
             "double_pass": state["settings"].get("double_pass"),
             "mopping_enabled": state["settings"].get("mopping_enabled"),

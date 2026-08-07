@@ -10,7 +10,7 @@ import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_STATE_CHANGED
+from homeassistant.const import EVENT_CALL_SERVICE, EVENT_HOMEASSISTANT_STARTED, EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_time_interval
@@ -52,6 +52,7 @@ from .models import (
     in_daytime_window,
     learned_duration_minutes,
     manual_deferral,
+    parse_manual_clean_request,
     recovery_transition_is_observed,
     resolve_occupancy,
     select_operation,
@@ -163,6 +164,7 @@ class AdaptiveRoboVacCoordinator:
         self._unsubscribers.extend(
             [
                 async_track_time_interval(self.hass, self._async_interval, timedelta(minutes=15)),
+                self.hass.bus.async_listen(EVENT_CALL_SERVICE, self._on_call_service),
                 self.hass.bus.async_listen(EVENT_STATE_CHANGED, self._on_state_changed),
                 self.hass.bus.async_listen_once(
                     EVENT_HOMEASSISTANT_STARTED, self._on_home_assistant_started
@@ -443,14 +445,29 @@ class AdaptiveRoboVacCoordinator:
     def _normalise_active_job(self, active: dict[str, Any], now: datetime) -> None:
         """Backfill lifecycle fields for checkpoints written by older releases."""
 
-        room = self.discovery.rooms.get(active.get("room"))
-        fallback = float(self._room_settings(room)["expected_minutes"]) if room else DEFAULT_EXPECTED_MINUTES
+        area_ids = self._active_rooms(active)
+        if area_ids:
+            active["room"] = area_ids[0]
+            active.setdefault("rooms", area_ids)
+        rooms = [self.discovery.rooms[area_id] for area_id in area_ids if area_id in self.discovery.rooms]
+        if active.get("source") == "manual_home_assistant":
+            fallback = sum(float(self._room_settings(room)["expected_minutes"]) for room in rooms) or DEFAULT_EXPECTED_MINUTES
+        else:
+            fallback = float(self._room_settings(rooms[0])["expected_minutes"]) if rooms else DEFAULT_EXPECTED_MINUTES
         active.setdefault("source", "scheduler")
         active.setdefault("passes", 1)
         active.setdefault("expected_minutes", fallback)
         if not active.get("expected_end"):
             started = _as_datetime(active.get("observed_started") or active.get("accepted_at") or active.get("started")) or now
             active["expected_end"] = _iso(started + timedelta(minutes=float(active["expected_minutes"])))
+
+    def _active_rooms(self, active: dict[str, Any]) -> list[str]:
+        """Return a job's tracked rooms, retaining compatibility with v1.0.x."""
+
+        values = active.get("rooms") or [active.get("room")]
+        if not isinstance(values, list):
+            values = [values]
+        return list(dict.fromkeys(value for value in values if isinstance(value, str)))
 
     def _set_recovery_waiting(
         self, robot_id: str, active: dict[str, Any], recovered_at: datetime
@@ -494,6 +511,89 @@ class AdaptiveRoboVacCoordinator:
     @callback
     def _on_home_assistant_started(self, _event: Event) -> None:
         self.hass.async_create_task(self.async_evaluate(dry_run=True, reason="ha_started"))
+
+    @callback
+    def _on_call_service(self, event: Event) -> None:
+        """Capture only user-initiated, room-targeted HA clean requests."""
+
+        if event.data.get("domain") != "vacuum" or event.data.get("service") != "clean_area":
+            return
+        self.hass.async_create_task(self._async_track_manual_service_call(event))
+
+    async def _async_track_manual_service_call(self, event: Event) -> None:
+        """Persist a manual checkpoint before the vacuum service begins work."""
+
+        request = parse_manual_clean_request(
+            str(event.data.get("domain")),
+            str(event.data.get("service")),
+            event.context.user_id,
+            event.data.get("service_data", {}),
+            self.discovery.robots,
+            self.discovery.rooms,
+        )
+        if request is None:
+            return
+
+        async with self._lock:
+            robot = self.discovery.robots.get(request.robot_id)
+            rooms = [self.discovery.rooms.get(area_id) for area_id in request.area_ids]
+            if robot is None or any(room is None for room in rooms):
+                return
+            existing = self.data["active"].get(request.robot_id)
+            if existing:
+                reason = (
+                    "scheduler job already active"
+                    if existing.get("source") == "scheduler"
+                    else "manual job already active"
+                )
+                self._record_manual_event(
+                    {
+                        "at": _iso(_now()),
+                        "robot": request.robot_id,
+                        "rooms": request.area_ids,
+                        "context_id": event.context.id,
+                        "outcome": "ignored",
+                        "reason": reason,
+                    }
+                )
+                await self._async_save()
+                return
+
+            expected_minutes = sum(
+                self._effective_duration(room, "vacuum", 1, request.robot_id)[0]
+                for room in rooms
+                if room is not None
+            )
+            now = _now()
+            self.data["active"][request.robot_id] = {
+                "room": request.area_ids[0],
+                "rooms": request.area_ids,
+                "operation": "vacuum",
+                "requested_operations": ["vacuum"],
+                "started": _iso(now),
+                "seen_cleaning": False,
+                "phase": "manual_requested",
+                "source": "manual_home_assistant",
+                "manual_context_id": event.context.id,
+                "expected_minutes": expected_minutes,
+                "expected_end": _iso(now + timedelta(minutes=expected_minutes)),
+                "passes": 1,
+            }
+            self._record_manual_event(
+                {
+                    "at": _iso(now),
+                    "robot": request.robot_id,
+                    "rooms": request.area_ids,
+                    "operations": ["vacuum"],
+                    "context_id": event.context.id,
+                    "outcome": "requested",
+                }
+            )
+            await self._async_save()
+            self._notify_listeners()
+            self.hass.async_create_task(
+                self.async_evaluate(dry_run=True, reason=f"manual-ha:{request.robot_id}")
+            )
 
     @callback
     def _on_state_changed(self, event: Event) -> None:
@@ -874,10 +974,22 @@ class AdaptiveRoboVacCoordinator:
                 and started
                 and now - started > timedelta(minutes=10)
             ):
-                detail = self._room_data(active["room"])
-                detail["map_status"] = "unmapped"
-                detail["map_error"] = "vacuum did not enter cleaning after command"
+                if active.get("source") == "manual_home_assistant":
+                    self._record_manual_event(
+                        {
+                            "at": _iso(now),
+                            "robot": robot_id,
+                            "rooms": self._active_rooms(active),
+                            "context_id": active.get("manual_context_id"),
+                            "outcome": "not_started_or_cancelled",
+                        }
+                    )
+                else:
+                    detail = self._room_data(active["room"])
+                    detail["map_status"] = "unmapped"
+                    detail["map_error"] = "vacuum did not enter cleaning after command"
                 self.data["active"][robot_id] = None
+                self._cancel_recovery_timer(robot_id)
                 changed = True
         if changed:
             await self._async_save()
@@ -920,14 +1032,41 @@ class AdaptiveRoboVacCoordinator:
         return None
 
     def _complete_job(self, robot_id: str, active: dict[str, Any], completion: datetime, confidence: str) -> None:
-        detail = self._room_data(active["room"])
+        area_ids = self._active_rooms(active)
         operation = active["operation"]
-        if operation in {"vacuum", "vac_and_mop"}:
-            detail["vacuum"] = _iso(completion)
-        if operation in {"mop", "vac_and_mop"}:
-            detail["mop"] = _iso(completion)
+        if active.get("source") == "manual_home_assistant":
+            changed = self._apply_manual_deferral(
+                robot_id,
+                area_ids,
+                list(active.get("requested_operations", ["vacuum"])),
+                completion,
+            )
+            self._record_manual_event(
+                {
+                    "at": _iso(completion),
+                    "robot": robot_id,
+                    "rooms": area_ids,
+                    "operations": list(active.get("requested_operations", ["vacuum"])),
+                    "context_id": active.get("manual_context_id"),
+                    "outcome": "completed",
+                    "confidence": confidence,
+                    "deferred": changed,
+                }
+            )
+        else:
+            detail = self._room_data(active["room"])
+            if operation in {"vacuum", "vac_and_mop"}:
+                detail["vacuum"] = _iso(completion)
+            if operation in {"mop", "vac_and_mop"}:
+                detail["mop"] = _iso(completion)
         measured = active.get("measured_minutes")
-        if confidence == "observed" and isinstance(measured, (float, int)) and measured > 0:
+        if (
+            active.get("source") == "scheduler"
+            and confidence == "observed"
+            and isinstance(measured, (float, int))
+            and measured > 0
+        ):
+            detail = self._room_data(active["room"])
             detail.setdefault("duration_samples", []).append(
                 {
                     "minutes": float(measured),
@@ -939,10 +1078,52 @@ class AdaptiveRoboVacCoordinator:
                 }
             )
             detail["duration_samples"] = detail["duration_samples"][-50:]
-        self.data["recovery_events"].append({"robot": robot_id, "room": active["room"], "at": _iso(completion), "reason": confidence})
+        self.data["recovery_events"].append(
+            {
+                "robot": robot_id,
+                "rooms": area_ids,
+                "at": _iso(completion),
+                "reason": confidence,
+            }
+        )
         self.data["recovery_events"] = self.data["recovery_events"][-20:]
         self.data["active"][robot_id] = None
         self._cancel_recovery_timer(robot_id)
+
+    def _apply_manual_deferral(
+        self,
+        robot_entity_id: str,
+        area_ids: list[str],
+        operations: list[str],
+        completed_at: datetime,
+    ) -> list[str]:
+        """Apply the narrow, one-day manual-clean deferral policy."""
+
+        changed: list[str] = []
+        if robot_entity_id not in self.discovery.robots:
+            return changed
+        for area_id in area_ids:
+            room = self.discovery.rooms.get(area_id)
+            if not room:
+                continue
+            detail = self._room_data(area_id)
+            for operation in operations:
+                if operation not in {"vacuum", "mop"}:
+                    continue
+                if operation == "mop" and self._room_settings(room).get("carpet", False):
+                    continue
+                next_due = self._room_due(room, operation, completed_at)
+                deferred = manual_deferral(completed_at, next_due)
+                if deferred:
+                    detail.setdefault("defer", {})[operation] = _iso(deferred)
+                    changed.append(f"{area_id}:{operation}")
+        return changed
+
+    def _record_manual_event(self, event: dict[str, Any]) -> None:
+        """Retain a bounded audit trail without changing normal cadence."""
+
+        self.data["manual_events"].append(event)
+        self.data["manual_events"] = self.data["manual_events"][-50:]
 
     async def async_evaluate(
         self,
@@ -1068,32 +1249,10 @@ class AdaptiveRoboVacCoordinator:
         """Apply one-day deferrals only to known rooms due within 24 hours."""
 
         now = _now()
-        changed: list[str] = []
-        for area_id in area_ids:
-            room = self.discovery.rooms.get(area_id)
-            if not room:
-                continue
-            if robot_entity_id not in {
-                robot.entity_id
-                for robot in self.discovery.robots.values()
-                if robot.floor_id == room.floor_id
-            }:
-                continue
-            detail = self._room_data(area_id)
-            for operation in operations:
-                if operation not in {"vacuum", "mop"}:
-                    continue
-                if operation == "mop" and self._room_settings(room).get("carpet", False):
-                    continue
-                next_due = self._room_due(room, operation, now)
-                deferred = manual_deferral(now, next_due)
-                if deferred:
-                    detail.setdefault("defer", {})[operation] = _iso(deferred)
-                    changed.append(f"{area_id}:{operation}")
-        self.data["manual_events"].append(
+        changed = self._apply_manual_deferral(robot_entity_id, area_ids, operations, now)
+        self._record_manual_event(
             {"at": _iso(now), "robot": robot_entity_id, "rooms": area_ids, "operations": operations, "changed": changed}
         )
-        self.data["manual_events"] = self.data["manual_events"][-50:]
         await self._async_save()
         self._notify_listeners()
         return {"changed": changed}
@@ -1132,7 +1291,11 @@ class AdaptiveRoboVacCoordinator:
         mop_due = None if settings.get("carpet", False) else self._room_due(room, "mop", now)
         candidate, reason = self._room_candidate(room, now)
         active_robot_id, active = next(
-            ((robot_id, job) for robot_id, job in self.data["active"].items() if job and job.get("room") == area_id),
+            (
+                (robot_id, job)
+                for robot_id, job in self.data["active"].items()
+                if job and area_id in self._active_rooms(job)
+            ),
             (None, None),
         )
         active_robot_state = (
@@ -1186,7 +1349,11 @@ class AdaptiveRoboVacCoordinator:
         state = self.hass.states.get(entity_id)
         ready, reason = self._robot_ready(robot)
         active = self.data["active"].get(entity_id)
-        active_room = self.discovery.rooms.get(active["room"]) if active else None
+        active_rooms = [
+            self.discovery.rooms[area_id].name
+            for area_id in self._active_rooms(active)
+            if area_id in self.discovery.rooms
+        ] if active else []
         return {
             "name": robot.name,
             "entity_id": entity_id,
@@ -1196,7 +1363,8 @@ class AdaptiveRoboVacCoordinator:
             "ready": ready,
             "reason": reason,
             "active": active,
-            "active_room": active_room.name if active_room else None,
+            "active_room": ", ".join(active_rooms) if active_rooms else None,
+            "active_rooms": active_rooms,
             "profile": robot.profile,
             "settings": self._robot_settings(robot),
         }

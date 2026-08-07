@@ -12,9 +12,9 @@ Home Assistant room cleans.
 
 ## Implementation status
 
-Implemented in integration version 1.0.3. Scheduler-started jobs now use the
-durable lifecycle below; manual Home Assistant clean tracking remains the
-separate follow-up described in `manual-ha-clean-tracking-plan.md`.
+Implemented in integration version 1.0.4. Scheduler-started jobs and tracked
+manual Home Assistant room cleans now use the durable lifecycle below. Native
+vacuum-app starts remain intentionally outside scheduler tracking.
 
 Native robot state takes priority over a stored estimate whenever Home
 Assistant observes a fresh `cleaning` to `returning`/`docked` transition after

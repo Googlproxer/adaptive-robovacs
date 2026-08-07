@@ -137,5 +137,50 @@ class RecoveryTransitionTests(unittest.TestCase):
         )
 
 
+class ManualCleanRequestTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.robots = ["vacuum.sheila"]
+        self.rooms = ["lego_room", "bedroom_1"]
+
+    def test_user_room_clean_tracks_multiple_discovered_areas(self) -> None:
+        request = models.parse_manual_clean_request(
+            "vacuum",
+            "clean_area",
+            "user-id",
+            {"entity_id": "vacuum.sheila", "cleaning_area_id": ["lego_room", "bedroom_1"]},
+            self.robots,
+            self.rooms,
+        )
+        self.assertEqual(request, models.ManualCleanRequest("vacuum.sheila", ["lego_room", "bedroom_1"]))
+
+    def test_no_user_context_is_not_a_manual_home_assistant_clean(self) -> None:
+        self.assertIsNone(
+            models.parse_manual_clean_request(
+                "vacuum",
+                "clean_area",
+                None,
+                {"entity_id": "vacuum.sheila", "cleaning_area_id": ["lego_room"]},
+                self.robots,
+                self.rooms,
+            )
+        )
+
+    def test_whole_home_or_unknown_area_calls_are_not_tracked(self) -> None:
+        self.assertIsNone(
+            models.parse_manual_clean_request(
+                "vacuum", "start", "user-id", {"entity_id": "vacuum.sheila"}, self.robots, self.rooms
+            )
+        )
+        self.assertIsNone(
+            models.parse_manual_clean_request(
+                "vacuum",
+                "clean_area",
+                "user-id",
+                {"entity_id": "vacuum.sheila", "cleaning_area_id": ["native_segment_1"]},
+                self.robots,
+                self.rooms,
+            )
+        )
+
 if __name__ == "__main__":
     unittest.main()

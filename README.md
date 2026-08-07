@@ -40,8 +40,9 @@ automatically on supported versions.
 
 See [setup and migration](docs/setup.md), [dashboard setup](docs/dashboard.md),
 and [legacy decommissioning](docs/decommissioning.md). The deferred plan for
-Home Assistant UI manual-clean tracking is in
-[docs/manual-ha-clean-tracking-plan.md](docs/manual-ha-clean-tracking-plan.md),
+Home Assistant user-initiated room cleans are tracked automatically; native
+vacuum-app starts are intentionally left untracked. The implementation notes
+are in [docs/manual-ha-clean-tracking-plan.md](docs/manual-ha-clean-tracking-plan.md),
 and the restart-safe job lifecycle plan is in
 [docs/cleaning-lifecycle-recovery-plan.md](docs/cleaning-lifecycle-recovery-plan.md).
 
