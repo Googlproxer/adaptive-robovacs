@@ -39,7 +39,9 @@ automatically on supported versions.
    configuration. Review schedule previews before turning off observe-only mode.
 
 See [setup and migration](docs/setup.md), [dashboard setup](docs/dashboard.md),
-and [legacy decommissioning](docs/decommissioning.md).
+and [legacy decommissioning](docs/decommissioning.md). The deferred plan for
+Home Assistant UI manual-clean tracking is in
+[docs/manual-ha-clean-tracking-plan.md](docs/manual-ha-clean-tracking-plan.md).
 
 ## Safety
 
