@@ -47,9 +47,18 @@ vacuum-app starts are intentionally left untracked.
 The integration does not stop a clean already in progress if a room becomes
 occupied. It never dispatches work in observe-only mode or Party Mode. A room
 with unresolved occupancy is retried only in the configured quiet-night window;
-bedroom-transit rooms remain excluded from that exception. Rooms that fail
-native area dispatch are marked unmapped and skipped until their map binding is
-repaired.
+bedroom-transit rooms remain excluded from that exception. A failed native-area
+dispatch is shown as **unknown error**; the complete diagnostic is recorded in
+the Adaptive RoboVacs integration log rather than suggesting that a map needs
+repair.
+
+## Releases and upgrades
+
+Production updates are published as full GitHub Releases with semantic tags
+(for example, `v1.0.5`). HACS uses the latest release tag as the deployable
+version, not a moving commit from the default branch. Each release must bump
+the integration version in `custom_components/adaptive_robovacs/manifest.json`,
+pass the test suite, and have matching tag and release versions.
 
 ## License
 

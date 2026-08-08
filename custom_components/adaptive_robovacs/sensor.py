@@ -8,9 +8,11 @@ from typing import Any
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .entity import AdaptiveEntity, async_setup_dynamic_entities
+from .models import format_time_until
 
 
 class _SchedulerSensor(AdaptiveEntity, SensorEntity):
@@ -93,6 +95,8 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             return "ready now"
         if not state["enabled"]:
             return "disabled"
+        if state["block_reason"] == "not due":
+            return format_time_until(state["next_due"], dt_util.utcnow())
         return state["block_reason"]
 
     @property

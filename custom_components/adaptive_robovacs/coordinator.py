@@ -158,7 +158,7 @@ class AdaptiveRoboVacCoordinator:
             self.data.setdefault("recovery_events", [])
 
         await self.async_refresh_discovery()
-        await self._async_clear_legacy_dispatch_schema_errors()
+        await self._async_migrate_legacy_dispatch_errors()
         await self._async_migrate_legacy_once()
         await self._async_recover_active_jobs()
         self._unsubscribers.extend(
@@ -202,21 +202,36 @@ class AdaptiveRoboVacCoordinator:
         self.data["version"] = VERSION
         await self.store.async_save(self.data)
 
-    async def _async_clear_legacy_dispatch_schema_errors(self) -> None:
-        """Unblock rooms affected by the pre-1.0.1 clean-area payload.
+    async def _async_migrate_legacy_dispatch_errors(self) -> None:
+        """Make legacy dispatch failures safe and clear to dashboard users.
 
-        Older releases sent ``area_id`` to ``vacuum.clean_area``. Current
-        Home Assistant expects ``cleaning_area_id`` instead. That schema
-        error was incorrectly persisted as an unmapped native area, which
-        would otherwise prevent the corrected command from being retried.
+        A dispatch failure does not prove that a vacuum's native map is
+        broken.  Earlier releases persisted both the raw failure and an
+        ``unmapped`` status, which led the dashboard to direct users to repair
+        a map without evidence.  Keep the diagnostic in the Home Assistant
+        integration log and expose only a generic, actionable status instead.
         """
 
         changed = False
-        for detail in self.data["rooms"].values():
-            if detail.get("map_error") != "required key not provided @ data['cleaning_area_id']":
+        for area_id, detail in self.data["rooms"].items():
+            raw_error = detail.get("map_error")
+            if raw_error == "required key not provided @ data['cleaning_area_id']":
+                # This old payload defect is known to be corrected by the
+                # current service call, so allow the scheduler to retry it.
+                detail["map_status"] = "unknown"
+                detail["map_error"] = None
+                changed = True
                 continue
-            detail["map_status"] = "unknown"
-            detail["map_error"] = None
+            if detail.get("map_status") != "unmapped":
+                continue
+            _LOGGER.error(
+                "Migrating persisted Adaptive RoboVacs dispatch failure to an "
+                "unknown error: area_id=%s diagnostic=%r",
+                area_id,
+                raw_error,
+            )
+            detail["map_status"] = "error"
+            detail["map_error"] = "unknown dispatch error"
             changed = True
         if changed:
             await self._async_save()
@@ -768,8 +783,8 @@ class AdaptiveRoboVacCoordinator:
         detail = self._room_data(room.area_id)
         if not settings.get("enabled", True):
             return None, "room disabled"
-        if detail.get("map_status") == "unmapped":
-            return None, "unmapped; awaiting native map repair"
+        if detail.get("map_status") == "error":
+            return None, "unknown error; see integration logs"
         vacuum_due = self._room_due(room, "vacuum", now)
         carpet = bool(settings.get("carpet", False))
         mop_due = None if carpet else self._room_due(room, "mop", now)
@@ -875,13 +890,21 @@ class AdaptiveRoboVacCoordinator:
                 {"entity_id": robot.entity_id, "cleaning_area_id": [room.area_id]},
                 blocking=True,
             )
-        except Exception as err:  # ServiceValidationError varies between HA versions.
+        except Exception:  # ServiceValidationError varies between HA versions.
             self.data["active"][robot.entity_id] = None
             detail = self._room_data(room.area_id)
-            detail["map_status"] = "unmapped"
-            detail["map_error"] = str(err)
+            detail["map_status"] = "error"
+            detail["map_error"] = "unknown dispatch error"
+            _LOGGER.exception(
+                "Adaptive RoboVacs room dispatch failed: robot=%s room=%s "
+                "area_id=%s operation=%s",
+                robot.entity_id,
+                room.name,
+                room.area_id,
+                candidate["operation"],
+            )
             await self._async_save()
-            return False, f"dispatch failed: {err}"
+            return False, "dispatch failed: unknown error"
         active["phase"] = "accepted"
         active["accepted_at"] = _iso(_now())
         self._room_data(room.area_id)["map_status"] = "mapped"
@@ -986,8 +1009,18 @@ class AdaptiveRoboVacCoordinator:
                     )
                 else:
                     detail = self._room_data(active["room"])
-                    detail["map_status"] = "unmapped"
-                    detail["map_error"] = "vacuum did not enter cleaning after command"
+                    detail["map_status"] = "error"
+                    detail["map_error"] = "unknown dispatch error"
+                    _LOGGER.error(
+                        "Adaptive RoboVacs room dispatch was accepted but did not "
+                        "enter cleaning within 10 minutes: robot=%s area_id=%s "
+                        "operation=%s started=%s current_state=%s",
+                        robot_id,
+                        active["room"],
+                        active.get("operation"),
+                        active.get("started"),
+                        state_text,
+                    )
                 self.data["active"][robot_id] = None
                 self._cancel_recovery_timer(robot_id)
                 changed = True
@@ -1289,6 +1322,13 @@ class AdaptiveRoboVacCoordinator:
         now = _now()
         vacuum_due = self._room_due(room, "vacuum", now)
         mop_due = None if settings.get("carpet", False) else self._room_due(room, "mop", now)
+        capable = [
+            robot
+            for robot in self.discovery.robots.values()
+            if robot.floor_id == room.floor_id and robot.supports_area_clean
+        ]
+        can_mop = any(self._mop_ready(robot) for robot in capable)
+        next_due = min(vacuum_due, mop_due) if mop_due and can_mop else vacuum_due
         candidate, reason = self._room_candidate(room, now)
         active_robot_id, active = next(
             (
@@ -1331,6 +1371,7 @@ class AdaptiveRoboVacCoordinator:
             "last_mop": _as_datetime(detail.get("mop")),
             "vacuum_due": vacuum_due,
             "mop_due": mop_due,
+            "next_due": next_due,
             "next_candidate": candidate,
             "active": active,
             "active_robot": active_robot_id,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import math
 from typing import Iterable, Mapping
 
 
@@ -155,6 +156,22 @@ def due_at(
 
     baseline = now if last_completed is None else last_completed + timedelta(hours=interval_hours)
     return max(baseline, deferred_until) if deferred_until else baseline
+
+
+def format_time_until(due_at: datetime, now: datetime) -> str:
+    """Return a concise, rounded-up remaining-time label for a future due time."""
+
+    remaining_minutes = max(0, math.ceil((due_at - now).total_seconds() / 60))
+    days, remainder = divmod(remaining_minutes, 24 * 60)
+    hours, minutes = divmod(remainder, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days} day" if days == 1 else f"{days} days")
+    if hours:
+        parts.append(f"{hours} hour" if hours == 1 else f"{hours} hours")
+    if minutes or not parts:
+        parts.append(f"{minutes} minute" if minutes == 1 else f"{minutes} minutes")
+    return "in " + " ".join(parts)
 
 
 def forecast_vacancy(
