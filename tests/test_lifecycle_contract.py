@@ -39,6 +39,8 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('"learned_duration_minutes"', source)
         self.assertIn('return "Completion pending"', source)
         self.assertIn('return state["state"]', source)
+        self.assertIn('state["unresolved_window_start"]', source)
+        self.assertIn('"unresolved_window_start"', COORDINATOR_PATH.read_text(encoding="utf-8"))
 
     def test_cleaning_timer_is_discovered_from_the_robot_device(self) -> None:
         source = DISCOVERY_PATH.read_text(encoding="utf-8")

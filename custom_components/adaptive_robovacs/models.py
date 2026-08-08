@@ -257,6 +257,14 @@ def in_daytime_window(now: datetime, start: str, end: str) -> bool:
     return time_text >= start or time_text < end
 
 
+def next_window_start(now: datetime, start: str) -> datetime:
+    """Return the next occurrence of a local HH:MM window start."""
+
+    hour, minute = (int(part) for part in start.split(":", maxsplit=1))
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return candidate if now < candidate else candidate + timedelta(days=1)
+
+
 def unresolved_occupancy_allowed(
     occupancy: str,
     is_bedroom_transit: bool,

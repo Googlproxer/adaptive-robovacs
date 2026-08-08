@@ -97,6 +97,10 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             return "disabled"
         if state["block_reason"] == "not due":
             return format_time_until(state["next_due"], dt_util.utcnow())
+        if state["block_reason"].startswith("unresolved occupancy; waiting for "):
+            return format_time_until(
+                state["unresolved_window_start"], dt_util.as_local(dt_util.utcnow())
+            )
         return state["block_reason"]
 
     @property
@@ -120,6 +124,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "map_status": state["map_status"],
             "map_error": state["map_error"],
             "block_reason": state["block_reason"],
+            "unresolved_window_start": state["unresolved_window_start"].isoformat(),
             "active_job_source": state["active"].get("source") if state["active"] else None,
             "active_robot": state["active_robot"],
             "active_robot_state": state["active_robot_state"],

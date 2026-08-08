@@ -94,6 +94,16 @@ class CadenceTests(unittest.TestCase):
         self.assertTrue(models.in_daytime_window(self.now.replace(hour=2), "22:00", "05:00"))
         self.assertFalse(models.in_daytime_window(self.now.replace(hour=12), "22:00", "05:00"))
 
+    def test_next_window_start_uses_today_before_the_window_and_tomorrow_after_it(self) -> None:
+        self.assertEqual(
+            models.next_window_start(self.now.replace(hour=0, minute=30), "01:00"),
+            self.now.replace(hour=1, minute=0),
+        )
+        self.assertEqual(
+            models.next_window_start(self.now, "01:00"),
+            self.now.replace(hour=1, minute=0) + timedelta(days=1),
+        )
+
     def test_unresolved_occupancy_is_only_allowed_overnight_for_non_transit_rooms(self) -> None:
         overnight = self.now.replace(hour=2)
         self.assertTrue(

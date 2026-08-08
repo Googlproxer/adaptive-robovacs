@@ -52,6 +52,7 @@ from .models import (
     in_daytime_window,
     learned_duration_minutes,
     manual_deferral,
+    next_window_start,
     parse_manual_clean_request,
     recovery_transition_is_observed,
     resolve_occupancy,
@@ -1318,6 +1319,9 @@ class AdaptiveRoboVacCoordinator:
         detail = self._room_data(area_id)
         settings = self._room_settings(room)
         now = _now()
+        unresolved_window_start = next_window_start(
+            _local(now), str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START))
+        )
         vacuum_due = self._room_due(room, "vacuum", now)
         mop_due = None if settings.get("carpet", False) else self._room_due(room, "mop", now)
         capable = [
@@ -1370,6 +1374,7 @@ class AdaptiveRoboVacCoordinator:
             "vacuum_due": vacuum_due,
             "mop_due": mop_due,
             "next_due": next_due,
+            "unresolved_window_start": unresolved_window_start,
             "next_candidate": candidate,
             "active": active,
             "active_robot": active_robot_id,
