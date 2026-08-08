@@ -104,49 +104,68 @@ def parse_manual_clean_request(
     return ManualCleanRequest(robot_ids[0], area_ids)
 
 
-def parse_manual_cancel_request(
-    domain: str,
-    service: str,
-    user_id: str | None,
-    service_data: Mapping[str, object],
-    managed_robot_ids: Iterable[str],
-) -> str | None:
-    """Return an explicit user cancellation of one managed robot job.
+def held_job_transition(
+    robot_state: str | None,
+    phase: str | None,
+    completed_before_hold: bool,
+) -> str:
+    """Classify only the safe ways an interrupted job can leave its hold.
 
-    A direct Home Assistant ``vacuum.stop`` or ``vacuum.return_to_base`` call
-    is unambiguous user intent. Native app events do not carry this context, so
-    those users can instead confirm a held job from the integration button.
-    """
-
-    if domain != "vacuum" or service not in {"stop", "return_to_base"} or not user_id:
-        return None
-    robot_ids = _service_entity_ids(service_data)
-    managed_robots = set(managed_robot_ids)
-    if len(robot_ids) != 1 or robot_ids[0] not in managed_robots:
-        return None
-    return robot_ids[0]
-
-
-def active_job_should_stay_held(robot_state: str | None, phase: str | None) -> bool:
-    """Keep an interrupted job from becoming a synthetic completion.
-
-    A robot error can be followed by an integration-reported idle state even
-    though no one repaired the fault. Likewise, a paused clean must not expire
-    simply because its estimate elapsed. A fresh cleaning observation is the
-    only automatic release because it proves the user resumed the robot.
+    A docked or idle robot is not enough to infer user intent because some
+    native integrations report it shortly after an error. A live ``returning``
+    state is the physical-dock signal; a fresh ``cleaning`` state is a physical
+    resume. A job that had already entered returning before its fault has a
+    confirmed clean phase and can complete once it reaches the dock.
     """
 
     if robot_state == "cleaning":
-        return False
-    return robot_should_stay_held(robot_state, None) or phase in {"paused", "error_waiting"}
+        return "resumed"
+    if robot_state == "returning":
+        return "completion_pending" if completed_before_hold else "cancelling"
+    if phase == "completion_pending" and robot_state in {"docked", "idle"}:
+        return "complete"
+    if phase == "cancelling" and robot_state in {"docked", "idle"}:
+        return "cancelled"
+    return "held"
 
 
-def robot_should_stay_held(robot_state: str | None, hold_reason: str | None) -> bool:
-    """Return whether a robot-level pause or error remains latched."""
+def offline_held_recovery_outcome(
+    robot_state: str | None,
+    hold_phase: str | None,
+    last_observed_at: datetime | None,
+    expected_minutes: float | None,
+    recovered_at: datetime,
+) -> str:
+    """Classify an unobserved held-job ending after Home Assistant restarts."""
 
-    if robot_state == "cleaning":
-        return False
-    return robot_state in {"paused", "error"} or hold_reason in {"paused", "robot_error"}
+    if robot_state not in {"docked", "idle"}:
+        return "held"
+    if hold_phase == "cancelling":
+        return "cancelled"
+    if (
+        last_observed_at
+        and expected_minutes
+        and expected_minutes > 0
+        and recovered_at - last_observed_at >= timedelta(minutes=expected_minutes)
+    ):
+        return "complete"
+    if last_observed_at and expected_minutes and expected_minutes > 0:
+        return "cancelled"
+    return "held"
+
+
+def rebase_due_times(
+    due_times: Mapping[str, datetime], cooldown_until: datetime
+) -> dict[str, datetime]:
+    """Move a due queue past a cooldown while retaining its natural spacing."""
+
+    if not due_times:
+        return {}
+    earliest = min(due_times.values())
+    return {
+        key: max(due_at, cooldown_until + (due_at - earliest))
+        for key, due_at in due_times.items()
+    }
 
 
 def recovery_transition_is_observed(

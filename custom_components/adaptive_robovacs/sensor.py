@@ -89,6 +89,10 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
         if state["active"]:
             if state["active"].get("phase") == "recovery_waiting":
                 return "Completion pending"
+            if state["active"].get("phase") == "cancelling":
+                return "Returning to dock"
+            if state["active"].get("phase") == "completion_held":
+                return "Completion pending"
             if state["active"].get("phase") == "error_waiting":
                 return "Scheduler held"
             if state["active"].get("phase") == "paused":

@@ -17,6 +17,7 @@ class LifecycleContractTests(unittest.TestCase):
         source = COORDINATOR_PATH.read_text(encoding="utf-8")
         self.assertIn('"expected_end"', source)
         self.assertIn('"observed_started"', source)
+        self.assertIn('"last_observed_at"', source)
         self.assertIn('_async_recover_active_jobs', source)
         self.assertIn('"recovered_expected_end"', source)
 
@@ -48,18 +49,22 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn("cleaning_time_entity_id", source)
         self.assertIn('device_class == "duration"', source)
 
-    def test_paused_and_error_jobs_are_held_until_user_resolution(self) -> None:
+    def test_paused_and_error_jobs_follow_physical_robot_recovery(self) -> None:
         coordinator = COORDINATOR_PATH.read_text(encoding="utf-8")
         sensor = SENSOR_PATH.read_text(encoding="utf-8")
         button = BUTTON_PATH.read_text(encoding="utf-8")
         self.assertIn('"robot_holds"', coordinator)
         self.assertIn('"error_waiting"', coordinator)
-        self.assertIn("active_job_should_stay_held", coordinator)
+        self.assertIn("held_job_transition", coordinator)
+        self.assertIn("offline_held_recovery_outcome", coordinator)
+        self.assertIn("_apply_robot_cancellation_deferral", coordinator)
+        self.assertIn("_remove_deprecated_confirmation_buttons", coordinator)
         self.assertIn("_cancel_recovery_timer", coordinator)
-        self.assertIn("async_confirm_held_clean_cancelled", coordinator)
         self.assertIn('return "Scheduler held"', sensor)
         self.assertIn('return "Paused"', sensor)
-        self.assertIn("Confirm held clean cancelled", button)
+        self.assertIn('return "Returning to dock"', sensor)
+        self.assertNotIn("Confirm held clean cancelled", button)
+        self.assertNotIn("async_confirm_held_clean_cancelled", coordinator)
 
 
 if __name__ == "__main__":

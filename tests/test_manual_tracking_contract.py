@@ -16,12 +16,12 @@ class ManualTrackingContractTests(unittest.TestCase):
         self.assertIn('"manual_home_assistant"', source)
         self.assertIn('"manual_context_id"', source)
 
-    def test_user_stop_and_return_to_base_cancel_without_crediting_a_clean(self) -> None:
+    def test_physical_cancellation_does_not_change_home_assistant_room_tracking(self) -> None:
         source = COORDINATOR_PATH.read_text(encoding="utf-8")
-        self.assertIn("parse_manual_cancel_request", source)
-        self.assertIn('"return_to_base"', source)
+        self.assertNotIn("parse_manual_cancel_request", source)
+        self.assertNotIn("cancel_requested_at", source)
         self.assertIn("_cancel_job", source)
-        self.assertIn("cancelled_by_home_assistant_user", source)
+        self.assertIn('"physical_cancelled"', source)
 
     def test_scheduler_and_unstarted_manual_jobs_are_not_misclassified(self) -> None:
         source = COORDINATOR_PATH.read_text(encoding="utf-8")

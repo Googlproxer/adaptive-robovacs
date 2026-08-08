@@ -12,7 +12,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_CALL_SERVICE, EVENT_HOMEASSISTANT_STARTED, EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -48,15 +48,16 @@ from .const import (
 from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoveryResult, async_discover
 from .models import (
     Forecast,
-    active_job_should_stay_held,
     due_at,
     forecast_vacancy,
+    held_job_transition,
     in_daytime_window,
     learned_duration_minutes,
     manual_deferral,
     next_window_start,
-    parse_manual_cancel_request,
     parse_manual_clean_request,
+    offline_held_recovery_outcome,
+    rebase_due_times,
     recovery_transition_is_observed,
     resolve_occupancy,
     select_operation,
@@ -164,6 +165,7 @@ class AdaptiveRoboVacCoordinator:
             self.data.setdefault("recovery_events", [])
 
         await self.async_refresh_discovery()
+        self._remove_deprecated_confirmation_buttons()
         await self._async_migrate_legacy_dispatch_errors()
         await self._async_migrate_legacy_once()
         await self._async_recover_active_jobs()
@@ -207,6 +209,19 @@ class AdaptiveRoboVacCoordinator:
     async def _async_save(self) -> None:
         self.data["version"] = VERSION
         await self.store.async_save(self.data)
+
+    def _remove_deprecated_confirmation_buttons(self) -> None:
+        """Remove v1.0.9's acknowledgement buttons from the entity registry."""
+
+        registry = er.async_get(self.hass)
+        for registry_entry in tuple(registry.entities.values()):
+            if (
+                registry_entry.domain == "button"
+                and registry_entry.platform == DOMAIN
+                and registry_entry.config_entry_id == self.entry.entry_id
+                and registry_entry.unique_id.endswith("_confirm_held_clean_cancelled")
+            ):
+                registry.async_remove(registry_entry.entity_id)
 
     async def _async_migrate_legacy_dispatch_errors(self) -> None:
         """Make legacy dispatch failures safe and clear to dashboard users.
@@ -423,21 +438,80 @@ class AdaptiveRoboVacCoordinator:
         """Recover a persisted command checkpoint after a Home Assistant restart."""
 
         now = _now()
-        for entity_id in self.discovery.robots:
-            state = self.hass.states.get(entity_id)
-            self._reconcile_robot_hold(entity_id, state.state if state else "unavailable", now)
-        for entity_id, active in list(self.data["active"].items()):
-            if not active:
-                continue
-            self._normalise_active_job(active, now)
+        robot_ids = set(self.discovery.robots) | set(self.data["active"]) | set(self.data["robot_holds"])
+        for entity_id in robot_ids:
+            active = self.data["active"].get(entity_id)
+            tracked_expected_minutes: float | None = None
+            if active and active.get("expected_minutes") is not None:
+                try:
+                    tracked_expected_minutes = float(active["expected_minutes"])
+                except (TypeError, ValueError):
+                    pass
+            if active:
+                self._normalise_active_job(active, now)
             state = self.hass.states.get(entity_id)
             state_text = state.state if state else "unavailable"
-            if active.get("cancel_requested_at") and state_text in {"docked", "idle"}:
-                self._cancel_job(entity_id, active, now, "cancelled_by_home_assistant_user")
-                self.data["robot_holds"].pop(entity_id, None)
+            hold = self.data["robot_holds"].get(entity_id)
+
+            # Retain v1.0.9 holds written before their richer state was added.
+            if not hold and active and active.get("phase") in {"paused", "error_waiting"}:
+                hold = {
+                    "reason": active.get("hold_reason", "paused"),
+                    "phase": "held",
+                    "held_at": active.get("held_at") or _iso(now),
+                    "last_observed_at": active.get("last_observed_at") or _iso(now),
+                }
+                self.data["robot_holds"][entity_id] = hold
+
+            action = self._reconcile_robot_hold(entity_id, state_text, active, now)
+            if action is not None:
+                if action == "held":
+                    if active:
+                        self._hold_active_job(entity_id, active, state_text, now)
+                    continue
+                if action == "resumed":
+                    if active:
+                        self._resume_held_job(entity_id, active, state, now)
+                    continue
+                if action in {"cancelling", "completion_pending"}:
+                    if active:
+                        self._set_held_job_phase(entity_id, active, action, now)
+                    continue
+                if action == "cancelled":
+                    cancelled_at = _as_datetime(
+                        self.data["robot_holds"].get(entity_id, {}).get("returning_at")
+                    ) or now
+                    if active:
+                        self._cancel_job(entity_id, active, cancelled_at, "physical_cancelled")
+                    self._apply_robot_cancellation_deferral(entity_id, cancelled_at)
+                    self.data["robot_holds"].pop(entity_id, None)
+                    continue
+                if action == "complete":
+                    if active:
+                        completion = _as_datetime(active.get("cleaning_finished")) or now
+                        self._complete_job(entity_id, active, completion, "observed")
+                    self.data["robot_holds"].pop(entity_id, None)
+                    continue
+                outcome = offline_held_recovery_outcome(
+                    state_text,
+                    str(hold.get("phase")),
+                    _as_datetime(active.get("last_observed_at")) if active else _as_datetime(hold.get("last_observed_at")),
+                    tracked_expected_minutes,
+                    now,
+                )
+                if outcome == "complete" and active:
+                    expected_end = _as_datetime(active.get("expected_end"))
+                    if expected_end:
+                        self._complete_job(entity_id, active, expected_end, "recovered_expected_end")
+                        self.data["robot_holds"].pop(entity_id, None)
+                elif outcome == "cancelled":
+                    if active:
+                        self._cancel_job(entity_id, active, now, "recovered_physical_cancellation")
+                    self._apply_robot_cancellation_deferral(entity_id, now)
+                    self.data["robot_holds"].pop(entity_id, None)
                 continue
-            if active_job_should_stay_held(state_text, str(active.get("phase"))):
-                self._hold_active_job(entity_id, active, state_text, now)
+
+            if not active:
                 continue
             if state and state.state in {"cleaning", "returning"}:
                 active["recovered_at"] = _iso(now)
@@ -451,8 +525,6 @@ class AdaptiveRoboVacCoordinator:
                         active["completion_confidence"] = "recovered_expected_end"
                         active["phase"] = "returning"
                     else:
-                        # Do not turn a reconnect into an artificially late (or future)
-                        # completion.  The reconciliation loop will complete at expected_end.
                         self._set_recovery_waiting(entity_id, active, now)
                 else:
                     active["phase"] = "cleaning"
@@ -489,59 +561,65 @@ class AdaptiveRoboVacCoordinator:
         active.setdefault("source", "scheduler")
         active.setdefault("passes", 1)
         active.setdefault("expected_minutes", fallback)
+        active.setdefault(
+            "last_observed_at",
+            active.get("observed_started") or active.get("accepted_at") or active.get("started") or _iso(now),
+        )
         if not active.get("expected_end"):
             started = _as_datetime(active.get("observed_started") or active.get("accepted_at") or active.get("started")) or now
             active["expected_end"] = _iso(started + timedelta(minutes=float(active["expected_minutes"])))
 
-    def _reconcile_robot_hold(self, robot_id: str, state_text: str, now: datetime) -> bool:
-        """Latch pauses and errors until a user resolves the interrupted clean."""
+    def _reconcile_robot_hold(
+        self, robot_id: str, state_text: str, active: dict[str, Any] | None, now: datetime
+    ) -> str | None:
+        """Keep observed pauses/errors durable and classify physical follow-up only."""
 
         hold = self.data["robot_holds"].get(robot_id)
-        if state_text == "cleaning":
-            if hold:
-                self.data["robot_holds"].pop(robot_id, None)
-                _LOGGER.info(
-                    "Adaptive RoboVacs scheduler hold released by observed cleaning: robot=%s",
-                    robot_id,
-                )
-                return True
-            return False
-
         if state_text in {"paused", "error"}:
             reason = (
                 "robot_error"
                 if state_text == "error" or (hold and hold.get("reason") == "robot_error")
                 else "paused"
             )
-            if hold and hold.get("reason") == reason:
-                return False
-            self.data["robot_holds"][robot_id] = {
-                "reason": reason,
-                "held_at": _iso(now),
-            }
-            if reason == "robot_error":
-                _LOGGER.error(
-                    "Adaptive RoboVacs scheduler held after robot error: robot=%s state=%s. "
-                    "No further room work will be dispatched until cleaning resumes or the user "
-                    "confirms cancellation.",
-                    robot_id,
-                    state_text,
-                )
+            if not hold:
+                hold = {"reason": reason, "phase": "held", "held_at": _iso(now)}
+                self.data["robot_holds"][robot_id] = hold
+                if reason == "robot_error":
+                    _LOGGER.error(
+                        "Adaptive RoboVacs scheduler held after robot error: robot=%s state=%s. "
+                        "The robot must physically resume or return to its dock before scheduling can continue.",
+                        robot_id,
+                        state_text,
+                    )
+                else:
+                    _LOGGER.info(
+                        "Adaptive RoboVacs scheduler held while robot is paused: robot=%s", robot_id
+                    )
             else:
-                _LOGGER.info(
-                    "Adaptive RoboVacs scheduler held while robot is paused: robot=%s",
-                    robot_id,
-                )
-            return True
+                hold["reason"] = reason
+                hold.setdefault("phase", "held")
+            hold["last_observed_at"] = _iso(now)
+            return "held"
+        if not hold:
+            return None
 
-        if hold and hold.get("cancel_requested_at") and state_text in {"docked", "idle"}:
+        hold.setdefault("phase", "held")
+        if state_text not in {"unavailable", "unknown"}:
+            hold["last_observed_at"] = _iso(now)
+        action = held_job_transition(
+            state_text,
+            str(hold.get("phase", "held")),
+            bool(active and active.get("completion_before_hold")),
+        )
+        if action == "resumed":
             self.data["robot_holds"].pop(robot_id, None)
             _LOGGER.info(
-                "Adaptive RoboVacs scheduler hold released by user cancellation: robot=%s",
-                robot_id,
+                "Adaptive RoboVacs scheduler hold released by observed physical resume: robot=%s", robot_id
             )
-            return True
-        return False
+        elif action in {"cancelling", "completion_pending"}:
+            hold["phase"] = action
+            hold["returning_at"] = _iso(now)
+        return action
 
     def _hold_active_job(
         self, robot_id: str, active: dict[str, Any], state_text: str, now: datetime
@@ -550,12 +628,16 @@ class AdaptiveRoboVacCoordinator:
 
         hold = self.data["robot_holds"].get(robot_id, {})
         is_error = hold.get("reason") == "robot_error" or state_text == "error"
-        phase = "error_waiting" if is_error else "paused"
+        phase = "completion_held" if active.get("cleaning_finished") else (
+            "error_waiting" if is_error else "paused"
+        )
         changed = active.get("phase") != phase
         active["phase"] = phase
         active["hold_reason"] = "robot_error" if is_error else "paused"
         active.setdefault("held_at", _iso(now))
         active["interrupted"] = True
+        if active.get("cleaning_finished"):
+            active["completion_before_hold"] = True
         self._cancel_recovery_timer(robot_id)
         if changed:
             _LOGGER.info(
@@ -565,6 +647,83 @@ class AdaptiveRoboVacCoordinator:
                 active["hold_reason"],
             )
         return changed
+
+    def _set_held_job_phase(
+        self, robot_id: str, active: dict[str, Any], action: str, now: datetime
+    ) -> None:
+        """Expose a held job's physical-return state without releasing it."""
+
+        if action == "cancelling":
+            active["phase"] = "cancelling"
+            active["interrupted"] = True
+            active["hold_reason"] = "physical_cancellation"
+            active["cancelling_at"] = _iso(now)
+        else:
+            active["phase"] = "completion_held"
+            active["hold_reason"] = "completion_before_fault"
+        self._cancel_recovery_timer(robot_id)
+
+    def _resume_held_job(
+        self, robot_id: str, active: dict[str, Any], state: Any, now: datetime
+    ) -> None:
+        """Continue a held job only after the robot itself resumes cleaning."""
+
+        active.pop("hold_reason", None)
+        active.pop("held_at", None)
+        active["last_observed_at"] = _iso(now)
+        if not active.get("seen_cleaning"):
+            observed_start = state.last_changed if state else now
+            active["observed_started"] = _iso(observed_start)
+            active["expected_end"] = _iso(
+                observed_start + timedelta(minutes=float(active.get("expected_minutes", 0)))
+            )
+            timer = self._cleaning_timer_minutes(robot_id)
+            if timer is not None and timer <= 1:
+                active["timer_start"] = timer
+        active["seen_cleaning"] = True
+        active["phase"] = "cleaning"
+        self._cancel_recovery_timer(robot_id)
+
+    def _apply_robot_cancellation_deferral(self, robot_id: str, cancelled_at: datetime) -> list[str]:
+        """Rebase every enabled schedule on a physically cancelled robot's floor."""
+
+        robot = self.discovery.robots.get(robot_id)
+        if not robot or not robot.floor_id:
+            _LOGGER.warning(
+                "Adaptive RoboVacs cannot defer a cancelled robot floor: robot=%s floor=%s",
+                robot_id,
+                robot.floor_id if robot else None,
+            )
+            return []
+        floor_robots = [
+            candidate
+            for candidate in self.discovery.robots.values()
+            if candidate.floor_id == robot.floor_id
+            and candidate.supports_area_clean
+            and self._robot_settings(candidate).get("enabled", True)
+        ]
+        mop_eligible = any(self._mop_ready(candidate) for candidate in floor_robots)
+        due_times: dict[str, datetime] = {}
+        for room in self.discovery.rooms.values():
+            if room.floor_id != robot.floor_id or not self._room_settings(room).get("enabled", True):
+                continue
+            due_times[f"{room.area_id}:vacuum"] = self._room_due(room, "vacuum", cancelled_at)
+            if mop_eligible and not self._room_settings(room).get("carpet", False):
+                due_times[f"{room.area_id}:mop"] = self._room_due(room, "mop", cancelled_at)
+
+        rebased = rebase_due_times(due_times, cancelled_at + timedelta(hours=24))
+        for key, deferred_until in rebased.items():
+            area_id, operation = key.rsplit(":", maxsplit=1)
+            self._room_data(area_id).setdefault("defer", {})[operation] = _iso(deferred_until)
+        if rebased:
+            _LOGGER.info(
+                "Adaptive RoboVacs rebased cancelled floor queue: robot=%s floor=%s entries=%s until=%s",
+                robot_id,
+                robot.floor_id,
+                len(rebased),
+                _iso(cancelled_at + timedelta(hours=24)),
+            )
+        return list(rebased)
 
     def _active_rooms(self, active: dict[str, Any]) -> list[str]:
         """Return a job's tracked rooms, retaining compatibility with v1.0.x."""
@@ -619,14 +778,12 @@ class AdaptiveRoboVacCoordinator:
 
     @callback
     def _on_call_service(self, event: Event) -> None:
-        """Capture explicit user room-clean and cancellation service calls."""
+        """Capture explicit user room-clean service calls."""
 
         if event.data.get("domain") != "vacuum":
             return
         if event.data.get("service") == "clean_area":
             self.hass.async_create_task(self._async_track_manual_service_call(event))
-        elif event.data.get("service") in {"stop", "return_to_base"}:
-            self.hass.async_create_task(self._async_track_manual_cancellation(event))
 
     async def _async_track_manual_service_call(self, event: Event) -> None:
         """Persist a manual checkpoint before the vacuum service begins work."""
@@ -685,6 +842,7 @@ class AdaptiveRoboVacCoordinator:
                 "manual_context_id": event.context.id,
                 "expected_minutes": expected_minutes,
                 "expected_end": _iso(now + timedelta(minutes=expected_minutes)),
+                "last_observed_at": _iso(now),
                 "passes": 1,
             }
             self._record_manual_event(
@@ -702,52 +860,6 @@ class AdaptiveRoboVacCoordinator:
             self.hass.async_create_task(
                 self.async_evaluate(dry_run=True, reason=f"manual-ha:{request.robot_id}")
             )
-
-    async def _async_track_manual_cancellation(self, event: Event) -> None:
-        """Record an explicit HA cancellation without crediting a room clean."""
-
-        robot_id = parse_manual_cancel_request(
-            str(event.data.get("domain")),
-            str(event.data.get("service")),
-            event.context.user_id,
-            event.data.get("service_data", {}),
-            self.discovery.robots,
-        )
-        if robot_id is None:
-            return
-
-        async with self._lock:
-            active = self.data["active"].get(robot_id)
-            hold = self.data["robot_holds"].get(robot_id)
-            if not active and not hold:
-                return
-            now = _now()
-            if active:
-                active["cancel_requested_at"] = _iso(now)
-                active["cancel_context_id"] = event.context.id
-            if hold:
-                hold["cancel_requested_at"] = _iso(now)
-                hold["cancel_context_id"] = event.context.id
-            self._record_manual_event(
-                {
-                    "at": _iso(now),
-                    "robot": robot_id,
-                    "rooms": self._active_rooms(active) if active else [],
-                    "context_id": event.context.id,
-                    "outcome": "cancellation_requested",
-                }
-            )
-            state = self.hass.states.get(robot_id)
-            if active and state and state.state in {"docked", "idle"}:
-                self._cancel_job(robot_id, active, now, "cancelled_by_home_assistant_user")
-                self.data["robot_holds"].pop(robot_id, None)
-            elif hold and state and state.state in {"docked", "idle"}:
-                self.data["robot_holds"].pop(robot_id, None)
-            await self._async_save()
-            self._notify_listeners()
-        self.hass.async_create_task(
-            self.async_evaluate(dry_run=False, reason=f"manual-cancel:{robot_id}")
-        )
 
     @callback
     def _on_state_changed(self, event: Event) -> None:
@@ -826,11 +938,19 @@ class AdaptiveRoboVacCoordinator:
             return False, "does not support Home Assistant area cleaning"
         hold = self.data["robot_holds"].get(robot.entity_id)
         if hold:
+            if hold.get("phase") == "cancelling":
+                return False, "held clean returning to dock"
+            if hold.get("phase") == "completion_pending":
+                return False, "held clean awaiting physical completion"
             if hold.get("reason") == "robot_error":
                 return False, "scheduler held after robot error"
             return False, "scheduler held while robot is paused"
         active = self.data["active"].get(robot.entity_id)
         if active:
+            if active.get("phase") == "cancelling":
+                return False, "active clean returning to dock"
+            if active.get("phase") == "completion_held":
+                return False, "active clean held after completion"
             if active.get("phase") == "error_waiting":
                 return False, "active job held after robot error"
             if active.get("phase") == "paused":
@@ -1025,6 +1145,7 @@ class AdaptiveRoboVacCoordinator:
             "source": "scheduler",
             "expected_minutes": candidate["duration_minutes"],
             "expected_end": _iso(now + timedelta(minutes=candidate["duration_minutes"])),
+            "last_observed_at": _iso(now),
             "passes": candidate["passes"],
         }
         self.data["active"][robot.entity_id] = active
@@ -1065,24 +1186,52 @@ class AdaptiveRoboVacCoordinator:
         """Persist completion only after an accepted command has actually cleaned."""
 
         changed = False
-        for robot_id in self.discovery.robots:
-            state = self.hass.states.get(robot_id)
-            changed = self._reconcile_robot_hold(
-                robot_id, state.state if state else "unavailable", now
-            ) or changed
-        for robot_id, active in list(self.data["active"].items()):
-            if not active:
-                continue
+        robot_ids = set(self.discovery.robots) | set(self.data["active"]) | set(self.data["robot_holds"])
+        for robot_id in robot_ids:
+            active = self.data["active"].get(robot_id)
             state = self.hass.states.get(robot_id)
             state_text = state.state if state else "unavailable"
-            if active.get("cancel_requested_at") and state_text in {"docked", "idle"}:
-                self._cancel_job(robot_id, active, now, "cancelled_by_home_assistant_user")
+            if active and state_text not in {"unavailable", "unknown"}:
+                active["last_observed_at"] = _iso(now)
+                changed = True
+
+            hold_action = self._reconcile_robot_hold(robot_id, state_text, active, now)
+            if hold_action == "held":
+                if active:
+                    changed = self._hold_active_job(robot_id, active, state_text, now) or changed
+                else:
+                    changed = True
+                continue
+            if hold_action == "resumed":
+                if active:
+                    self._resume_held_job(robot_id, active, state, now)
+                changed = True
+                continue
+            if hold_action in {"cancelling", "completion_pending"}:
+                if active:
+                    self._set_held_job_phase(robot_id, active, hold_action, now)
+                changed = True
+                continue
+            if hold_action == "cancelled":
+                cancelled_at = _as_datetime(
+                    self.data["robot_holds"].get(robot_id, {}).get("returning_at")
+                ) or now
+                if active:
+                    self._cancel_job(robot_id, active, cancelled_at, "physical_cancelled")
+                self._apply_robot_cancellation_deferral(robot_id, cancelled_at)
                 self.data["robot_holds"].pop(robot_id, None)
                 changed = True
                 continue
-            if active_job_should_stay_held(state_text, str(active.get("phase"))):
-                changed = self._hold_active_job(robot_id, active, state_text, now) or changed
+            if hold_action == "complete":
+                if active:
+                    completion = _as_datetime(active.get("cleaning_finished")) or now
+                    self._complete_job(robot_id, active, completion, "observed")
+                self.data["robot_holds"].pop(robot_id, None)
+                changed = True
                 continue
+            if not active:
+                continue
+
             recovered_at = _as_datetime(active.get("recovered_at"))
             transition_at = _as_datetime(transition.get("at")) if transition else None
             live_recovery_transition = bool(
@@ -1107,20 +1256,7 @@ class AdaptiveRoboVacCoordinator:
                 changed = True
                 continue
             if state_text == "cleaning":
-                active.pop("hold_reason", None)
-                active.pop("held_at", None)
-                if not active.get("seen_cleaning"):
-                    observed_start = state.last_changed if state else now
-                    active["observed_started"] = _iso(observed_start)
-                    active["expected_end"] = _iso(
-                        observed_start + timedelta(minutes=float(active.get("expected_minutes", 0)))
-                    )
-                    timer = self._cleaning_timer_minutes(robot_id)
-                    if timer is not None and timer <= 1:
-                        active["timer_start"] = timer
-                active["seen_cleaning"] = True
-                active["phase"] = "cleaning"
-                self._cancel_recovery_timer(robot_id)
+                self._resume_held_job(robot_id, active, state, now)
                 changed = True
                 continue
             if active.get("seen_cleaning") and state_text == "returning":
@@ -1254,29 +1390,6 @@ class AdaptiveRoboVacCoordinator:
         self.data["recovery_events"] = self.data["recovery_events"][-20:]
         self.data["active"][robot_id] = None
         self._cancel_recovery_timer(robot_id)
-
-    async def async_confirm_held_clean_cancelled(self, robot_id: str) -> None:
-        """Release a held robot only after the user has stopped it safely."""
-
-        async with self._lock:
-            state = self.hass.states.get(robot_id)
-            if not state or state.state not in {"docked", "idle"}:
-                raise HomeAssistantError(
-                    "The robot must be docked or idle before confirming its clean was cancelled."
-                )
-            active = self.data["active"].get(robot_id)
-            hold = self.data["robot_holds"].get(robot_id)
-            if not hold and not (
-                active and active_job_should_stay_held(state.state, str(active.get("phase")))
-            ):
-                raise HomeAssistantError("There is no paused or error-held clean to cancel.")
-            now = _now()
-            if active:
-                self._cancel_job(robot_id, active, now, "cancelled_by_user_confirmation")
-            self.data["robot_holds"].pop(robot_id, None)
-            await self._async_save()
-            self._notify_listeners()
-        await self.async_evaluate(dry_run=False, reason=f"confirmed-cancel:{robot_id}")
 
     def _complete_job(self, robot_id: str, active: dict[str, Any], completion: datetime, confidence: str) -> None:
         area_ids = self._active_rooms(active)

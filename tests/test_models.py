@@ -208,49 +208,58 @@ class ManualCleanRequestTests(unittest.TestCase):
             )
         )
 
-    def test_user_stop_or_return_call_identifies_one_managed_robot(self) -> None:
-        self.assertEqual(
-            models.parse_manual_cancel_request(
-                "vacuum",
-                "stop",
-                "user-id",
-                {"target": {"entity_id": "vacuum.sheila"}},
-                self.robots,
-            ),
-            "vacuum.sheila",
-        )
-        self.assertIsNone(
-            models.parse_manual_cancel_request(
-                "vacuum", "stop", None, {"entity_id": "vacuum.sheila"}, self.robots
-            )
-        )
-        self.assertEqual(
-            models.parse_manual_cancel_request(
-                "vacuum",
-                "return_to_base",
-                "user-id",
-                {"entity_id": "vacuum.sheila"},
-                self.robots,
-            ),
-            "vacuum.sheila",
-        )
-
-
 class ActiveJobHoldTests(unittest.TestCase):
-    def test_paused_and_error_states_remain_held_after_idle(self) -> None:
-        self.assertTrue(models.active_job_should_stay_held("paused", "cleaning"))
-        self.assertTrue(models.active_job_should_stay_held("error", "cleaning"))
-        self.assertTrue(models.active_job_should_stay_held("idle", "paused"))
-        self.assertTrue(models.active_job_should_stay_held("docked", "error_waiting"))
+    def test_physical_resume_continues_a_held_job(self) -> None:
+        self.assertEqual(models.held_job_transition("cleaning", "held", False), "resumed")
 
-    def test_fresh_cleaning_observation_releases_a_held_job(self) -> None:
-        self.assertFalse(models.active_job_should_stay_held("cleaning", "paused"))
-        self.assertFalse(models.active_job_should_stay_held("cleaning", "error_waiting"))
-        self.assertFalse(models.robot_should_stay_held("cleaning", "robot_error"))
+    def test_direct_error_recovery_to_idle_remains_held(self) -> None:
+        self.assertEqual(models.held_job_transition("idle", "held", False), "held")
 
-    def test_robot_hold_survives_an_automatic_idle_after_an_interruption(self) -> None:
-        self.assertTrue(models.robot_should_stay_held("idle", "paused"))
-        self.assertTrue(models.robot_should_stay_held("docked", "robot_error"))
+    def test_returning_then_docked_is_a_physical_cancellation(self) -> None:
+        self.assertEqual(models.held_job_transition("returning", "held", False), "cancelling")
+        self.assertEqual(models.held_job_transition("docked", "cancelling", False), "cancelled")
+
+    def test_completion_before_a_fault_waits_for_a_physical_return(self) -> None:
+        self.assertEqual(models.held_job_transition("docked", "held", True), "held")
+        self.assertEqual(
+            models.held_job_transition("returning", "held", True), "completion_pending"
+        )
+        self.assertEqual(
+            models.held_job_transition("docked", "completion_pending", True), "complete"
+        )
+
+    def test_cancellation_rebases_due_queue_without_collapsing_spacing(self) -> None:
+        now = datetime(2026, 8, 8, 12, 0)
+        result = models.rebase_due_times(
+            {
+                "area_a:vacuum": now - timedelta(hours=2),
+                "area_b:vacuum": now + timedelta(hours=1),
+                "area_c:mop": now + timedelta(hours=4),
+            },
+            now + timedelta(hours=24),
+        )
+        self.assertEqual(result["area_a:vacuum"], now + timedelta(hours=24))
+        self.assertEqual(result["area_b:vacuum"], now + timedelta(hours=27))
+        self.assertEqual(result["area_c:mop"], now + timedelta(hours=30))
+
+    def test_offline_held_job_uses_expected_duration_to_classify_docked_state(self) -> None:
+        recovered = datetime(2026, 8, 8, 12, 0)
+        self.assertEqual(
+            models.offline_held_recovery_outcome(
+                "docked", "held", recovered - timedelta(minutes=31), 30, recovered
+            ),
+            "complete",
+        )
+        self.assertEqual(
+            models.offline_held_recovery_outcome(
+                "idle", "held", recovered - timedelta(minutes=29), 30, recovered
+            ),
+            "cancelled",
+        )
+        self.assertEqual(
+            models.offline_held_recovery_outcome("idle", "held", None, None, recovered),
+            "held",
+        )
 
 if __name__ == "__main__":
     unittest.main()
