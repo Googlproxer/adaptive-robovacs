@@ -48,9 +48,10 @@ The integration does not stop a clean already in progress if a room becomes
 occupied. It never dispatches work in observe-only mode or Party Mode. A room
 with unresolved occupancy is retried only in the configured quiet-night window;
 bedroom-transit rooms remain excluded from that exception. A failed native-area
-dispatch is shown as **unknown error**; the complete diagnostic is recorded in
-the Adaptive RoboVacs integration log rather than suggesting that a map needs
-repair.
+dispatch is recorded as an **unknown error** in the room's diagnostic metadata,
+with the complete cause in the Adaptive RoboVacs integration log rather than a
+misleading map-repair instruction. The room remains eligible for future
+scheduler attempts, and a successful dispatch clears the error.
 
 ## Releases and upgrades
 

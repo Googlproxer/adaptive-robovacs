@@ -783,8 +783,6 @@ class AdaptiveRoboVacCoordinator:
         detail = self._room_data(room.area_id)
         if not settings.get("enabled", True):
             return None, "room disabled"
-        if detail.get("map_status") == "error":
-            return None, "unknown error; see integration logs"
         vacuum_due = self._room_due(room, "vacuum", now)
         carpet = bool(settings.get("carpet", False))
         mop_due = None if carpet else self._room_due(room, "mop", now)
