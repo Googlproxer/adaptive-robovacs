@@ -19,6 +19,12 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertEqual(hacs["name"], manifest["name"])
         self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$")
 
+    def test_hacs_listing_icon_matches_the_local_integration_brand(self) -> None:
+        root_icon = ROOT / "icon.png"
+        integration_icon = ROOT / "custom_components" / "adaptive_robovacs" / "brand" / "icon.png"
+        self.assertTrue(root_icon.is_file())
+        self.assertEqual(root_icon.read_bytes(), integration_icon.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()
