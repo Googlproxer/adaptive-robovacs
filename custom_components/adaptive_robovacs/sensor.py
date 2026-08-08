@@ -107,9 +107,12 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             return "disabled"
         if state["block_reason"] == "not due":
             return format_time_until(state["next_due"], dt_util.utcnow())
-        if state["block_reason"].startswith("unresolved occupancy; waiting for "):
+        if state["block_reason"] in {
+            "waiting for desired cleaning window",
+            "unresolved occupancy; waiting for desired cleaning window",
+        }:
             return format_time_until(
-                state["unresolved_window_start"], dt_util.as_local(dt_util.utcnow())
+                state["desired_window_start"], dt_util.as_local(dt_util.utcnow())
             )
         return state["block_reason"]
 
@@ -124,6 +127,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "bedroom": state["bedroom"],
             "bedroom_transit": state["bedroom_transit"],
             "carpet": state["carpet"],
+            "ignore_desired_window": state["ignore_desired_window"],
             "vacuum_due_at": state["vacuum_due"].isoformat(),
             "mop_due_at": state["mop_due"].isoformat() if state["mop_due"] else None,
             "estimated_start": candidate["due_at"].isoformat() if candidate else None,
@@ -134,6 +138,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "map_status": state["map_status"],
             "map_error": state["map_error"],
             "block_reason": state["block_reason"],
+            "desired_window_start": state["desired_window_start"].isoformat(),
             "unresolved_window_start": state["unresolved_window_start"].isoformat(),
             "active_job_source": state["active"].get("source") if state["active"] else None,
             "active_robot": state["active_robot"],

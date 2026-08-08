@@ -48,6 +48,7 @@ from .const import (
 from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoveryResult, async_discover
 from .models import (
     Forecast,
+    desired_window_allows,
     due_at,
     forecast_vacancy,
     held_job_transition,
@@ -309,10 +310,12 @@ class AdaptiveRoboVacCoordinator:
                 "mop_interval": DEFAULT_MOP_INTERVAL,
                 "expected_minutes": DEFAULT_EXPECTED_MINUTES,
                 "carpet": False,
+                "ignore_desired_window": False,
             },
         )
         # Existing persisted settings predate newer optional room controls.
         settings.setdefault("carpet", False)
+        settings.setdefault("ignore_desired_window", False)
         return settings
 
     def _robot_settings(self, robot: DiscoveredRobot) -> dict[str, Any]:
@@ -360,7 +363,14 @@ class AdaptiveRoboVacCoordinator:
 
         if area_id not in self.discovery.rooms:
             raise ValueError(f"Unknown room area: {area_id}")
-        if key not in {"enabled", "vacuum_interval", "mop_interval", "expected_minutes", "carpet"}:
+        if key not in {
+            "enabled",
+            "vacuum_interval",
+            "mop_interval",
+            "expected_minutes",
+            "carpet",
+            "ignore_desired_window",
+        }:
             raise ValueError(f"Unknown room setting: {key}")
         self._room_settings(self.discovery.rooms[area_id])[key] = value
         await self._async_save()
@@ -1036,8 +1046,18 @@ class AdaptiveRoboVacCoordinator:
         ]
         return (False, "bedrooms not clear: " + ", ".join(blocked)) if blocked else (True, "bedrooms clear")
 
+    def _desired_window_allows(self, room: DiscoveredRoom, now: datetime) -> bool:
+        """Apply the global desired window unless this room explicitly ignores it."""
+
+        return desired_window_allows(
+            bool(self._room_settings(room).get("ignore_desired_window", False)),
+            _local(now),
+            str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START)),
+            str(self.data.get("unresolved_end", DEFAULT_UNRESOLVED_END)),
+        )
+
     def _unresolved_allowed(self, room: DiscoveredRoom, now: datetime) -> bool:
-        """Permit only non-transit unresolved rooms during the quiet night window."""
+        """Permit unresolved occupancy only inside the desired cleaning window."""
 
         return unresolved_occupancy_allowed(
             str(self._room_data(room.area_id).get("occupancy")),
@@ -1064,16 +1084,16 @@ class AdaptiveRoboVacCoordinator:
         mop_makes_room_due = not carpet and can_mop and mop_due is not None and mop_due <= now
         if vacuum_due > now and not mop_makes_room_due:
             return None, "not due"
-        unresolved_night = self._unresolved_allowed(room, now)
-        if detail.get("occupancy") != "unoccupied" and not unresolved_night:
+        if detail.get("occupancy") == "occupied":
+            return None, f"occupancy {detail.get('occupancy')} ({detail.get('source')})"
+        if not self._desired_window_allows(room, now):
+            return None, "waiting for desired cleaning window"
+        unresolved_window_allowed = self._unresolved_allowed(room, now)
+        if detail.get("occupancy") != "unoccupied" and not unresolved_window_allowed:
             if detail.get("occupancy") == "unresolved":
                 if room.is_bedroom_transit:
-                    return None, "unresolved occupancy; bedroom-transit excluded overnight"
-                return None, (
-                    "unresolved occupancy; waiting for "
-                    f"{self.data.get('unresolved_start', DEFAULT_UNRESOLVED_START)}-"
-                    f"{self.data.get('unresolved_end', DEFAULT_UNRESOLVED_END)}"
-                )
+                    return None, "unresolved occupancy; bedroom-transit excluded"
+                return None, "unresolved occupancy; waiting for desired cleaning window"
             return None, f"occupancy {detail.get('occupancy')} ({detail.get('source')})"
         if room.is_bedroom_transit:
             allowed, reason = self._hall_allowed(now)
@@ -1083,8 +1103,8 @@ class AdaptiveRoboVacCoordinator:
         passes = 2 if any(bool(self._robot_settings(robot).get("double_pass")) for robot in capable) else 1
         duration_minutes, duration_sample_count = self._effective_duration(room, operation, passes)
         forecast = (
-            Forecast(True, 0.0, "unresolved occupancy overnight policy")
-            if unresolved_night
+            Forecast(True, 0.0, "unresolved occupancy desired-window policy")
+            if unresolved_window_allowed
             else self._forecast(room, now, duration_minutes)
         )
         if not forecast.allowed:
@@ -1648,7 +1668,7 @@ class AdaptiveRoboVacCoordinator:
         detail = self._room_data(area_id)
         settings = self._room_settings(room)
         now = _now()
-        unresolved_window_start = next_window_start(
+        desired_window_start = next_window_start(
             _local(now), str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START))
         )
         vacuum_due = self._room_due(room, "vacuum", now)
@@ -1694,6 +1714,7 @@ class AdaptiveRoboVacCoordinator:
             "mop_interval": settings["mop_interval"],
             "expected_minutes": settings["expected_minutes"],
             "carpet": settings["carpet"],
+            "ignore_desired_window": settings["ignore_desired_window"],
             "occupancy": detail["occupancy"],
             "occupancy_source": detail["source"],
             "unavailable_radars": detail["unavailable_radars"],
@@ -1703,7 +1724,9 @@ class AdaptiveRoboVacCoordinator:
             "vacuum_due": vacuum_due,
             "mop_due": mop_due,
             "next_due": next_due,
-            "unresolved_window_start": unresolved_window_start,
+            "desired_window_start": desired_window_start,
+            # Retained for existing dashboard templates and integrations.
+            "unresolved_window_start": desired_window_start,
             "next_candidate": candidate,
             "active": active,
             "active_robot": active_robot_id,

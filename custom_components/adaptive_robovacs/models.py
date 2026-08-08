@@ -339,6 +339,14 @@ def next_window_start(now: datetime, start: str) -> datetime:
     return candidate if now < candidate else candidate + timedelta(days=1)
 
 
+def desired_window_allows(
+    ignore_desired_window: bool, now: datetime, start: str, end: str
+) -> bool:
+    """Return whether a room may start within the preferred cleaning window."""
+
+    return ignore_desired_window or in_daytime_window(now, start, end)
+
+
 def unresolved_occupancy_allowed(
     occupancy: str,
     is_bedroom_transit: bool,
@@ -346,7 +354,7 @@ def unresolved_occupancy_allowed(
     start: str,
     end: str,
 ) -> bool:
-    """Allow only ordinary unresolved rooms in the configured night window."""
+    """Allow only ordinary unresolved rooms in the desired cleaning window."""
 
     return (
         occupancy == "unresolved"

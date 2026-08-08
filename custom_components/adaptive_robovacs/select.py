@@ -52,8 +52,8 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
     entities: list[AdaptiveEntity] = [
         _TimeSelect(coordinator, "hall_start", "Bedroom-transit start"),
         _TimeSelect(coordinator, "hall_end", "Bedroom-transit end"),
-        _TimeSelect(coordinator, "unresolved_start", "Unresolved-occupancy start"),
-        _TimeSelect(coordinator, "unresolved_end", "Unresolved-occupancy end"),
+        _TimeSelect(coordinator, "unresolved_start", "Desired cleaning start"),
+        _TimeSelect(coordinator, "unresolved_end", "Desired cleaning end"),
     ]
     for robot in coordinator.discovery.robots.values():
         profile = robot.profile

@@ -97,6 +97,12 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
             [
                 _RoomSwitch(coordinator, room.area_id, "enabled", f"{room.name} enabled"),
                 _RoomSwitch(coordinator, room.area_id, "carpet", f"{room.name} carpet (no mopping)"),
+                _RoomSwitch(
+                    coordinator,
+                    room.area_id,
+                    "ignore_desired_window",
+                    f"{room.name} ignore desired cleaning window",
+                ),
             ]
         )
     return entities

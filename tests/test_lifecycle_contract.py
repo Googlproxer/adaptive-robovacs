@@ -41,8 +41,28 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('"learned_duration_minutes"', source)
         self.assertIn('return "Completion pending"', source)
         self.assertIn('return state["state"]', source)
-        self.assertIn('state["unresolved_window_start"]', source)
+        self.assertIn('state["desired_window_start"]', source)
+        self.assertIn('"desired_window_start"', source)
+        self.assertIn('"unresolved_window_start"', source)
         self.assertIn('"unresolved_window_start"', COORDINATOR_PATH.read_text(encoding="utf-8"))
+
+    def test_desired_window_uses_existing_controls_with_a_room_override(self) -> None:
+        coordinator = COORDINATOR_PATH.read_text(encoding="utf-8")
+        switch = (Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "switch.py").read_text(
+            encoding="utf-8"
+        )
+        select = (Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "select.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"ignore_desired_window": False', coordinator)
+        self.assertIn('"waiting for desired cleaning window"', coordinator)
+        self.assertIn("if not self._desired_window_allows(room, now)", coordinator)
+        self.assertIn("unresolved_window_allowed = self._unresolved_allowed(room, now)", coordinator)
+        self.assertIn('"desired_window_start"', coordinator)
+        self.assertIn('"unresolved_window_start": desired_window_start', coordinator)
+        self.assertIn('"ignore_desired_window"', switch)
+        self.assertIn("Desired cleaning start", select)
+        self.assertIn("Desired cleaning end", select)
 
     def test_cleaning_timer_is_discovered_from_the_robot_device(self) -> None:
         source = DISCOVERY_PATH.read_text(encoding="utf-8")

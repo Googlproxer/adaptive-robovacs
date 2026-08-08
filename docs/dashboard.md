@@ -38,9 +38,10 @@ attributes. It therefore updates as a room, vacuum, or supported robot control
 appears. It presents Party Mode and observe-only state, active robot activity,
 mode, current room, room controls, next clean status, safe estimated start,
 last-cleaned time, occupancy source, carpet/no-mop setting, and native map
-status. Held robots show their paused, error, or return-to-dock state. Resume
-or cancel them with the robot's physical controls; the dashboard deliberately
-does not offer acknowledgement or cancellation buttons.
+status, including each room's **Ignore desired cleaning window** control. Held
+robots show their paused, error, or return-to-dock state. Resume or cancel them
+with the robot's physical controls; the dashboard deliberately does not offer
+acknowledgement or cancellation buttons.
 
 The standalone copy in `dashboard/adaptive-robovacs-dashboard.js` is retained
 for dashboards that prefer `/local/` resources, but the integration-served URL

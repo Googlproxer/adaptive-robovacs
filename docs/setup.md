@@ -37,11 +37,14 @@ integration can use a complete all-clear legacy motion/occupancy fallback. A
 room without any occupancy source is eligible when due. A new entry after a
 clean starts does not interrupt it.
 
-When an occupancy source is unresolved, the room remains blocked during the
-day and is retried only in the configured quiet-night window (01:00–05:00 by
-default). Bedroom-transit areas are never included in that exception: they
-remain daytime-only and still require every bedroom to be clear. The dashboard
-provides start and end controls for the quiet-night window.
+The **Desired cleaning window** controls when due rooms normally start. They
+wait for its next start by default; enable a room's **Ignore desired cleaning
+window** switch to let an otherwise-safe clean run outside it. A room with
+unresolved occupancy is eligible only inside the desired window, even when that
+room ignores the usual timing preference. Bedroom-transit areas are never
+included in that unresolved exception: they retain their separate daytime-only
+and every-bedroom-clear rules. The dashboard provides the window start and end
+controls.
 
 Enable a room's **Carpet (no mopping)** switch to make that room vacuum-only.
 Its stored mopping cadence and history are retained so turning the switch back

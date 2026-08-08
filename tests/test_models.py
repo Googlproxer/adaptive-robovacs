@@ -104,16 +104,23 @@ class CadenceTests(unittest.TestCase):
             self.now.replace(hour=1, minute=0) + timedelta(days=1),
         )
 
-    def test_unresolved_occupancy_is_only_allowed_overnight_for_non_transit_rooms(self) -> None:
-        overnight = self.now.replace(hour=2)
+    def test_desired_window_defers_default_rooms_but_allows_the_room_override(self) -> None:
+        daytime = self.now.replace(hour=12)
+        after_hours = self.now.replace(hour=21)
+        self.assertTrue(models.desired_window_allows(False, daytime, "09:00", "20:00"))
+        self.assertFalse(models.desired_window_allows(False, after_hours, "09:00", "20:00"))
+        self.assertTrue(models.desired_window_allows(True, after_hours, "09:00", "20:00"))
+
+    def test_unresolved_occupancy_is_only_allowed_in_the_desired_window_for_non_transit_rooms(self) -> None:
+        desired_window = self.now.replace(hour=12)
         self.assertTrue(
-            models.unresolved_occupancy_allowed("unresolved", False, overnight, "01:00", "05:00")
+            models.unresolved_occupancy_allowed("unresolved", False, desired_window, "09:00", "20:00")
         )
         self.assertFalse(
-            models.unresolved_occupancy_allowed("unresolved", True, overnight, "01:00", "05:00")
+            models.unresolved_occupancy_allowed("unresolved", True, desired_window, "09:00", "20:00")
         )
         self.assertFalse(
-            models.unresolved_occupancy_allowed("occupied", False, overnight, "01:00", "05:00")
+            models.unresolved_occupancy_allowed("occupied", False, desired_window, "09:00", "20:00")
         )
 
     def test_carpet_rooms_never_choose_a_mopping_operation(self) -> None:

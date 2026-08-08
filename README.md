@@ -45,10 +45,12 @@ vacuum-app starts are intentionally left untracked.
 ## Safety
 
 The integration does not stop a clean already in progress if a room becomes
-occupied. It never dispatches work in observe-only mode or Party Mode. A room
-with unresolved occupancy is retried only in the configured quiet-night window;
-bedroom-transit rooms remain excluded from that exception. A failed native-area
-dispatch is recorded as an **unknown error** in the room's diagnostic metadata,
+occupied. It never dispatches work in observe-only mode or Party Mode. By
+default, due rooms wait for the configured desired cleaning window; enable a
+room's **Ignore desired cleaning window** switch to permit its otherwise-safe
+clean outside those hours. A room with unresolved occupancy is retried only in
+that window, and bedroom-transit rooms remain excluded from that exception. A
+failed native-area dispatch is recorded as an **unknown error** in the room's diagnostic metadata,
 with the complete cause in the Adaptive RoboVacs integration log rather than a
 misleading map-repair instruction. The room remains eligible for future
 scheduler attempts, and a successful dispatch clears the error.
