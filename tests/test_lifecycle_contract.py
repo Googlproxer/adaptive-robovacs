@@ -6,6 +6,7 @@ import unittest
 
 COORDINATOR_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "coordinator.py"
 SENSOR_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "sensor.py"
+BUTTON_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "button.py"
 DISCOVERY_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "discovery_core.py"
 
 
@@ -46,6 +47,19 @@ class LifecycleContractTests(unittest.TestCase):
         source = DISCOVERY_PATH.read_text(encoding="utf-8")
         self.assertIn("cleaning_time_entity_id", source)
         self.assertIn('device_class == "duration"', source)
+
+    def test_paused_and_error_jobs_are_held_until_user_resolution(self) -> None:
+        coordinator = COORDINATOR_PATH.read_text(encoding="utf-8")
+        sensor = SENSOR_PATH.read_text(encoding="utf-8")
+        button = BUTTON_PATH.read_text(encoding="utf-8")
+        self.assertIn('"robot_holds"', coordinator)
+        self.assertIn('"error_waiting"', coordinator)
+        self.assertIn("active_job_should_stay_held", coordinator)
+        self.assertIn("_cancel_recovery_timer", coordinator)
+        self.assertIn("async_confirm_held_clean_cancelled", coordinator)
+        self.assertIn('return "Scheduler held"', sensor)
+        self.assertIn('return "Paused"', sensor)
+        self.assertIn("Confirm held clean cancelled", button)
 
 
 if __name__ == "__main__":

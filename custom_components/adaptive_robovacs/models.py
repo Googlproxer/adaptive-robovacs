@@ -53,6 +53,19 @@ class ManualCleanRequest:
     area_ids: list[str]
 
 
+def _service_entity_ids(service_data: Mapping[str, object]) -> list[str]:
+    """Return the explicitly targeted entities from a service call."""
+
+    target = service_data.get("target")
+    target_data = target if isinstance(target, Mapping) else {}
+    value = service_data.get("entity_id", target_data.get("entity_id"))
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
 def parse_manual_clean_request(
     domain: str,
     service: str,
@@ -71,9 +84,6 @@ def parse_manual_clean_request(
     if domain != "vacuum" or service != "clean_area" or not user_id:
         return None
 
-    target = service_data.get("target")
-    target_data = target if isinstance(target, Mapping) else {}
-    raw_robot_ids = service_data.get("entity_id", target_data.get("entity_id"))
     raw_area_ids = service_data.get("cleaning_area_id")
 
     def identifiers(value: object) -> list[str]:
@@ -83,7 +93,7 @@ def parse_manual_clean_request(
             return [item for item in value if isinstance(item, str)]
         return []
 
-    robot_ids = identifiers(raw_robot_ids)
+    robot_ids = _service_entity_ids(service_data)
     area_ids = list(dict.fromkeys(identifiers(raw_area_ids)))
     managed_robots = set(managed_robot_ids)
     managed_areas = set(managed_area_ids)
@@ -92,6 +102,51 @@ def parse_manual_clean_request(
     if not area_ids or any(area_id not in managed_areas for area_id in area_ids):
         return None
     return ManualCleanRequest(robot_ids[0], area_ids)
+
+
+def parse_manual_cancel_request(
+    domain: str,
+    service: str,
+    user_id: str | None,
+    service_data: Mapping[str, object],
+    managed_robot_ids: Iterable[str],
+) -> str | None:
+    """Return an explicit user cancellation of one managed robot job.
+
+    A direct Home Assistant ``vacuum.stop`` or ``vacuum.return_to_base`` call
+    is unambiguous user intent. Native app events do not carry this context, so
+    those users can instead confirm a held job from the integration button.
+    """
+
+    if domain != "vacuum" or service not in {"stop", "return_to_base"} or not user_id:
+        return None
+    robot_ids = _service_entity_ids(service_data)
+    managed_robots = set(managed_robot_ids)
+    if len(robot_ids) != 1 or robot_ids[0] not in managed_robots:
+        return None
+    return robot_ids[0]
+
+
+def active_job_should_stay_held(robot_state: str | None, phase: str | None) -> bool:
+    """Keep an interrupted job from becoming a synthetic completion.
+
+    A robot error can be followed by an integration-reported idle state even
+    though no one repaired the fault. Likewise, a paused clean must not expire
+    simply because its estimate elapsed. A fresh cleaning observation is the
+    only automatic release because it proves the user resumed the robot.
+    """
+
+    if robot_state == "cleaning":
+        return False
+    return robot_should_stay_held(robot_state, None) or phase in {"paused", "error_waiting"}
+
+
+def robot_should_stay_held(robot_state: str | None, hold_reason: str | None) -> bool:
+    """Return whether a robot-level pause or error remains latched."""
+
+    if robot_state == "cleaning":
+        return False
+    return robot_state in {"paused", "error"} or hold_reason in {"paused", "robot_error"}
 
 
 def recovery_transition_is_observed(

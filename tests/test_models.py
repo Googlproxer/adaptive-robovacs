@@ -208,5 +208,49 @@ class ManualCleanRequestTests(unittest.TestCase):
             )
         )
 
+    def test_user_stop_or_return_call_identifies_one_managed_robot(self) -> None:
+        self.assertEqual(
+            models.parse_manual_cancel_request(
+                "vacuum",
+                "stop",
+                "user-id",
+                {"target": {"entity_id": "vacuum.sheila"}},
+                self.robots,
+            ),
+            "vacuum.sheila",
+        )
+        self.assertIsNone(
+            models.parse_manual_cancel_request(
+                "vacuum", "stop", None, {"entity_id": "vacuum.sheila"}, self.robots
+            )
+        )
+        self.assertEqual(
+            models.parse_manual_cancel_request(
+                "vacuum",
+                "return_to_base",
+                "user-id",
+                {"entity_id": "vacuum.sheila"},
+                self.robots,
+            ),
+            "vacuum.sheila",
+        )
+
+
+class ActiveJobHoldTests(unittest.TestCase):
+    def test_paused_and_error_states_remain_held_after_idle(self) -> None:
+        self.assertTrue(models.active_job_should_stay_held("paused", "cleaning"))
+        self.assertTrue(models.active_job_should_stay_held("error", "cleaning"))
+        self.assertTrue(models.active_job_should_stay_held("idle", "paused"))
+        self.assertTrue(models.active_job_should_stay_held("docked", "error_waiting"))
+
+    def test_fresh_cleaning_observation_releases_a_held_job(self) -> None:
+        self.assertFalse(models.active_job_should_stay_held("cleaning", "paused"))
+        self.assertFalse(models.active_job_should_stay_held("cleaning", "error_waiting"))
+        self.assertFalse(models.robot_should_stay_held("cleaning", "robot_error"))
+
+    def test_robot_hold_survives_an_automatic_idle_after_an_interruption(self) -> None:
+        self.assertTrue(models.robot_should_stay_held("idle", "paused"))
+        self.assertTrue(models.robot_should_stay_held("docked", "robot_error"))
+
 if __name__ == "__main__":
     unittest.main()

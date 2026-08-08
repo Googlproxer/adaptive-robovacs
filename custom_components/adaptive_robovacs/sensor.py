@@ -70,6 +70,8 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             "room": state["active_room"],
             "rooms": state["active_rooms"],
             "activity_source": state["active"].get("source") if state["active"] else None,
+            "activity_phase": state["active"].get("phase") if state["active"] else None,
+            "scheduler_hold": state["scheduler_hold"],
             "cleaning_mode": state["settings"].get("mode"),
             "double_pass": state["settings"].get("double_pass"),
             "mopping_enabled": state["settings"].get("mopping_enabled"),
@@ -87,6 +89,10 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
         if state["active"]:
             if state["active"].get("phase") == "recovery_waiting":
                 return "Completion pending"
+            if state["active"].get("phase") == "error_waiting":
+                return "Scheduler held"
+            if state["active"].get("phase") == "paused":
+                return "Paused"
             if state["active_robot_state"] == "returning":
                 return "Returning"
             return "In Progress"
@@ -133,6 +139,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "active_started_at": state["active"].get("observed_started") if state["active"] else None,
             "expected_end_at": state["active"].get("expected_end") if state["active"] else None,
             "active_completion_confidence": state["active"].get("completion_confidence") if state["active"] else None,
+            "active_hold_reason": state["active"].get("hold_reason") if state["active"] else None,
             "learned_duration_minutes": state["effective_duration_minutes"],
             "duration_sample_count": state["duration_sample_count"],
         }

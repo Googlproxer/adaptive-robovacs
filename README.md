@@ -53,6 +53,17 @@ with the complete cause in the Adaptive RoboVacs integration log rather than a
 misleading map-repair instruction. The room remains eligible for future
 scheduler attempts, and a successful dispatch clears the error.
 
+An observed robot pause or error also creates a durable per-robot scheduler
+hold. The hold survives an automatic idle transition and Home Assistant
+restarts, so an expected duration can never resume work after a fault. Resuming
+the clean on the robot releases the hold only after Home Assistant observes it
+cleaning again; a completed clean is then tracked normally. A user-initiated
+Home Assistant **Stop** or **Return to base** cancels the held job without
+crediting the room as cleaned. For a native-app cancellation, first leave the
+robot docked or idle, then press that robot's **Confirm held clean cancelled**
+button. The button only releases scheduler state; it never sends a command to
+the vacuum.
+
 ## Releases and upgrades
 
 Production updates are published as full GitHub Releases with semantic tags
