@@ -159,19 +159,16 @@ def due_at(
 
 
 def format_time_until(due_at: datetime, now: datetime) -> str:
-    """Return a concise, rounded-up remaining-time label for a future due time."""
+    """Return a concise remaining-time label using its largest whole unit."""
 
     remaining_minutes = max(0, math.ceil((due_at - now).total_seconds() / 60))
-    days, remainder = divmod(remaining_minutes, 24 * 60)
-    hours, minutes = divmod(remainder, 60)
-    parts: list[str] = []
-    if days:
-        parts.append(f"{days} day" if days == 1 else f"{days} days")
-    if hours:
-        parts.append(f"{hours} hour" if hours == 1 else f"{hours} hours")
-    if minutes or not parts:
-        parts.append(f"{minutes} minute" if minutes == 1 else f"{minutes} minutes")
-    return "in " + " ".join(parts)
+    if remaining_minutes >= 24 * 60:
+        days = remaining_minutes // (24 * 60)
+        return f"in {days} day" if days == 1 else f"in {days} days"
+    if remaining_minutes >= 60:
+        hours = remaining_minutes // 60
+        return f"in {hours} hour" if hours == 1 else f"in {hours} hours"
+    return f"in {remaining_minutes} minute" if remaining_minutes == 1 else f"in {remaining_minutes} minutes"
 
 
 def forecast_vacancy(

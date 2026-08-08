@@ -59,12 +59,16 @@ class CadenceTests(unittest.TestCase):
         )
         self.assertEqual(result, self.now + timedelta(hours=10))
 
-    def test_time_until_uses_a_concise_rounded_up_human_label(self) -> None:
+    def test_time_until_uses_only_the_largest_whole_unit(self) -> None:
         self.assertEqual(
             models.format_time_until(
                 self.now + timedelta(days=1, hours=2, minutes=3, seconds=1), self.now
             ),
-            "in 1 day 2 hours 4 minutes",
+            "in 1 day",
+        )
+        self.assertEqual(
+            models.format_time_until(self.now + timedelta(hours=2, minutes=59), self.now),
+            "in 2 hours",
         )
         self.assertEqual(
             models.format_time_until(self.now + timedelta(seconds=1), self.now),
