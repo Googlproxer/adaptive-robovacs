@@ -28,6 +28,3 @@ record_manual_clean:
           options:
             - vacuum
             - mop
-decommission_report:
-  name: Legacy decommission inventory
-  description: Produces a read-only inventory of Pyscript scheduler entities and external references. It never deletes anything.
