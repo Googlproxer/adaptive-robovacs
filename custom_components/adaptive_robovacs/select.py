@@ -19,7 +19,7 @@ class _TimeSelect(AdaptiveEntity, SelectEntity):
 
     @property
     def current_option(self) -> str:
-        return str(self.coordinator.data[self.key])
+        return str(self.coordinator.get_global_setting(self.key))
 
     async def async_select_option(self, option: str) -> None:
         await self.coordinator.async_set_global(self.key, option)
