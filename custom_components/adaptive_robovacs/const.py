@@ -7,7 +7,9 @@ from typing import Final
 
 DOMAIN: Final = "adaptive_robovacs"
 NAME: Final = "Adaptive RoboVacs"
-VERSION: Final = 1
+# Keep the Home Assistant Store envelope stable so existing persisted payloads
+# reach the schema-versioned codec in state.py for migration.
+STORE_VERSION: Final = 1
 STORAGE_KEY: Final = f"{DOMAIN}.data"
 
 PLATFORMS: Final = ("button", "number", "select", "sensor", "switch")
@@ -37,7 +39,6 @@ DEFAULT_UNRESOLVED_END: Final = "05:00"
 
 SERVICE_EVALUATE: Final = "evaluate"
 SERVICE_RECORD_MANUAL_CLEAN: Final = "record_manual_clean"
-SERVICE_DECOMMISSION_REPORT: Final = "decommission_report"
 
 SIGNAL_DISCOVERY_UPDATED: Final = f"{DOMAIN}_discovery_updated"
 

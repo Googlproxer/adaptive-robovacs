@@ -31,12 +31,7 @@ class _SchedulerSensor(AdaptiveEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         return {
             **super().extra_state_attributes,
-            "last_evaluation": self.coordinator.data.get("last_evaluation"),
-            "preview": self.coordinator.data.get("last_preview", {}),
-            "migration": {
-                "complete": self.coordinator.data.get("legacy_migrated", False),
-                "matched_rooms": self.coordinator.data.get("legacy_migration_count", 0),
-            },
+            **self.coordinator.scheduler_summary(),
         }
 
 

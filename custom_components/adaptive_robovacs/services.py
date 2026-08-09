@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN, SERVICE_DECOMMISSION_REPORT, SERVICE_EVALUATE, SERVICE_RECORD_MANUAL_CLEAN
+from .const import DOMAIN, SERVICE_EVALUATE, SERVICE_RECORD_MANUAL_CLEAN
 
 
 def _coordinator(hass: HomeAssistant):
@@ -39,16 +37,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
             list(call.data.get("operations", ["vacuum"])),
         )
 
-    async def decommission_report(_call: ServiceCall) -> dict[str, Any]:
-        inventory = _coordinator(hass).decommission_inventory()
-        persistent_notification.async_create(
-            hass,
-            "<pre>" + json.dumps(inventory, indent=2) + "</pre>",
-            title="Adaptive RoboVacs legacy decommission inventory",
-            notification_id=f"{DOMAIN}_decommission_inventory",
-        )
-        return inventory
-
     hass.services.async_register(
         DOMAIN,
         SERVICE_EVALUATE,
@@ -71,14 +59,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
         ),
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DECOMMISSION_REPORT,
-        decommission_report,
-        supports_response=SupportsResponse.ONLY,
-    )
-
-
 async def async_unregister_services(hass: HomeAssistant) -> None:
     """Keep global services available once registered during the HA process."""
 

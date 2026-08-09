@@ -5,6 +5,8 @@ import unittest
 
 
 COORDINATOR_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "coordinator.py"
+JOBS_PATH = COORDINATOR_PATH.with_name("jobs.py")
+PROJECTIONS_PATH = COORDINATOR_PATH.with_name("projections.py")
 SENSOR_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "sensor.py"
 BUTTON_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "button.py"
 DISCOVERY_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "discovery_core.py"
@@ -14,7 +16,7 @@ class LifecycleContractTests(unittest.TestCase):
     """Guard restart recovery and presentation without a Home Assistant runtime."""
 
     def test_active_jobs_persist_expected_end_and_observed_start(self) -> None:
-        source = COORDINATOR_PATH.read_text(encoding="utf-8")
+        source = COORDINATOR_PATH.read_text(encoding="utf-8") + JOBS_PATH.read_text(encoding="utf-8")
         self.assertIn('"expected_end"', source)
         self.assertIn('"observed_started"', source)
         self.assertIn('"last_observed_at"', source)
@@ -22,7 +24,7 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('"recovered_expected_end"', source)
 
     def test_recovered_estimates_do_not_train_duration_learning(self) -> None:
-        source = COORDINATOR_PATH.read_text(encoding="utf-8")
+        source = COORDINATOR_PATH.read_text(encoding="utf-8") + JOBS_PATH.read_text(encoding="utf-8")
         self.assertIn('confidence == "observed"', source)
         self.assertIn('"robot": robot_id', source)
         self.assertIn('active.get("duration_source", "state_transition")', source)
@@ -44,10 +46,13 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('state["desired_window_start"]', source)
         self.assertIn('"desired_window_start"', source)
         self.assertIn('"unresolved_window_start"', source)
-        self.assertIn('"unresolved_window_start"', COORDINATOR_PATH.read_text(encoding="utf-8"))
+        self.assertIn('"unresolved_window_start"', PROJECTIONS_PATH.read_text(encoding="utf-8"))
 
     def test_desired_window_uses_existing_controls_with_a_room_override(self) -> None:
-        coordinator = COORDINATOR_PATH.read_text(encoding="utf-8")
+        coordinator = (
+            COORDINATOR_PATH.read_text(encoding="utf-8")
+            + PROJECTIONS_PATH.read_text(encoding="utf-8")
+        )
         switch = (Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "switch.py").read_text(
             encoding="utf-8"
         )
@@ -78,7 +83,6 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn("held_job_transition", coordinator)
         self.assertIn("offline_held_recovery_outcome", coordinator)
         self.assertIn("_apply_robot_cancellation_deferral", coordinator)
-        self.assertIn("_remove_deprecated_confirmation_buttons", coordinator)
         self.assertIn("_cancel_recovery_timer", coordinator)
         self.assertIn('return "Scheduler held"', sensor)
         self.assertIn('return "Paused"', sensor)

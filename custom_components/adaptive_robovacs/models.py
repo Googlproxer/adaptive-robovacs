@@ -46,6 +46,64 @@ class Candidate:
 
 
 @dataclass(frozen=True, slots=True)
+class RoomObservation:
+    """Home Assistant observations needed for a room scheduling decision."""
+
+    occupancy: str
+    source: str
+    unavailable_radars: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RobotObservation:
+    """Home Assistant observations needed to decide whether a robot is ready."""
+
+    state: str | None
+    battery: float | None
+    cleaning_timer_minutes: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RobotReadiness:
+    """A displayable readiness decision for a discovered robot."""
+
+    ready: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class RoomCandidate:
+    """A pure room candidate before it is assigned to a robot."""
+
+    room_id: str
+    operation: str
+    due_at: datetime
+    confidence: float
+    reason: str
+    duration_minutes: float
+    duration_sample_count: int
+    passes: int
+
+
+@dataclass(frozen=True, slots=True)
+class Assignment:
+    """A pure robot-to-room assignment produced by a scheduling pass."""
+
+    robot_id: str
+    candidate: RoomCandidate
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulePlan:
+    """The safe, side-effect-free result of evaluating the house."""
+
+    candidates: tuple[RoomCandidate, ...]
+    assignments: tuple[Assignment, ...]
+    blocks: Mapping[str, str]
+    readiness: Mapping[str, RobotReadiness]
+
+
+@dataclass(frozen=True, slots=True)
 class ManualCleanRequest:
     """A room-targeted clean explicitly initiated by a Home Assistant user."""
 
@@ -195,7 +253,7 @@ def recovery_transition_is_observed(
 def resolve_occupancy(
     radar_states: Iterable[str | None], fallback_states: Iterable[str | None]
 ) -> OccupancyResolution:
-    """Resolve occupancy with radars preferred over legacy motion sources.
+    """Resolve occupancy with radars preferred over fallback motion sources.
 
     All available radars must be clear to establish vacancy. If a radar is
     unavailable, a complete clear fallback set can establish vacancy instead.
@@ -226,7 +284,7 @@ def due_at(
     deferred_until: datetime | None,
     now: datetime,
 ) -> datetime:
-    """Return the due time while retaining the legacy one-day deferral rule."""
+    """Return the due time while retaining the established one-day deferral rule."""
 
     baseline = now if last_completed is None else last_completed + timedelta(hours=interval_hours)
     return max(baseline, deferred_until) if deferred_until else baseline

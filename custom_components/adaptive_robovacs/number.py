@@ -25,7 +25,7 @@ class _GlobalNumber(_AdaptiveNumber):
 
     @property
     def native_value(self) -> float:
-        return float(self.coordinator.data["forecast_confidence"])
+        return float(self.coordinator.get_global_setting("forecast_confidence"))
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_set_global("forecast_confidence", int(value))

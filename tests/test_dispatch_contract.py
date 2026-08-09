@@ -10,23 +10,22 @@ COORDINATOR_PATH = (
     / "adaptive_robovacs"
     / "coordinator.py"
 )
+RUNTIME_PATH = COORDINATOR_PATH.with_name("runtime.py")
 
 
 class VacuumDispatchContractTests(unittest.TestCase):
     """Guard the native clean-area service payload without importing HA."""
 
     def test_native_cleaning_area_id_payload_is_used(self) -> None:
-        source = COORDINATOR_PATH.read_text(encoding="utf-8")
+        source = RUNTIME_PATH.read_text(encoding="utf-8")
         self.assertIn('"cleaning_area_id": [room.area_id]', source)
         self.assertNotIn('{"entity_id": robot.entity_id, "area_id": [room.area_id]}', source)
 
-    def test_legacy_schema_error_recovery_unblocks_the_room(self) -> None:
-        source = COORDINATOR_PATH.read_text(encoding="utf-8")
-        self.assertIn("_async_migrate_legacy_dispatch_errors", source)
-        self.assertIn("detail[\"map_status\"] = \"unknown\"", source)
-
     def test_dispatch_errors_are_generic_in_state_and_detailed_in_logs(self) -> None:
-        source = COORDINATOR_PATH.read_text(encoding="utf-8")
+        source = (
+            RUNTIME_PATH.read_text(encoding="utf-8")
+            + COORDINATOR_PATH.read_text(encoding="utf-8")
+        )
         self.assertIn('detail["map_status"] = "error"', source)
         self.assertIn('detail["map_error"] = "unknown dispatch error"', source)
         self.assertIn("_LOGGER.exception(", source)

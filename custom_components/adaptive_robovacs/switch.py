@@ -27,7 +27,7 @@ class _GlobalSwitch(_AdaptiveSwitch):
 
     @property
     def is_on(self) -> bool:
-        return bool(self.coordinator.data.get(self.setting_key, False))
+        return bool(self.coordinator.get_global_setting(self.setting_key))
 
     async def async_turn_on(self, **kwargs) -> None:
         await self.coordinator.async_set_global(self.setting_key, True)

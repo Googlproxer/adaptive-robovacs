@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from copy import deepcopy
 from datetime import datetime, timedelta
 import logging
 from typing import Any
@@ -12,12 +11,10 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_CALL_SERVICE, EVENT_HOMEASSISTANT_STARTED, EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
-from homeassistant.util import slugify
 
 from .const import (
     CONF_FORECAST_CONFIDENCE,
@@ -43,9 +40,10 @@ from .const import (
     HISTORY_DAYS,
     SIGNAL_DISCOVERY_UPDATED,
     STORAGE_KEY,
-    VERSION,
+    STORE_VERSION,
 )
 from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoveryResult, async_discover
+from .jobs import JobLifecycle
 from .models import (
     Forecast,
     desired_window_allows,
@@ -64,6 +62,9 @@ from .models import (
     select_operation,
     unresolved_occupancy_allowed,
 )
+from .projections import robot_state, room_state
+from .state import SchedulerState, StateSchemaError
+from .runtime import HomeAssistantRuntime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,7 +114,6 @@ def _blank_room() -> dict[str, Any]:
 
 def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
     return {
-        "version": VERSION,
         "observe_only": entry.data.get(CONF_OBSERVE_ONLY, True),
         "party_mode": False,
         "forecast_confidence": entry.data.get(
@@ -131,7 +131,6 @@ def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
         "recovery_events": [],
         "last_evaluation": None,
         "last_preview": {},
-        "legacy_migrated": False,
     }
 
 
@@ -141,34 +140,44 @@ class AdaptiveRoboVacCoordinator:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        self.store: Store[dict[str, Any]] = Store(hass, VERSION, f"{STORAGE_KEY}.{entry.entry_id}")
+        self.store: Store[dict[str, Any]] = Store(
+            hass, STORE_VERSION, f"{STORAGE_KEY}.{entry.entry_id}"
+        )
         self.data: dict[str, Any] = _blank_data(entry)
+        self.state = SchedulerState.create(entry.data)
+        self._storage_safe_mode = False
         self.discovery = DiscoveryResult()
         self._lock = asyncio.Lock()
         self._unsubscribers: list[Callable[[], None]] = []
         self._listeners: set[EntityListener] = set()
         self._watch_entity_ids: set[str] = set()
         self._recovery_timers: dict[str, Callable[[], None]] = {}
+        self.jobs = JobLifecycle(self)
+        self.runtime = HomeAssistantRuntime(self)
 
     async def async_initialize(self) -> None:
         """Restore state, discover the house, and begin passive observation."""
 
         stored = await self.store.async_load()
-        if isinstance(stored, dict):
-            self.data = _blank_data(self.entry) | stored
-            self.data.setdefault("settings", {"robots": {}, "rooms": {}})
-            self.data["settings"].setdefault("robots", {})
-            self.data["settings"].setdefault("rooms", {})
-            self.data.setdefault("robot_holds", {})
-            self.data.setdefault("rooms", {})
-            self.data.setdefault("active", {})
-            self.data.setdefault("manual_events", [])
-            self.data.setdefault("recovery_events", [])
+        try:
+            self.state, migrated = SchedulerState.from_store(stored, self.entry.data)
+        except StateSchemaError:
+            # Do not overwrite a Store written by a newer version or a malformed
+            # payload.  A fresh observe-only view keeps the robot authoritative.
+            self._storage_safe_mode = True
+            self.state = SchedulerState.create(self.entry.data)
+            self.state.global_settings.observe_only = True
+            self.data = self.state.to_runtime_data()
+            _LOGGER.exception(
+                "Adaptive RoboVacs could not safely load persisted scheduler state; "
+                "dispatch is disabled until the Store is repaired"
+            )
+        else:
+            self.data = self.state.to_runtime_data()
+            if migrated:
+                await self._async_save()
 
         await self.async_refresh_discovery()
-        self._remove_deprecated_confirmation_buttons()
-        await self._async_migrate_legacy_dispatch_errors()
-        await self._async_migrate_legacy_once()
         await self._async_recover_active_jobs()
         self._unsubscribers.extend(
             [
@@ -208,55 +217,10 @@ class AdaptiveRoboVacCoordinator:
             listener()
 
     async def _async_save(self) -> None:
-        self.data["version"] = VERSION
-        await self.store.async_save(self.data)
-
-    def _remove_deprecated_confirmation_buttons(self) -> None:
-        """Remove v1.0.9's acknowledgement buttons from the entity registry."""
-
-        registry = er.async_get(self.hass)
-        for registry_entry in tuple(registry.entities.values()):
-            if (
-                registry_entry.domain == "button"
-                and registry_entry.platform == DOMAIN
-                and registry_entry.config_entry_id == self.entry.entry_id
-                and registry_entry.unique_id.endswith("_confirm_held_clean_cancelled")
-            ):
-                registry.async_remove(registry_entry.entity_id)
-
-    async def _async_migrate_legacy_dispatch_errors(self) -> None:
-        """Make legacy dispatch failures safe and clear to dashboard users.
-
-        A dispatch failure does not prove that a vacuum's native map is
-        broken.  Earlier releases persisted both the raw failure and an
-        ``unmapped`` status, which led the dashboard to direct users to repair
-        a map without evidence.  Keep the diagnostic in the Home Assistant
-        integration log and expose only a generic, actionable status instead.
-        """
-
-        changed = False
-        for area_id, detail in self.data["rooms"].items():
-            raw_error = detail.get("map_error")
-            if raw_error == "required key not provided @ data['cleaning_area_id']":
-                # This old payload defect is known to be corrected by the
-                # current service call, so allow the scheduler to retry it.
-                detail["map_status"] = "unknown"
-                detail["map_error"] = None
-                changed = True
-                continue
-            if detail.get("map_status") != "unmapped":
-                continue
-            _LOGGER.error(
-                "Migrating persisted Adaptive RoboVacs dispatch failure to an "
-                "unknown error: area_id=%s diagnostic=%r",
-                area_id,
-                raw_error,
-            )
-            detail["map_status"] = "error"
-            detail["map_error"] = "unknown dispatch error"
-            changed = True
-        if changed:
-            await self._async_save()
+        if self._storage_safe_mode:
+            return
+        self.state, _ = SchedulerState.from_store(self.data, self.entry.data)
+        await self.store.async_save(self.state.to_store())
 
     async def async_refresh_discovery(self) -> None:
         """Refresh registry state and reset only changed room occupancy models."""
@@ -334,11 +298,34 @@ class AdaptiveRoboVacCoordinator:
 
     @property
     def observe_only(self) -> bool:
-        return bool(self.data.get("observe_only", True))
+        return self._storage_safe_mode or bool(self.data.get("observe_only", True))
 
     @property
     def party_mode(self) -> bool:
         return bool(self.data.get("party_mode", False))
+
+    def get_global_setting(self, key: str) -> Any:
+        """Return a global control value without exposing mutable Store data."""
+
+        if key not in {
+            "observe_only",
+            "party_mode",
+            "forecast_confidence",
+            "hall_start",
+            "hall_end",
+            "unresolved_start",
+            "unresolved_end",
+        }:
+            raise ValueError(f"Unknown global setting: {key}")
+        return self.observe_only if key == "observe_only" else self.data[key]
+
+    def scheduler_summary(self) -> dict[str, Any]:
+        """Return the scheduler metadata used by the status sensor."""
+
+        return {
+            "last_evaluation": self.data.get("last_evaluation"),
+            "preview": self.data.get("last_preview", {}),
+        }
 
     async def async_set_global(self, key: str, value: Any) -> None:
         """Update a global control exposed by a native entity."""
@@ -396,53 +383,6 @@ class AdaptiveRoboVacCoordinator:
         await self._async_save()
         self._notify_listeners()
         await self.async_evaluate(dry_run=True, reason=f"robot:{entity_id}:{key}")
-
-    async def _async_migrate_legacy_once(self) -> None:
-        """Import matched legacy state without embedding legacy room identifiers."""
-
-        if self.data.get("legacy_migrated"):
-            return
-        legacy = self.hass.states.get("pyscript.robovac_scheduler_store")
-        legacy_data = legacy.attributes.get("data", {}) if legacy else {}
-        legacy_rooms = legacy_data.get("rooms", {}) if isinstance(legacy_data, dict) else {}
-        by_legacy_key = {
-            slugify(room.name): room.area_id for room in self.discovery.rooms.values()
-        }
-        migrated = 0
-        for legacy_key, legacy_room in legacy_rooms.items():
-            area_id = by_legacy_key.get(slugify(str(legacy_key)))
-            if not area_id or not isinstance(legacy_room, dict):
-                continue
-            target = self._room_data(area_id)
-            for key in ("vacuum", "mop", "defer", "samples", "unoccupied_since"):
-                if key in legacy_room:
-                    target[key] = deepcopy(legacy_room[key])
-            settings = self._room_settings(self.discovery.rooms[area_id])
-            for suffix, setting_key in (
-                ("enabled", "enabled"),
-                ("vacuum_interval", "vacuum_interval"),
-                ("mop_interval", "mop_interval"),
-                ("expected_minutes", "expected_minutes"),
-            ):
-                helper = self.hass.states.get(
-                    f"input_{'boolean' if suffix == 'enabled' else 'number'}.robovac_{legacy_key}_{suffix}"
-                )
-                if helper is None:
-                    continue
-                if suffix == "enabled":
-                    settings[setting_key] = helper.state == "on"
-                else:
-                    try:
-                        settings[setting_key] = float(helper.state)
-                    except ValueError:
-                        pass
-            migrated += 1
-        party_mode = self.hass.states.get("input_boolean.robovac_party_mode")
-        if party_mode:
-            self.data["party_mode"] = party_mode.state == "on"
-        self.data["legacy_migrated"] = True
-        self.data["legacy_migration_count"] = migrated
-        await self._async_save()
 
     async def _async_recover_active_jobs(self) -> None:
         """Recover a persisted command checkpoint after a Home Assistant restart."""
@@ -695,53 +635,10 @@ class AdaptiveRoboVacCoordinator:
         self._cancel_recovery_timer(robot_id)
 
     def _apply_robot_cancellation_deferral(self, robot_id: str, cancelled_at: datetime) -> list[str]:
-        """Rebase every enabled schedule on a physically cancelled robot's floor."""
-
-        robot = self.discovery.robots.get(robot_id)
-        if not robot or not robot.floor_id:
-            _LOGGER.warning(
-                "Adaptive RoboVacs cannot defer a cancelled robot floor: robot=%s floor=%s",
-                robot_id,
-                robot.floor_id if robot else None,
-            )
-            return []
-        floor_robots = [
-            candidate
-            for candidate in self.discovery.robots.values()
-            if candidate.floor_id == robot.floor_id
-            and candidate.supports_area_clean
-            and self._robot_settings(candidate).get("enabled", True)
-        ]
-        mop_eligible = any(self._mop_ready(candidate) for candidate in floor_robots)
-        due_times: dict[str, datetime] = {}
-        for room in self.discovery.rooms.values():
-            if room.floor_id != robot.floor_id or not self._room_settings(room).get("enabled", True):
-                continue
-            due_times[f"{room.area_id}:vacuum"] = self._room_due(room, "vacuum", cancelled_at)
-            if mop_eligible and not self._room_settings(room).get("carpet", False):
-                due_times[f"{room.area_id}:mop"] = self._room_due(room, "mop", cancelled_at)
-
-        rebased = rebase_due_times(due_times, cancelled_at + timedelta(hours=24))
-        for key, deferred_until in rebased.items():
-            area_id, operation = key.rsplit(":", maxsplit=1)
-            self._room_data(area_id).setdefault("defer", {})[operation] = _iso(deferred_until)
-        if rebased:
-            _LOGGER.info(
-                "Adaptive RoboVacs rebased cancelled floor queue: robot=%s floor=%s entries=%s until=%s",
-                robot_id,
-                robot.floor_id,
-                len(rebased),
-                _iso(cancelled_at + timedelta(hours=24)),
-            )
-        return list(rebased)
+        return self.jobs.rebase_cancelled_floor(robot_id, cancelled_at)
 
     def _active_rooms(self, active: dict[str, Any]) -> list[str]:
-        """Return a job's tracked rooms, retaining compatibility with v1.0.x."""
-
-        values = active.get("rooms") or [active.get("room")]
-        if not isinstance(values, list):
-            values = [values]
-        return list(dict.fromkeys(value for value in values if isinstance(value, str)))
+        return self.jobs.active_rooms(active)
 
     def _set_recovery_waiting(
         self, robot_id: str, active: dict[str, Any], recovered_at: datetime
@@ -1121,84 +1018,12 @@ class AdaptiveRoboVacCoordinator:
         }, "ready"
 
     async def _async_apply_profile(self, robot: DiscoveredRobot, operation: str) -> None:
-        """Set optional native controls discovered on the robot's own device."""
-
-        profile = robot.profile
-        settings = self._robot_settings(robot)
-        selections = (
-            (profile.mode_select_entity_id, settings.get("mode")),
-            (profile.mop_mode_select_entity_id, settings.get("mop_mode")),
-            (profile.mop_intensity_select_entity_id, settings.get("mop_intensity")),
-        )
-        for entity_id, option in selections:
-            if entity_id and option:
-                await self.hass.services.async_call(
-                    "select", "select_option", {"entity_id": entity_id, "option": option}, blocking=True
-                )
-        if profile.passes_select_entity_id and settings.get("double_pass"):
-            wanted = next(
-                (
-                    option
-                    for option in profile.passes_options
-                    if slugify(option) in {"two_pass", "double_pass"}
-                ),
-                None,
-            )
-            if wanted:
-                await self.hass.services.async_call(
-                    "select",
-                    "select_option",
-                    {"entity_id": profile.passes_select_entity_id, "option": wanted},
-                    blocking=True,
-                )
+        await self.runtime.async_apply_profile(robot, operation)
 
     async def _async_dispatch(
         self, robot: DiscoveredRobot, candidate: dict[str, Any], now: datetime
     ) -> tuple[bool, str]:
-        room: DiscoveredRoom = candidate["room"]
-        active = {
-            "room": room.area_id,
-            "operation": candidate["operation"],
-            "started": _iso(now),
-            "seen_cleaning": False,
-            "phase": "dispatching",
-            "source": "scheduler",
-            "expected_minutes": candidate["duration_minutes"],
-            "expected_end": _iso(now + timedelta(minutes=candidate["duration_minutes"])),
-            "last_observed_at": _iso(now),
-            "passes": candidate["passes"],
-        }
-        self.data["active"][robot.entity_id] = active
-        await self._async_save()
-        try:
-            await self._async_apply_profile(robot, candidate["operation"])
-            await self.hass.services.async_call(
-                "vacuum",
-                "clean_area",
-                {"entity_id": robot.entity_id, "cleaning_area_id": [room.area_id]},
-                blocking=True,
-            )
-        except Exception:  # ServiceValidationError varies between HA versions.
-            self.data["active"][robot.entity_id] = None
-            detail = self._room_data(room.area_id)
-            detail["map_status"] = "error"
-            detail["map_error"] = "unknown dispatch error"
-            _LOGGER.exception(
-                "Adaptive RoboVacs room dispatch failed: robot=%s room=%s "
-                "area_id=%s operation=%s",
-                robot.entity_id,
-                room.name,
-                room.area_id,
-                candidate["operation"],
-            )
-            await self._async_save()
-            return False, "dispatch failed: unknown error"
-        active["phase"] = "accepted"
-        active["accepted_at"] = _iso(_now())
-        self._room_data(room.area_id)["map_status"] = "mapped"
-        self._room_data(room.area_id)["map_error"] = None
-        await self._async_save()
-        return True, f"dispatched {room.name}"
+        return await self.runtime.async_dispatch(robot, candidate, now)
 
     async def _async_reconcile_jobs(
         self, now: datetime, transition: dict[str, Any] | None = None
@@ -1385,91 +1210,10 @@ class AdaptiveRoboVacCoordinator:
     def _cancel_job(
         self, robot_id: str, active: dict[str, Any], cancelled_at: datetime, reason: str
     ) -> None:
-        """Close a user-cancelled job without recording an incomplete room clean."""
-
-        area_ids = self._active_rooms(active)
-        if active.get("source") == "manual_home_assistant":
-            self._record_manual_event(
-                {
-                    "at": _iso(cancelled_at),
-                    "robot": robot_id,
-                    "rooms": area_ids,
-                    "operations": list(active.get("requested_operations", ["vacuum"])),
-                    "context_id": active.get("manual_context_id"),
-                    "outcome": "cancelled",
-                }
-            )
-        self.data["recovery_events"].append(
-            {
-                "robot": robot_id,
-                "rooms": area_ids,
-                "at": _iso(cancelled_at),
-                "reason": reason,
-            }
-        )
-        self.data["recovery_events"] = self.data["recovery_events"][-20:]
-        self.data["active"][robot_id] = None
-        self._cancel_recovery_timer(robot_id)
+        self.jobs.cancel(robot_id, active, cancelled_at, reason)
 
     def _complete_job(self, robot_id: str, active: dict[str, Any], completion: datetime, confidence: str) -> None:
-        area_ids = self._active_rooms(active)
-        operation = active["operation"]
-        if active.get("source") == "manual_home_assistant":
-            changed = self._apply_manual_deferral(
-                robot_id,
-                area_ids,
-                list(active.get("requested_operations", ["vacuum"])),
-                completion,
-            )
-            self._record_manual_event(
-                {
-                    "at": _iso(completion),
-                    "robot": robot_id,
-                    "rooms": area_ids,
-                    "operations": list(active.get("requested_operations", ["vacuum"])),
-                    "context_id": active.get("manual_context_id"),
-                    "outcome": "completed",
-                    "confidence": confidence,
-                    "deferred": changed,
-                }
-            )
-        else:
-            detail = self._room_data(active["room"])
-            if operation in {"vacuum", "vac_and_mop"}:
-                detail["vacuum"] = _iso(completion)
-            if operation in {"mop", "vac_and_mop"}:
-                detail["mop"] = _iso(completion)
-        measured = active.get("measured_minutes")
-        if (
-            active.get("source") == "scheduler"
-            and confidence == "observed"
-            and not active.get("interrupted")
-            and isinstance(measured, (float, int))
-            and measured > 0
-        ):
-            detail = self._room_data(active["room"])
-            detail.setdefault("duration_samples", []).append(
-                {
-                    "minutes": float(measured),
-                    "operation": operation,
-                    "passes": int(active.get("passes", 1)),
-                    "robot": robot_id,
-                    "source": active.get("duration_source", "state_transition"),
-                    "at": _iso(completion),
-                }
-            )
-            detail["duration_samples"] = detail["duration_samples"][-50:]
-        self.data["recovery_events"].append(
-            {
-                "robot": robot_id,
-                "rooms": area_ids,
-                "at": _iso(completion),
-                "reason": confidence,
-            }
-        )
-        self.data["recovery_events"] = self.data["recovery_events"][-20:]
-        self.data["active"][robot_id] = None
-        self._cancel_recovery_timer(robot_id)
+        self.jobs.complete(robot_id, active, completion, confidence)
 
     def _apply_manual_deferral(
         self,
@@ -1478,33 +1222,10 @@ class AdaptiveRoboVacCoordinator:
         operations: list[str],
         completed_at: datetime,
     ) -> list[str]:
-        """Apply the narrow, one-day manual-clean deferral policy."""
-
-        changed: list[str] = []
-        if robot_entity_id not in self.discovery.robots:
-            return changed
-        for area_id in area_ids:
-            room = self.discovery.rooms.get(area_id)
-            if not room:
-                continue
-            detail = self._room_data(area_id)
-            for operation in operations:
-                if operation not in {"vacuum", "mop"}:
-                    continue
-                if operation == "mop" and self._room_settings(room).get("carpet", False):
-                    continue
-                next_due = self._room_due(room, operation, completed_at)
-                deferred = manual_deferral(completed_at, next_due)
-                if deferred:
-                    detail.setdefault("defer", {})[operation] = _iso(deferred)
-                    changed.append(f"{area_id}:{operation}")
-        return changed
+        return self.jobs.apply_manual_deferral(robot_entity_id, area_ids, operations, completed_at)
 
     def _record_manual_event(self, event: dict[str, Any]) -> None:
-        """Retain a bounded audit trail without changing normal cadence."""
-
-        self.data["manual_events"].append(event)
-        self.data["manual_events"] = self.data["manual_events"][-50:]
+        self.jobs.record_manual_event(event)
 
     async def async_evaluate(
         self,
@@ -1638,131 +1359,8 @@ class AdaptiveRoboVacCoordinator:
         self._notify_listeners()
         return {"changed": changed}
 
-    def decommission_inventory(self) -> dict[str, Any]:
-        """Report legacy-owned objects; this method never removes them."""
-
-        legacy_entities = sorted(
-            state.entity_id
-            for state in self.hass.states.async_all()
-            if state.entity_id.startswith("pyscript.robovac_")
-            or state.entity_id.startswith("input_boolean.robovac_")
-            or state.entity_id.startswith("input_number.robovac_")
-            or state.entity_id.startswith("input_select.robovac_")
-            or state.entity_id.startswith("input_datetime.robovac_")
-        )
-        references = []
-        for state in self.hass.states.async_all("automation") + self.hass.states.async_all("script"):
-            if "robovac_scheduler" in str(state.attributes):
-                references.append(state.entity_id)
-        return {
-            "legacy_entities": legacy_entities,
-            "external_references": sorted(references),
-            "safe_to_remove": False,
-            "message": "Inventory only. Legacy removal requires explicit user sign-off.",
-        }
-
     def room_state(self, area_id: str) -> dict[str, Any]:
-        """Return card-friendly state for a discovered area."""
-
-        room = self.discovery.rooms[area_id]
-        detail = self._room_data(area_id)
-        settings = self._room_settings(room)
-        now = _now()
-        desired_window_start = next_window_start(
-            _local(now), str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START))
-        )
-        vacuum_due = self._room_due(room, "vacuum", now)
-        mop_due = None if settings.get("carpet", False) else self._room_due(room, "mop", now)
-        capable = [
-            robot
-            for robot in self.discovery.robots.values()
-            if robot.floor_id == room.floor_id and robot.supports_area_clean
-        ]
-        can_mop = any(self._mop_ready(robot) for robot in capable)
-        next_due = min(vacuum_due, mop_due) if mop_due and can_mop else vacuum_due
-        candidate, reason = self._room_candidate(room, now)
-        active_robot_id, active = next(
-            (
-                (robot_id, job)
-                for robot_id, job in self.data["active"].items()
-                if job and area_id in self._active_rooms(job)
-            ),
-            (None, None),
-        )
-        active_robot_state = (
-            self.hass.states.get(active_robot_id).state
-            if active_robot_id and self.hass.states.get(active_robot_id)
-            else None
-        )
-        duration_operation = (
-            active["operation"] if active else candidate["operation"] if candidate else "vacuum"
-        )
-        duration_passes = int(active.get("passes", 1)) if active else candidate["passes"] if candidate else 1
-        duration_minutes, duration_sample_count = self._effective_duration(
-            room, duration_operation, duration_passes, active_robot_id
-        )
-        return {
-            "name": room.name,
-            "area_id": room.area_id,
-            "floor_id": room.floor_id,
-            "bedroom": room.is_bedroom,
-            "bedroom_transit": room.is_bedroom_transit,
-            "radars": room.radar_entity_ids,
-            "fallbacks": room.fallback_entity_ids,
-            "enabled": settings["enabled"],
-            "vacuum_interval": settings["vacuum_interval"],
-            "mop_interval": settings["mop_interval"],
-            "expected_minutes": settings["expected_minutes"],
-            "carpet": settings["carpet"],
-            "ignore_desired_window": settings["ignore_desired_window"],
-            "occupancy": detail["occupancy"],
-            "occupancy_source": detail["source"],
-            "unavailable_radars": detail["unavailable_radars"],
-            "last_cleaned": max(filter(None, [_as_datetime(detail.get("vacuum")), _as_datetime(detail.get("mop"))]), default=None),
-            "last_vacuum": _as_datetime(detail.get("vacuum")),
-            "last_mop": _as_datetime(detail.get("mop")),
-            "vacuum_due": vacuum_due,
-            "mop_due": mop_due,
-            "next_due": next_due,
-            "desired_window_start": desired_window_start,
-            # Retained for existing dashboard templates and integrations.
-            "unresolved_window_start": desired_window_start,
-            "next_candidate": candidate,
-            "active": active,
-            "active_robot": active_robot_id,
-            "active_robot_state": active_robot_state,
-            "effective_duration_minutes": duration_minutes,
-            "duration_sample_count": duration_sample_count,
-            "block_reason": reason,
-            "map_status": detail.get("map_status", "unknown"),
-            "map_error": detail.get("map_error"),
-        }
+        return room_state(self, area_id)
 
     def robot_state(self, entity_id: str) -> dict[str, Any]:
-        """Return card-friendly state for a discovered vacuum."""
-
-        robot = self.discovery.robots[entity_id]
-        state = self.hass.states.get(entity_id)
-        ready, reason = self._robot_ready(robot)
-        active = self.data["active"].get(entity_id)
-        hold = self.data["robot_holds"].get(entity_id)
-        active_rooms = [
-            self.discovery.rooms[area_id].name
-            for area_id in self._active_rooms(active)
-            if area_id in self.discovery.rooms
-        ] if active else []
-        return {
-            "name": robot.name,
-            "entity_id": entity_id,
-            "floor_id": robot.floor_id,
-            "state": state.state if state else "unavailable",
-            "battery": self._robot_battery(robot),
-            "ready": ready,
-            "reason": reason,
-            "active": active,
-            "scheduler_hold": hold,
-            "active_room": ", ".join(active_rooms) if active_rooms else None,
-            "active_rooms": active_rooms,
-            "profile": robot.profile,
-            "settings": self._robot_settings(robot),
-        }
+        return robot_state(self, entity_id)

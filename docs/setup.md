@@ -33,7 +33,7 @@ retry the room automatically on its next due evaluation.
 ## Occupancy rules
 
 All radars must be clear to mark a room vacant. If one is unavailable, the
-integration can use a complete all-clear legacy motion/occupancy fallback. A
+integration can use a complete all-clear motion/occupancy fallback. A
 room without any occupancy source is eligible when due. A new entry after a
 clean starts does not interrupt it.
 
