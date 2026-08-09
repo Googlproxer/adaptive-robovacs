@@ -253,7 +253,7 @@ def recovery_transition_is_observed(
 def resolve_occupancy(
     radar_states: Iterable[str | None], fallback_states: Iterable[str | None]
 ) -> OccupancyResolution:
-    """Resolve occupancy with radars preferred over legacy motion sources.
+    """Resolve occupancy with radars preferred over fallback motion sources.
 
     All available radars must be clear to establish vacancy. If a radar is
     unavailable, a complete clear fallback set can establish vacancy instead.
@@ -284,7 +284,7 @@ def due_at(
     deferred_until: datetime | None,
     now: datetime,
 ) -> datetime:
-    """Return the due time while retaining the legacy one-day deferral rule."""
+    """Return the due time while retaining the established one-day deferral rule."""
 
     baseline = now if last_completed is None else last_completed + timedelta(hours=interval_hours)
     return max(baseline, deferred_until) if deferred_until else baseline

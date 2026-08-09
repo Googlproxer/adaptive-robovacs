@@ -30,30 +30,6 @@ def _as_datetime(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt_util.UTC)
 
 
-def decommission_inventory(coordinator: AdaptiveRoboVacCoordinator) -> dict[str, Any]:
-    """Report legacy-owned objects; this function never removes them."""
-
-    legacy_entities = sorted(
-        state.entity_id
-        for state in coordinator.hass.states.async_all()
-        if state.entity_id.startswith("pyscript.robovac_")
-        or state.entity_id.startswith("input_boolean.robovac_")
-        or state.entity_id.startswith("input_number.robovac_")
-        or state.entity_id.startswith("input_select.robovac_")
-        or state.entity_id.startswith("input_datetime.robovac_")
-    )
-    references = []
-    for state in coordinator.hass.states.async_all("automation") + coordinator.hass.states.async_all("script"):
-        if "robovac_scheduler" in str(state.attributes):
-            references.append(state.entity_id)
-    return {
-        "legacy_entities": legacy_entities,
-        "external_references": sorted(references),
-        "safe_to_remove": False,
-        "message": "Inventory only. Legacy removal requires explicit user sign-off.",
-    }
-
-
 def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[str, Any]:
     """Return the established card-friendly state for a discovered area."""
 

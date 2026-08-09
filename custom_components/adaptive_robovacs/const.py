@@ -37,7 +37,6 @@ DEFAULT_UNRESOLVED_END: Final = "05:00"
 
 SERVICE_EVALUATE: Final = "evaluate"
 SERVICE_RECORD_MANUAL_CLEAN: Final = "record_manual_clean"
-SERVICE_DECOMMISSION_REPORT: Final = "decommission_report"
 
 SIGNAL_DISCOVERY_UPDATED: Final = f"{DOMAIN}_discovery_updated"
 

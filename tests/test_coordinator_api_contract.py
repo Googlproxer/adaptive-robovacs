@@ -25,7 +25,6 @@ class CoordinatorFacadeContractTests(unittest.TestCase):
         self.assertIn("def scheduler_summary", source)
         self.assertIn('"last_evaluation"', source)
         self.assertIn('"preview"', source)
-        self.assertIn('"migration"', source)
 
 
 if __name__ == "__main__":

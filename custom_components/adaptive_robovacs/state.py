@@ -135,19 +135,6 @@ class GlobalSettings:
 
 
 @dataclass(slots=True)
-class LegacyImportState:
-    complete: bool = False
-    matched_rooms: int = 0
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> LegacyImportState:
-        return cls(
-            complete=bool(value.get("complete", False)),
-            matched_rooms=_integer(value.get("matched_rooms"), 0),
-        )
-
-
-@dataclass(slots=True)
 class RoomSettings:
     enabled: bool
     vacuum_interval: float = DEFAULT_COMMON_INTERVAL
@@ -498,7 +485,6 @@ class AuditState:
 @dataclass(slots=True)
 class SchedulerState:
     global_settings: GlobalSettings
-    legacy_import: LegacyImportState = field(default_factory=LegacyImportState)
     room_settings: dict[str, RoomSettings] = field(default_factory=dict)
     robot_settings: dict[str, RobotSettings] = field(default_factory=dict)
     room_history: dict[str, RoomHistory] = field(default_factory=dict)
@@ -543,10 +529,6 @@ class SchedulerState:
         }
         return cls(
             global_settings=global_settings,
-            legacy_import=LegacyImportState(
-                complete=bool(data.get("legacy_migrated", False)),
-                matched_rooms=_integer(data.get("legacy_migration_count"), 0),
-            ),
             room_settings={
                 area_id: RoomSettings.from_mapping(value, RoomSettings.defaults(False))
                 for area_id, value in raw_room_settings.items()
@@ -588,10 +570,8 @@ class SchedulerState:
         raw_holds = _mapping(data.get("robot_holds"), "robot_holds")
         raw_audit = _mapping(data.get("audit"), "audit")
         raw_evaluation = _mapping(data.get("evaluation"), "evaluation")
-        raw_legacy = _mapping(data.get("legacy_import"), "legacy_import")
         return cls(
             global_settings=GlobalSettings.from_mapping(raw_global, defaults),
-            legacy_import=LegacyImportState.from_mapping(raw_legacy),
             room_settings={
                 area_id: RoomSettings.from_mapping(value, RoomSettings.defaults(False))
                 for area_id, value in raw_room_settings.items()
@@ -636,7 +616,6 @@ class SchedulerState:
         return {
             "schema_version": SCHEMA_VERSION,
             "global": asdict(self.global_settings),
-            "legacy_import": asdict(self.legacy_import),
             "room_settings": {
                 area_id: asdict(settings) for area_id, settings in self.room_settings.items()
             },
@@ -658,8 +637,8 @@ class SchedulerState:
             "evaluation": self.evaluation.to_store(),
         }
 
-    def to_legacy_runtime_data(self) -> dict[str, Any]:
-        """Expose a temporary v1-shaped view while scheduler logic is extracted.
+    def to_runtime_data(self) -> dict[str, Any]:
+        """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
         persistent I/O stays on the typed v2 codec, and platform entities use
@@ -667,7 +646,7 @@ class SchedulerState:
         """
 
         return {
-            "version": 1,
+            "version": SCHEMA_VERSION,
             "observe_only": self.global_settings.observe_only,
             "party_mode": self.global_settings.party_mode,
             "forecast_confidence": self.global_settings.forecast_confidence,
@@ -716,8 +695,6 @@ class SchedulerState:
             "recovery_events": self.audit.recovery_events,
             "last_evaluation": _iso(self.evaluation.last_evaluation_at),
             "last_preview": self.evaluation.last_preview,
-            "legacy_migrated": self.legacy_import.complete,
-            "legacy_migration_count": self.legacy_import.matched_rooms,
         }
 
 

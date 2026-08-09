@@ -90,8 +90,6 @@ class SchedulerStateTests(unittest.TestCase):
             },
             "manual_events": [{"outcome": "requested"}],
             "recovery_events": [{"reason": "paused"}],
-            "legacy_migrated": True,
-            "legacy_migration_count": 3,
             "last_evaluation": "2026-08-05T09:00:00+00:00",
             "last_preview": {"reason": "interval"},
         }
@@ -105,8 +103,6 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertEqual(state.room_history["kitchen"].duration_samples[0].minutes, 26.5)
         self.assertEqual(state.active_jobs["vacuum.alpha"].phase, "paused")
         self.assertEqual(state.robot_holds["vacuum.alpha"].reason, "paused")
-        self.assertTrue(state.legacy_import.complete)
-        self.assertEqual(state.legacy_import.matched_rooms, 3)
         self.assertEqual(state.audit.manual_events, [{"outcome": "requested"}])
 
         stored = state.to_store()

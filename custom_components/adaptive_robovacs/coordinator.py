@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from copy import deepcopy
 from datetime import datetime, timedelta
 import logging
 from typing import Any
@@ -12,12 +11,10 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_CALL_SERVICE, EVENT_HOMEASSISTANT_STARTED, EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
-from homeassistant.util import slugify
 
 from .const import (
     CONF_FORECAST_CONFIDENCE,
@@ -65,7 +62,7 @@ from .models import (
     select_operation,
     unresolved_occupancy_allowed,
 )
-from .projections import decommission_inventory, robot_state, room_state
+from .projections import robot_state, room_state
 from .state import SchedulerState, StateSchemaError
 from .runtime import HomeAssistantRuntime
 
@@ -135,7 +132,6 @@ def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
         "recovery_events": [],
         "last_evaluation": None,
         "last_preview": {},
-        "legacy_migrated": False,
     }
 
 
@@ -170,20 +166,17 @@ class AdaptiveRoboVacCoordinator:
             self._storage_safe_mode = True
             self.state = SchedulerState.create(self.entry.data)
             self.state.global_settings.observe_only = True
-            self.data = self.state.to_legacy_runtime_data()
+            self.data = self.state.to_runtime_data()
             _LOGGER.exception(
                 "Adaptive RoboVacs could not safely load persisted scheduler state; "
                 "dispatch is disabled until the Store is repaired"
             )
         else:
-            self.data = self.state.to_legacy_runtime_data()
+            self.data = self.state.to_runtime_data()
             if migrated:
                 await self._async_save()
 
         await self.async_refresh_discovery()
-        self._remove_deprecated_confirmation_buttons()
-        await self._async_migrate_legacy_dispatch_errors()
-        await self._async_migrate_legacy_once()
         await self._async_recover_active_jobs()
         self._unsubscribers.extend(
             [
@@ -227,53 +220,6 @@ class AdaptiveRoboVacCoordinator:
             return
         self.state, _ = SchedulerState.from_store(self.data, self.entry.data)
         await self.store.async_save(self.state.to_store())
-
-    def _remove_deprecated_confirmation_buttons(self) -> None:
-        """Remove v1.0.9's acknowledgement buttons from the entity registry."""
-
-        registry = er.async_get(self.hass)
-        for registry_entry in tuple(registry.entities.values()):
-            if (
-                registry_entry.domain == "button"
-                and registry_entry.platform == DOMAIN
-                and registry_entry.config_entry_id == self.entry.entry_id
-                and registry_entry.unique_id.endswith("_confirm_held_clean_cancelled")
-            ):
-                registry.async_remove(registry_entry.entity_id)
-
-    async def _async_migrate_legacy_dispatch_errors(self) -> None:
-        """Make legacy dispatch failures safe and clear to dashboard users.
-
-        A dispatch failure does not prove that a vacuum's native map is
-        broken.  Earlier releases persisted both the raw failure and an
-        ``unmapped`` status, which led the dashboard to direct users to repair
-        a map without evidence.  Keep the diagnostic in the Home Assistant
-        integration log and expose only a generic, actionable status instead.
-        """
-
-        changed = False
-        for area_id, detail in self.data["rooms"].items():
-            raw_error = detail.get("map_error")
-            if raw_error == "required key not provided @ data['cleaning_area_id']":
-                # This old payload defect is known to be corrected by the
-                # current service call, so allow the scheduler to retry it.
-                detail["map_status"] = "unknown"
-                detail["map_error"] = None
-                changed = True
-                continue
-            if detail.get("map_status") != "unmapped":
-                continue
-            _LOGGER.error(
-                "Migrating persisted Adaptive RoboVacs dispatch failure to an "
-                "unknown error: area_id=%s diagnostic=%r",
-                area_id,
-                raw_error,
-            )
-            detail["map_status"] = "error"
-            detail["map_error"] = "unknown dispatch error"
-            changed = True
-        if changed:
-            await self._async_save()
 
     async def async_refresh_discovery(self) -> None:
         """Refresh registry state and reset only changed room occupancy models."""
@@ -378,10 +324,6 @@ class AdaptiveRoboVacCoordinator:
         return {
             "last_evaluation": self.data.get("last_evaluation"),
             "preview": self.data.get("last_preview", {}),
-            "migration": {
-                "complete": self.data.get("legacy_migrated", False),
-                "matched_rooms": self.data.get("legacy_migration_count", 0),
-            },
         }
 
     async def async_set_global(self, key: str, value: Any) -> None:
@@ -440,53 +382,6 @@ class AdaptiveRoboVacCoordinator:
         await self._async_save()
         self._notify_listeners()
         await self.async_evaluate(dry_run=True, reason=f"robot:{entity_id}:{key}")
-
-    async def _async_migrate_legacy_once(self) -> None:
-        """Import matched legacy state without embedding legacy room identifiers."""
-
-        if self.data.get("legacy_migrated"):
-            return
-        legacy = self.hass.states.get("pyscript.robovac_scheduler_store")
-        legacy_data = legacy.attributes.get("data", {}) if legacy else {}
-        legacy_rooms = legacy_data.get("rooms", {}) if isinstance(legacy_data, dict) else {}
-        by_legacy_key = {
-            slugify(room.name): room.area_id for room in self.discovery.rooms.values()
-        }
-        migrated = 0
-        for legacy_key, legacy_room in legacy_rooms.items():
-            area_id = by_legacy_key.get(slugify(str(legacy_key)))
-            if not area_id or not isinstance(legacy_room, dict):
-                continue
-            target = self._room_data(area_id)
-            for key in ("vacuum", "mop", "defer", "samples", "unoccupied_since"):
-                if key in legacy_room:
-                    target[key] = deepcopy(legacy_room[key])
-            settings = self._room_settings(self.discovery.rooms[area_id])
-            for suffix, setting_key in (
-                ("enabled", "enabled"),
-                ("vacuum_interval", "vacuum_interval"),
-                ("mop_interval", "mop_interval"),
-                ("expected_minutes", "expected_minutes"),
-            ):
-                helper = self.hass.states.get(
-                    f"input_{'boolean' if suffix == 'enabled' else 'number'}.robovac_{legacy_key}_{suffix}"
-                )
-                if helper is None:
-                    continue
-                if suffix == "enabled":
-                    settings[setting_key] = helper.state == "on"
-                else:
-                    try:
-                        settings[setting_key] = float(helper.state)
-                    except ValueError:
-                        pass
-            migrated += 1
-        party_mode = self.hass.states.get("input_boolean.robovac_party_mode")
-        if party_mode:
-            self.data["party_mode"] = party_mode.state == "on"
-        self.data["legacy_migrated"] = True
-        self.data["legacy_migration_count"] = migrated
-        await self._async_save()
 
     async def _async_recover_active_jobs(self) -> None:
         """Recover a persisted command checkpoint after a Home Assistant restart."""
@@ -1462,9 +1357,6 @@ class AdaptiveRoboVacCoordinator:
         await self._async_save()
         self._notify_listeners()
         return {"changed": changed}
-
-    def decommission_inventory(self) -> dict[str, Any]:
-        return decommission_inventory(self)
 
     def room_state(self, area_id: str) -> dict[str, Any]:
         return room_state(self, area_id)

@@ -83,7 +83,6 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn("held_job_transition", coordinator)
         self.assertIn("offline_held_recovery_outcome", coordinator)
         self.assertIn("_apply_robot_cancellation_deferral", coordinator)
-        self.assertIn("_remove_deprecated_confirmation_buttons", coordinator)
         self.assertIn("_cancel_recovery_timer", coordinator)
         self.assertIn('return "Scheduler held"', sensor)
         self.assertIn('return "Paused"', sensor)
