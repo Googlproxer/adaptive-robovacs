@@ -40,7 +40,7 @@ from .const import (
     HISTORY_DAYS,
     SIGNAL_DISCOVERY_UPDATED,
     STORAGE_KEY,
-    VERSION,
+    STORE_VERSION,
 )
 from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoveryResult, async_discover
 from .jobs import JobLifecycle
@@ -114,7 +114,6 @@ def _blank_room() -> dict[str, Any]:
 
 def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
     return {
-        "version": VERSION,
         "observe_only": entry.data.get(CONF_OBSERVE_ONLY, True),
         "party_mode": False,
         "forecast_confidence": entry.data.get(
@@ -141,7 +140,9 @@ class AdaptiveRoboVacCoordinator:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        self.store: Store[dict[str, Any]] = Store(hass, VERSION, f"{STORAGE_KEY}.{entry.entry_id}")
+        self.store: Store[dict[str, Any]] = Store(
+            hass, STORE_VERSION, f"{STORAGE_KEY}.{entry.entry_id}"
+        )
         self.data: dict[str, Any] = _blank_data(entry)
         self.state = SchedulerState.create(entry.data)
         self._storage_safe_mode = False

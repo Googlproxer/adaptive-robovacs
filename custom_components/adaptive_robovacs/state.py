@@ -65,7 +65,7 @@ def _integer(value: object, default: int) -> int:
 
 
 def _timestamp(value: object) -> datetime | None:
-    """Decode an ISO timestamp without accepting naive local timestamps."""
+    """Decode an ISO timestamp, treating naive values as UTC."""
 
     if not value:
         return None

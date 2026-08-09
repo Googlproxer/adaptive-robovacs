@@ -26,6 +26,12 @@ class CoordinatorFacadeContractTests(unittest.TestCase):
         self.assertIn('"last_evaluation"', source)
         self.assertIn('"preview"', source)
 
+    def test_store_envelope_version_stays_compatible_with_v1_payloads(self) -> None:
+        constants = (PACKAGE_PATH / "const.py").read_text(encoding="utf-8")
+        coordinator = COORDINATOR_PATH.read_text(encoding="utf-8")
+        self.assertIn("STORE_VERSION: Final = 1", constants)
+        self.assertIn('STORE_VERSION, f"{STORAGE_KEY}.{entry.entry_id}"', coordinator)
+
 
 if __name__ == "__main__":
     unittest.main()
