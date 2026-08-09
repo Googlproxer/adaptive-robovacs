@@ -7,7 +7,7 @@ from typing import Final
 
 DOMAIN: Final = "adaptive_robovacs"
 NAME: Final = "Adaptive RoboVacs"
-VERSION: Final = 1
+VERSION: Final = 2
 STORAGE_KEY: Final = f"{DOMAIN}.data"
 
 PLATFORMS: Final = ("button", "number", "select", "sensor", "switch")

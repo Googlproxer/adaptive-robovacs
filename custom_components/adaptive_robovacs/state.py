@@ -658,6 +658,68 @@ class SchedulerState:
             "evaluation": self.evaluation.to_store(),
         }
 
+    def to_legacy_runtime_data(self) -> dict[str, Any]:
+        """Expose a temporary v1-shaped view while scheduler logic is extracted.
+
+        The view is intentionally confined to the coordinator internals.  All
+        persistent I/O stays on the typed v2 codec, and platform entities use
+        coordinator accessors instead of this compatibility representation.
+        """
+
+        return {
+            "version": 1,
+            "observe_only": self.global_settings.observe_only,
+            "party_mode": self.global_settings.party_mode,
+            "forecast_confidence": self.global_settings.forecast_confidence,
+            "hall_start": self.global_settings.hall_start,
+            "hall_end": self.global_settings.hall_end,
+            "unresolved_start": self.global_settings.unresolved_start,
+            "unresolved_end": self.global_settings.unresolved_end,
+            "settings": {
+                "rooms": {
+                    area_id: asdict(settings)
+                    for area_id, settings in self.room_settings.items()
+                },
+                "robots": {
+                    entity_id: asdict(settings)
+                    for entity_id, settings in self.robot_settings.items()
+                },
+            },
+            "rooms": {
+                area_id: {
+                    "vacuum": _iso(history.vacuum_completed_at),
+                    "mop": _iso(history.mop_completed_at),
+                    "defer": {
+                        operation: _iso(deferred)
+                        for operation, deferred in history.deferrals.items()
+                    },
+                    "occupancy": history.occupancy,
+                    "source": history.occupancy_source,
+                    "unavailable_radars": history.unavailable_radars,
+                    "unoccupied_since": _iso(history.unoccupied_since),
+                    "samples": [sample.to_store() for sample in history.occupancy_samples],
+                    "source_fingerprint": history.source_fingerprint,
+                    "map_status": history.map_status,
+                    "map_error": history.map_error,
+                    "duration_samples": [sample.to_store() for sample in history.duration_samples],
+                }
+                for area_id, history in self.room_history.items()
+            },
+            "active": {
+                entity_id: job.to_store() if job else None
+                for entity_id, job in self.active_jobs.items()
+            },
+            "robot_holds": {
+                entity_id: hold.to_store() for entity_id, hold in self.robot_holds.items()
+            },
+            "manual_events": self.audit.manual_events,
+            "recovery_events": self.audit.recovery_events,
+            "last_evaluation": _iso(self.evaluation.last_evaluation_at),
+            "last_preview": self.evaluation.last_preview,
+            "legacy_migrated": self.legacy_import.complete,
+            "legacy_migration_count": self.legacy_import.matched_rooms,
+        }
+
 
 def _mapping_or_empty(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
