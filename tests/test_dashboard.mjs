@@ -51,33 +51,42 @@ const baseStates = () => ({
   "button.preview": adaptiveState("scheduler_control"),
   "sensor.robot_one_status": adaptiveState("robot_status", {
     robot_entity_id: "vacuum.robot_one",
+    friendly_name: "Robot One status",
   }),
   "switch.robot_one_enabled": adaptiveState("robot_control", {
     robot_entity_id: "vacuum.robot_one",
+    friendly_name: "Robot One enabled",
   }),
   "sensor.robot_two_status": adaptiveState("robot_status", {
     robot_entity_id: "vacuum.robot_two",
+    friendly_name: "Robot Two status",
   }),
   "switch.robot_two_enabled": adaptiveState("robot_control", {
     robot_entity_id: "vacuum.robot_two",
+    friendly_name: "Robot Two enabled",
   }),
   "sensor.kitchen_next_clean": adaptiveState("room_schedule", {
     area_id: "kitchen",
     room: "Kitchen",
     floor_id: "ground",
     bedroom: false,
+    friendly_name: "Kitchen next clean",
   }),
   "sensor.kitchen_last_cleaned": adaptiveState("room_last_cleaned", {
     area_id: "kitchen",
+    friendly_name: "Kitchen last cleaned",
   }),
   "sensor.kitchen_occupancy": adaptiveState("room_occupancy", {
     area_id: "kitchen",
+    friendly_name: "Kitchen occupancy",
   }),
   "number.kitchen_cadence": adaptiveState("room_control", {
     area_id: "kitchen",
+    friendly_name: "Kitchen cadence",
   }),
   "switch.kitchen_enabled": adaptiveState("room_control", {
     area_id: "kitchen",
+    friendly_name: "Kitchen enabled",
   }),
   "sensor.bedroom_next_clean": adaptiveState("room_schedule", {
     area_id: "bedroom",
@@ -87,6 +96,7 @@ const baseStates = () => ({
   }),
   "switch.bedroom_enabled": adaptiveState("room_control", {
     area_id: "bedroom",
+    friendly_name: "Bedroom enabled",
   }),
   "vacuum.robot_one": {
     state: "docked",
@@ -139,33 +149,61 @@ test("vacuum card contains one selected vacuum and uses its friendly name", () =
   });
   assert.equal(configuration.title, "Robot One");
   assert.deepEqual(configuration.entities, [
-    "sensor.robot_one_status",
-    "switch.robot_one_enabled",
+    { entity: "sensor.robot_one_status", name: "Status" },
+    { entity: "switch.robot_one_enabled", name: "Enabled" },
   ]);
-  assert.ok(configuration.entities.every((entityId) => !entityId.includes("robot_two")));
+  assert.ok(configuration.entities.every((row) => !row.entity.includes("robot_two")));
 });
 
 test("room card contains one selected room with status before controls", () => {
   const { configuration } = configure(RoomCard, { area_id: "kitchen" });
   assert.equal(configuration.title, "Kitchen");
   assert.deepEqual(configuration.entities, [
-    "sensor.kitchen_next_clean",
-    "sensor.kitchen_last_cleaned",
-    "sensor.kitchen_occupancy",
-    "number.kitchen_cadence",
-    "switch.kitchen_enabled",
+    { entity: "sensor.kitchen_next_clean", name: "Next clean" },
+    { entity: "sensor.kitchen_last_cleaned", name: "Last cleaned" },
+    { entity: "sensor.kitchen_occupancy", name: "Occupancy" },
+    { entity: "number.kitchen_cadence", name: "Cadence" },
+    { entity: "switch.kitchen_enabled", name: "Enabled" },
   ]);
-  assert.ok(configuration.entities.every((entityId) => !entityId.includes("bedroom")));
-  assert.equal(new Set(configuration.entities).size, configuration.entities.length);
+  const entityIds = configuration.entities.map((row) => row.entity);
+  assert.ok(entityIds.every((entityId) => !entityId.includes("bedroom")));
+  assert.equal(new Set(entityIds).size, entityIds.length);
 });
 
 test("new target-owned controls appear without changing card configuration", () => {
   const states = baseStates();
   const initial = configure(RoomCard, { area_id: "kitchen" }, states).configuration;
-  states["select.kitchen_profile"] = adaptiveState("room_control", { area_id: "kitchen" });
+  states["select.kitchen_profile"] = adaptiveState("room_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen profile",
+  });
   const updated = configure(RoomCard, { area_id: "kitchen" }, states).configuration;
   assert.equal(updated.entities.length, initial.entities.length + 1);
-  assert.ok(updated.entities.includes("select.kitchen_profile"));
+  assert.deepEqual(
+    updated.entities.find((row) => row.entity === "select.kitchen_profile"),
+    { entity: "select.kitchen_profile", name: "Profile" }
+  );
+});
+
+test("target prefixes are hidden even when the card title is overridden", () => {
+  const vacuum = configure(VacuumCard, {
+    vacuum_entity_id: "vacuum.robot_one",
+    title: "Upstairs vacuum",
+  }).configuration;
+  const room = configure(RoomCard, {
+    area_id: "kitchen",
+    title: "Food prep",
+  }).configuration;
+  assert.equal(vacuum.title, "Upstairs vacuum");
+  assert.deepEqual(vacuum.entities[0], {
+    entity: "sensor.robot_one_status",
+    name: "Status",
+  });
+  assert.equal(room.title, "Food prep");
+  assert.deepEqual(room.entities[0], {
+    entity: "sensor.kitchen_next_clean",
+    name: "Next clean",
+  });
 });
 
 test("target and integration mismatches render visible diagnostics", () => {

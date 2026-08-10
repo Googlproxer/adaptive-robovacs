@@ -44,6 +44,18 @@ function assertCardConfig(config, targetKey) {
   if (targetKey) assertString(config, targetKey);
 }
 
+function nameWithoutTargetPrefix(name, targetName) {
+  if (typeof name !== "string" || typeof targetName !== "string" || !targetName.trim()) {
+    return undefined;
+  }
+  const escapedTarget = targetName.trim().replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  const match = name.match(new RegExp("^" + escapedTarget + "(?=$|[\\s:–—-])", "i"));
+  if (!match) return undefined;
+  const remainder = name.slice(match[0].length).replace(/^[\s:–—-]+/, "").trim();
+  if (!remainder) return undefined;
+  return remainder[0].toLocaleUpperCase() + remainder.slice(1);
+}
+
 function formDefinition(targetField) {
   const schema = [...COMMON_FORM_SCHEMA];
   if (targetField) schema.splice(1, 0, targetField);
@@ -132,15 +144,25 @@ class AdaptiveRoboVacsCardBase extends HTMLElement {
     return { entryId: entryIds[0], entities: allEntities };
   }
 
-  _orderedEntityIds(items, roleOrder) {
+  _orderedEntities(items, roleOrder) {
     const unique = new Map(items.map((item) => [item.entityId, item]));
     return [...unique.values()]
       .sort((left, right) => {
         const leftOrder = roleOrder.get(left.attrs[ROLE_ATTRIBUTE]) ?? 100;
         const rightOrder = roleOrder.get(right.attrs[ROLE_ATTRIBUTE]) ?? 100;
         return leftOrder - rightOrder || left.entityId.localeCompare(right.entityId);
-      })
-      .map((item) => item.entityId);
+      });
+  }
+
+  _orderedEntityIds(items, roleOrder) {
+    return this._orderedEntities(items, roleOrder).map((item) => item.entityId);
+  }
+
+  _targetEntityRows(items, roleOrder, targetName) {
+    return this._orderedEntities(items, roleOrder).map((item) => {
+      const name = nameWithoutTargetPrefix(item.attrs.friendly_name, targetName);
+      return name ? { entity: item.entityId, name } : item.entityId;
+    });
   }
 
   _entitiesConfiguration(title, entityIds) {
@@ -278,9 +300,13 @@ class AdaptiveRoboVacsVacuumCard extends AdaptiveRoboVacsCardBase {
     const entities = context.entities.filter(
       (item) => item.attrs.robot_entity_id === entityId
     );
-    const entityIds = this._orderedEntityIds(entities, VACUUM_ROLES);
-    return entityIds.length
-      ? this._entitiesConfiguration(this._title(), entityIds)
+    const entityRows = this._targetEntityRows(
+      entities,
+      VACUUM_ROLES,
+      this._hass?.states?.[entityId]?.attributes?.friendly_name
+    );
+    return entityRows.length
+      ? this._entitiesConfiguration(this._title(), entityRows)
       : this._messageConfiguration(
         "The selected vacuum is not currently discovered by this Adaptive RoboVacs entry."
       );
@@ -321,9 +347,10 @@ class AdaptiveRoboVacsRoomCard extends AdaptiveRoboVacsCardBase {
     const context = this._entryContext();
     if (context.error) return this._messageConfiguration(context.error);
     const entities = context.entities.filter((item) => item.attrs.area_id === areaId);
-    const entityIds = this._orderedEntityIds(entities, ROOM_ROLES);
-    return entityIds.length
-      ? this._entitiesConfiguration(this._title(), entityIds)
+    const roomName = entities.find((item) => item.attrs.room)?.attrs.room || this._defaultTitle();
+    const entityRows = this._targetEntityRows(entities, ROOM_ROLES, roomName);
+    return entityRows.length
+      ? this._entitiesConfiguration(this._title(), entityRows)
       : this._messageConfiguration(
         "The selected room is not currently discovered by this Adaptive RoboVacs entry."
       );

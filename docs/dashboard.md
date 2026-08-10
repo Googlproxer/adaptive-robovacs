@@ -20,7 +20,8 @@ All three cards are available in Home Assistant's card picker and have visual
 editors. The integration entry is optional when only one Adaptive RoboVacs
 entry is loaded. Select a vacuum entity for each vacuum card and a Home
 Assistant area for each room card. An optional title overrides the live vacuum
-or room name.
+or room name. Vacuum and room rows omit that target name because the card title
+already supplies it; this is a display-only override and does not rename entities.
 
 The cards discover their rows through integration attributes rather than fixed
 entity IDs. A newly supported control therefore appears automatically on its
