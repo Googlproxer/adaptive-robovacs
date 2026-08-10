@@ -46,6 +46,7 @@ from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoveryResult, async_d
 from .jobs import JobLifecycle
 from .models import (
     Forecast,
+    ResolvedDailyWindow,
     desired_window_allows,
     due_at,
     forecast_vacancy,
@@ -53,7 +54,7 @@ from .models import (
     in_daytime_window,
     learned_duration_minutes,
     manual_deferral,
-    next_window_start,
+    resolve_daily_window,
     parse_manual_clean_request,
     offline_held_recovery_outcome,
     rebase_due_times,
@@ -275,12 +276,27 @@ class AdaptiveRoboVacCoordinator:
                 "expected_minutes": DEFAULT_EXPECTED_MINUTES,
                 "carpet": False,
                 "ignore_desired_window": False,
+                "desired_window_start": None,
+                "desired_window_end": None,
             },
         )
         # Existing persisted settings predate newer optional room controls.
         settings.setdefault("carpet", False)
         settings.setdefault("ignore_desired_window", False)
+        settings.setdefault("desired_window_start", None)
+        settings.setdefault("desired_window_end", None)
         return settings
+
+    def _desired_window(self, room: DiscoveredRoom) -> ResolvedDailyWindow:
+        """Resolve one room's independently inherited daily window."""
+
+        settings = self._room_settings(room)
+        return resolve_daily_window(
+            settings.get("desired_window_start"),
+            settings.get("desired_window_end"),
+            str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START)),
+            str(self.data.get("unresolved_end", DEFAULT_UNRESOLVED_END)),
+        )
 
     def _robot_settings(self, robot: DiscoveredRobot) -> dict[str, Any]:
         return self.data["settings"]["robots"].setdefault(
@@ -319,6 +335,25 @@ class AdaptiveRoboVacCoordinator:
             raise ValueError(f"Unknown global setting: {key}")
         return self.observe_only if key == "observe_only" else self.data[key]
 
+    def get_room_setting(self, area_id: str, key: str) -> Any:
+        """Return one discovered room setting without exposing mutable state."""
+
+        room = self.discovery.rooms.get(area_id)
+        if room is None:
+            raise ValueError(f"Unknown room area: {area_id}")
+        if key not in {
+            "enabled",
+            "vacuum_interval",
+            "mop_interval",
+            "expected_minutes",
+            "carpet",
+            "ignore_desired_window",
+            "desired_window_start",
+            "desired_window_end",
+        }:
+            raise ValueError(f"Unknown room setting: {key}")
+        return self._room_settings(room)[key]
+
     def scheduler_summary(self) -> dict[str, Any]:
         """Return the scheduler metadata used by the status sensor."""
 
@@ -340,6 +375,14 @@ class AdaptiveRoboVacCoordinator:
             "unresolved_end",
         }:
             raise ValueError(f"Unknown global setting: {key}")
+        if key in {"unresolved_start", "unresolved_end"}:
+            global_start = str(value) if key == "unresolved_start" else str(
+                self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START)
+            )
+            global_end = str(value) if key == "unresolved_end" else str(
+                self.data.get("unresolved_end", DEFAULT_UNRESOLVED_END)
+            )
+            resolve_daily_window(None, None, global_start, global_end)
         self.data[key] = value
         await self._async_save()
         self._notify_listeners()
@@ -357,9 +400,26 @@ class AdaptiveRoboVacCoordinator:
             "expected_minutes",
             "carpet",
             "ignore_desired_window",
+            "desired_window_start",
+            "desired_window_end",
         }:
             raise ValueError(f"Unknown room setting: {key}")
-        self._room_settings(self.discovery.rooms[area_id])[key] = value
+        room = self.discovery.rooms[area_id]
+        settings = self._room_settings(room)
+        if key in {"desired_window_start", "desired_window_end"}:
+            configured_start = value if key == "desired_window_start" else settings.get(
+                "desired_window_start"
+            )
+            configured_end = value if key == "desired_window_end" else settings.get(
+                "desired_window_end"
+            )
+            resolve_daily_window(
+                configured_start,
+                configured_end,
+                str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START)),
+                str(self.data.get("unresolved_end", DEFAULT_UNRESOLVED_END)),
+            )
+        settings[key] = value
         await self._async_save()
         self._notify_listeners()
         await self.async_evaluate(dry_run=True, reason=f"room:{area_id}:{key}")
@@ -944,24 +1004,26 @@ class AdaptiveRoboVacCoordinator:
         return (False, "bedrooms not clear: " + ", ".join(blocked)) if blocked else (True, "bedrooms clear")
 
     def _desired_window_allows(self, room: DiscoveredRoom, now: datetime) -> bool:
-        """Apply the global desired window unless this room explicitly ignores it."""
+        """Apply the room's effective window unless it explicitly ignores it."""
 
+        window = self._desired_window(room)
         return desired_window_allows(
             bool(self._room_settings(room).get("ignore_desired_window", False)),
             _local(now),
-            str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START)),
-            str(self.data.get("unresolved_end", DEFAULT_UNRESOLVED_END)),
+            window.start,
+            window.end,
         )
 
     def _unresolved_allowed(self, room: DiscoveredRoom, now: datetime) -> bool:
         """Permit unresolved occupancy only inside the desired cleaning window."""
 
+        window = self._desired_window(room)
         return unresolved_occupancy_allowed(
             str(self._room_data(room.area_id).get("occupancy")),
             room.is_bedroom_transit,
             _local(now),
-            str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START)),
-            str(self.data.get("unresolved_end", DEFAULT_UNRESOLVED_END)),
+            window.start,
+            window.end,
         )
 
     def _room_candidate(self, room: DiscoveredRoom, now: datetime) -> tuple[dict[str, Any] | None, str]:

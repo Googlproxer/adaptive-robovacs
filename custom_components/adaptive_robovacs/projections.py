@@ -7,8 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_UNRESOLVED_START
-from .models import next_window_start
+from .models import next_usable_window_start, next_window_start
 
 if TYPE_CHECKING:
     from .coordinator import AdaptiveRoboVacCoordinator
@@ -37,8 +36,12 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
     detail = coordinator._room_data(area_id)
     settings = coordinator._room_settings(room)
     now = _now()
-    desired_window_start = next_window_start(
-        dt_util.as_local(now), str(coordinator.data.get("unresolved_start", DEFAULT_UNRESOLVED_START))
+    desired_window = coordinator._desired_window(room)
+    local_now = dt_util.as_local(now)
+    desired_window_start = (
+        next_usable_window_start(local_now, desired_window.start, desired_window.end)
+        if desired_window.valid
+        else next_window_start(local_now, desired_window.start)
     )
     vacuum_due = coordinator._room_due(room, "vacuum", now)
     mop_due = None if settings.get("carpet", False) else coordinator._room_due(room, "mop", now)
@@ -92,6 +95,13 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "expected_minutes": settings["expected_minutes"],
         "carpet": settings["carpet"],
         "ignore_desired_window": settings["ignore_desired_window"],
+        "desired_window_configured_start": desired_window.configured_start,
+        "desired_window_configured_end": desired_window.configured_end,
+        "desired_window_effective_start": desired_window.start,
+        "desired_window_effective_end": desired_window.end,
+        "desired_window_start_inherited": desired_window.start_inherited,
+        "desired_window_end_inherited": desired_window.end_inherited,
+        "desired_window_valid": desired_window.valid,
         "occupancy": detail["occupancy"],
         "occupancy_source": detail["source"],
         "unavailable_radars": detail["unavailable_radars"],
@@ -102,6 +112,7 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "mop_due": mop_due,
         "next_due": next_due,
         "desired_window_start": desired_window_start,
+        "desired_window_next_start": desired_window_start,
         "unresolved_window_start": desired_window_start,
         "next_candidate": candidate,
         "active": active,

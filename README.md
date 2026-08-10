@@ -11,7 +11,8 @@ automatically on supported versions.
 
 ## What it does
 
-- Schedules common rooms and opt-in bedrooms using adjustable per-area cadence.
+- Schedules common rooms and opt-in bedrooms using adjustable per-area cadence
+  and independently inherited daily cleaning windows.
 - Uses Home Assistant's native vacuum segment-to-area mapping and calls
   `vacuum.clean_area` with Home Assistant area IDs.
 - Prefers occupancy sensors labelled `robovac-radar`, with occupancy/motion
@@ -48,13 +49,16 @@ vacuum-app starts are intentionally left untracked.
 
 The integration does not stop a clean already in progress if a room becomes
 occupied. It never dispatches work in observe-only mode or Party Mode. By
-default, due rooms wait for the configured desired cleaning window; enable a
-room's **Ignore desired cleaning window** switch to permit its otherwise-safe
+default, due rooms wait for their effective desired cleaning window. Each
+room's start and end can independently use the global value or select a
+15-minute daily override, including an interval that crosses midnight. Enable
+a room's **Ignore desired cleaning window** switch to permit its otherwise-safe
 clean outside those hours. A room with unresolved occupancy is retried only in
-that window, and bedroom-transit rooms remain excluded from that exception. A
-failed native-area dispatch is recorded as an **unknown error** in the room's diagnostic metadata,
-with the complete cause in the Adaptive RoboVacs integration log rather than a
-misleading map-repair instruction. The room remains eligible for future
+that room's effective window, and bedroom-transit rooms remain excluded from
+that exception. A failed native-area dispatch is recorded as an **unknown
+error** in the room's diagnostic metadata, with the complete cause in the
+Adaptive RoboVacs integration log rather than a misleading map-repair
+instruction. The room remains eligible for future
 scheduler attempts, and a successful dispatch clears the error.
 
 An observed robot pause or error creates a durable per-robot scheduler hold.

@@ -1,5 +1,7 @@
 # Plan: Per-room daily cleaning windows
 
+**Status:** Implemented for the v1.2.0 release.
+
 ## Goal
 
 Allow every discovered room to inherit the scheduler's existing daily desired
@@ -77,4 +79,3 @@ bounds without renaming existing global entities or weakening that safety rule.
 - Overnight windows and 15-minute boundaries are represented correctly.
 - Restarting Home Assistant does not lose or reinterpret room overrides.
 - The first release does not expose weekday/weekend or multiple-interval UI.
-

@@ -27,7 +27,7 @@ not independently implement the same state migration on both branches.
 
 | Issue item | Confirmed direction | Plan |
 | --- | --- | --- |
-| Per-room cleaning windows | One repeating daily interval; weekday/weekend schedules are deferred | [Per-room cleaning windows](01-per-room-cleaning-windows.md) |
+| Per-room cleaning windows | One repeating daily interval; weekday/weekend schedules are deferred | [Implemented in v1.2.0](01-per-room-cleaning-windows.md) |
 | Multipass support | Native two-pass cross-hatching, initially for Roborock; requires upstream Home Assistant support | [Room-specific native multipass](02-room-multipass.md) |
 | Mopping when water is available | A robot without the required live water/mop signals does not support scheduler mopping | [Water-aware mopping](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
@@ -115,4 +115,3 @@ migrations and public controls needed by that release.
    across robots.
 6. Each bedroom is assigned a Home Assistant user and Companion-app phone. The
    assigned phone receives a per-run actionable confirmation request.
-

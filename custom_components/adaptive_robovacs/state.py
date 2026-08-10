@@ -29,9 +29,11 @@ from .const import (
     DEFAULT_COMMON_INTERVAL,
     DEFAULT_EXPECTED_MINUTES,
 )
+from .models import is_valid_daily_time
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+DAILY_WINDOW_VERSION = 1
 
 
 class StateSchemaError(ValueError):
@@ -94,6 +96,14 @@ def _event_list(value: object) -> list[dict[str, Any]]:
     return [dict(item) for item in value if isinstance(item, Mapping)]
 
 
+def _optional_daily_time(value: object, name: str) -> str | None:
+    if value is None:
+        return None
+    if not is_valid_daily_time(value):
+        raise StateSchemaError(f"{name} must be a zero-padded HH:MM value or null")
+    return str(value)
+
+
 @dataclass(slots=True)
 class GlobalSettings:
     observe_only: bool = True
@@ -142,6 +152,8 @@ class RoomSettings:
     expected_minutes: float = DEFAULT_EXPECTED_MINUTES
     carpet: bool = False
     ignore_desired_window: bool = False
+    desired_window_start: str | None = None
+    desired_window_end: str | None = None
 
     @classmethod
     def defaults(cls, is_bedroom: bool) -> RoomSettings:
@@ -152,6 +164,17 @@ class RoomSettings:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object], default: RoomSettings) -> RoomSettings:
+        raw_window = value.get("daily_window")
+        if raw_window is not None:
+            window = _mapping(raw_window, "room daily_window")
+            if window.get("version") != DAILY_WINDOW_VERSION:
+                raise StateSchemaError(
+                    f"unsupported room daily-window version: {window.get('version')!r}"
+                )
+        else:
+            window = {}
+        raw_start = value.get("desired_window_start", window.get("start"))
+        raw_end = value.get("desired_window_end", window.get("end"))
         return cls(
             enabled=bool(value.get("enabled", default.enabled)),
             vacuum_interval=_number(value.get("vacuum_interval"), default.vacuum_interval),
@@ -161,7 +184,44 @@ class RoomSettings:
             ignore_desired_window=bool(
                 value.get("ignore_desired_window", default.ignore_desired_window)
             ),
+            desired_window_start=_optional_daily_time(
+                raw_start, "room daily-window start"
+            ),
+            desired_window_end=_optional_daily_time(
+                raw_end, "room daily-window end"
+            ),
         )
+
+    def to_store(self) -> dict[str, object]:
+        """Encode the first versioned daily-window schedule shape."""
+
+        return {
+            "enabled": self.enabled,
+            "vacuum_interval": self.vacuum_interval,
+            "mop_interval": self.mop_interval,
+            "expected_minutes": self.expected_minutes,
+            "carpet": self.carpet,
+            "ignore_desired_window": self.ignore_desired_window,
+            "daily_window": {
+                "version": DAILY_WINDOW_VERSION,
+                "start": self.desired_window_start,
+                "end": self.desired_window_end,
+            },
+        }
+
+    def to_runtime(self) -> dict[str, object]:
+        """Expose flat compatibility keys to the coordinator runtime view."""
+
+        return {
+            "enabled": self.enabled,
+            "vacuum_interval": self.vacuum_interval,
+            "mop_interval": self.mop_interval,
+            "expected_minutes": self.expected_minutes,
+            "carpet": self.carpet,
+            "ignore_desired_window": self.ignore_desired_window,
+            "desired_window_start": self.desired_window_start,
+            "desired_window_end": self.desired_window_end,
+        }
 
 
 @dataclass(slots=True)
@@ -501,7 +561,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v2 or convert v1, returning whether a v2 save is required."""
+        """Load v3 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -509,11 +569,13 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
+        if schema_version == 2:
+            return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
                 f"unsupported scheduler state schema: {schema_version!r}"
             )
-        return cls._from_v2(data, entry_data), False
+        return cls._from_versioned(data, entry_data), False
 
     @classmethod
     def _from_v1(cls, data: Mapping[str, object], entry_data: Mapping[str, object]) -> SchedulerState:
@@ -560,7 +622,9 @@ class SchedulerState:
         )
 
     @classmethod
-    def _from_v2(cls, data: Mapping[str, object], entry_data: Mapping[str, object]) -> SchedulerState:
+    def _from_versioned(
+        cls, data: Mapping[str, object], entry_data: Mapping[str, object]
+    ) -> SchedulerState:
         defaults = GlobalSettings.from_entry(entry_data)
         raw_global = _mapping(data.get("global"), "global")
         raw_room_settings = _mapping(data.get("room_settings"), "room_settings")
@@ -617,7 +681,8 @@ class SchedulerState:
             "schema_version": SCHEMA_VERSION,
             "global": asdict(self.global_settings),
             "room_settings": {
-                area_id: asdict(settings) for area_id, settings in self.room_settings.items()
+                area_id: settings.to_store()
+                for area_id, settings in self.room_settings.items()
             },
             "robot_settings": {
                 entity_id: asdict(settings)
@@ -641,7 +706,7 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v2 codec, and platform entities use
+        persistent I/O stays on the typed v3 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 
@@ -656,7 +721,7 @@ class SchedulerState:
             "unresolved_end": self.global_settings.unresolved_end,
             "settings": {
                 "rooms": {
-                    area_id: asdict(settings)
+                    area_id: settings.to_runtime()
                     for area_id, settings in self.room_settings.items()
                 },
                 "robots": {

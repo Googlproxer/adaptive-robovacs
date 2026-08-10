@@ -14,7 +14,7 @@ The available card types are:
 | --- | --- | --- |
 | `custom:adaptive-robovacs-global` | One | Scheduler status, Party Mode, observe-only mode, cleaning windows, forecast confidence, and schedule preview. |
 | `custom:adaptive-robovacs-vacuum` | One per vacuum | Status/activity plus every robot-owned setting and control. |
-| `custom:adaptive-robovacs-room` | One per room | Schedule, last-cleaned and occupancy status plus every room-owned setting and control. |
+| `custom:adaptive-robovacs-room` | One per room | Schedule, last-cleaned and occupancy status, inherited/overridden daily window controls, plus every other room-owned setting and control. |
 
 All three cards are available in Home Assistant's card picker and have visual
 editors. The integration entry is optional when only one Adaptive RoboVacs
@@ -27,6 +27,13 @@ The cards discover their rows through integration attributes rather than fixed
 entity IDs. A newly supported control therefore appears automatically on its
 existing vacuum or room card. A newly discovered vacuum or room still needs a
 new card to be added and positioned manually.
+
+Each room card's **Desired cleaning start** and **Desired cleaning end** selects
+offer 15-minute values plus **Use global**. Start and end inherit independently;
+an overnight interval is supported, while equal effective bounds are invalid
+and block window-bound scheduling until one bound changes.
+The room schedule entity reports the configured bounds, effective bounds,
+inheritance flags, validity, and next usable start as attributes.
 
 ## Four-column layout
 

@@ -37,14 +37,24 @@ integration can use a complete all-clear motion/occupancy fallback. A
 room without any occupancy source is eligible when due. A new entry after a
 clean starts does not interrupt it.
 
-The **Desired cleaning window** controls when due rooms normally start. They
-wait for its next start by default; enable a room's **Ignore desired cleaning
-window** switch to let an otherwise-safe clean run outside it. A room with
-unresolved occupancy is eligible only inside the desired window, even when that
-room ignores the usual timing preference. Bedroom-transit areas are never
-included in that unresolved exception: they retain their separate daytime-only
-and every-bedroom-clear rules. The dashboard provides the window start and end
-controls.
+The global **Desired cleaning start** and **Desired cleaning end** provide the
+default daily interval. Every room card also has its own start and end select.
+Choose **Use global** to inherit that bound or choose a 15-minute value to
+override it for only that room. The two bounds inherit independently, so a room
+can override its start while continuing to follow changes to the global end.
+Intervals are half-open (the end minute is excluded), may cross midnight, and
+are invalid when start and end are identical. An invalid pair blocks
+window-bound scheduling until either bound changes. Weekday/weekend schedules
+and multiple daily intervals are not part of this release.
+
+Due rooms wait for their effective window's next usable start by default;
+enable a room's **Ignore desired cleaning window** switch to let an
+otherwise-safe clean run outside it. A room with unresolved occupancy is
+eligible only inside its own effective desired window, even when that room
+ignores the usual timing preference. Bedroom-transit areas are never included
+in that unresolved exception: they retain their separate daytime-only and
+every-bedroom-clear rules. Party Mode and observe-only mode remain
+non-dispatching regardless of any room window setting.
 
 Enable a room's **Carpet (no mopping)** switch to make that room vacuum-only.
 Its stored mopping cadence and history are retained so turning the switch back

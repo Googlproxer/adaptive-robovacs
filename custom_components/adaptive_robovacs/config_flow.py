@@ -25,6 +25,8 @@ from .const import (
     NAME,
 )
 
+DAILY_TIME = vol.Match(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
 
 class AdaptiveRoboVacsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Create a single registry-driven scheduler entry."""
@@ -48,10 +50,14 @@ class AdaptiveRoboVacsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(
                     CONF_FORECAST_CONFIDENCE, default=DEFAULT_FORECAST_CONFIDENCE
                 ): vol.All(vol.Coerce(int), vol.Range(min=50, max=95)),
-                vol.Required(CONF_HALL_START, default=DEFAULT_HALL_START): str,
-                vol.Required(CONF_HALL_END, default=DEFAULT_HALL_END): str,
-                vol.Required(CONF_UNRESOLVED_START, default=DEFAULT_UNRESOLVED_START): str,
-                vol.Required(CONF_UNRESOLVED_END, default=DEFAULT_UNRESOLVED_END): str,
+                vol.Required(CONF_HALL_START, default=DEFAULT_HALL_START): DAILY_TIME,
+                vol.Required(CONF_HALL_END, default=DEFAULT_HALL_END): DAILY_TIME,
+                vol.Required(
+                    CONF_UNRESOLVED_START, default=DEFAULT_UNRESOLVED_START
+                ): DAILY_TIME,
+                vol.Required(
+                    CONF_UNRESOLVED_END, default=DEFAULT_UNRESOLVED_END
+                ): DAILY_TIME,
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema)

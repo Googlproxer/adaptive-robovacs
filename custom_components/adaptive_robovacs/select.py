@@ -9,9 +9,16 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .entity import AdaptiveEntity, async_setup_dynamic_entities
 
+TIME_OPTIONS = tuple(
+    f"{hour:02d}:{minute:02d}"
+    for hour in range(24)
+    for minute in range(0, 60, 15)
+)
+USE_GLOBAL_OPTION = "Use global"
+
 
 class _TimeSelect(AdaptiveEntity, SelectEntity):
-    _attr_options = tuple(f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in range(0, 60, 15))
+    _attr_options = TIME_OPTIONS
 
     def __init__(self, coordinator, key: str, name: str) -> None:
         super().__init__(coordinator, f"global_{key}", name, "global_control")
@@ -23,6 +30,34 @@ class _TimeSelect(AdaptiveEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         await self.coordinator.async_set_global(self.key, option)
+
+
+class _RoomTimeSelect(AdaptiveEntity, SelectEntity):
+    _attr_options = (USE_GLOBAL_OPTION, *TIME_OPTIONS)
+
+    def __init__(self, coordinator, area_id: str, key: str, name: str) -> None:
+        bound = "start" if key.endswith("start") else "end"
+        super().__init__(
+            coordinator,
+            f"room_{area_id}_{key}",
+            name,
+            f"room_window_{bound}_control",
+            area_id=area_id,
+        )
+        self.area_id = area_id
+        self.key = key
+
+    @property
+    def current_option(self) -> str:
+        configured = self.coordinator.get_room_setting(self.area_id, self.key)
+        return str(configured) if configured is not None else USE_GLOBAL_OPTION
+
+    async def async_select_option(self, option: str) -> None:
+        await self.coordinator.async_set_room_setting(
+            self.area_id,
+            self.key,
+            None if option == USE_GLOBAL_OPTION else option,
+        )
 
 
 class _RobotSelect(AdaptiveEntity, SelectEntity):
@@ -63,6 +98,23 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
             entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_mode", profile.mop_mode_options, "mop mode"))
         if profile.mop_intensity_select_entity_id and profile.mop_intensity_options:
             entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_intensity", profile.mop_intensity_options, "mop intensity"))
+    for room in coordinator.discovery.rooms.values():
+        entities.extend(
+            [
+                _RoomTimeSelect(
+                    coordinator,
+                    room.area_id,
+                    "desired_window_start",
+                    f"{room.name} desired cleaning start",
+                ),
+                _RoomTimeSelect(
+                    coordinator,
+                    room.area_id,
+                    "desired_window_end",
+                    f"{room.name} desired cleaning end",
+                ),
+            ]
+        )
     return entities
 
 

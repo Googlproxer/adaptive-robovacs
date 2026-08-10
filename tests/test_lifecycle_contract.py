@@ -48,7 +48,7 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('"unresolved_window_start"', source)
         self.assertIn('"unresolved_window_start"', PROJECTIONS_PATH.read_text(encoding="utf-8"))
 
-    def test_desired_window_uses_existing_controls_with_a_room_override(self) -> None:
+    def test_desired_window_supports_per_room_inheritance_and_the_existing_bypass(self) -> None:
         coordinator = (
             COORDINATOR_PATH.read_text(encoding="utf-8")
             + PROJECTIONS_PATH.read_text(encoding="utf-8")
@@ -63,11 +63,20 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('"waiting for desired cleaning window"', coordinator)
         self.assertIn("if not self._desired_window_allows(room, now)", coordinator)
         self.assertIn("unresolved_window_allowed = self._unresolved_allowed(room, now)", coordinator)
+        self.assertIn("window = self._desired_window(room)", coordinator)
+        self.assertIn('"desired_window_start": None', coordinator)
+        self.assertIn('"desired_window_end": None', coordinator)
+        self.assertIn('"desired_window_effective_start"', coordinator)
+        self.assertIn('"desired_window_effective_end"', coordinator)
+        self.assertIn('"desired_window_start_inherited"', coordinator)
+        self.assertIn('"desired_window_end_inherited"', coordinator)
         self.assertIn('"desired_window_start"', coordinator)
         self.assertIn('"unresolved_window_start": desired_window_start', coordinator)
         self.assertIn('"ignore_desired_window"', switch)
         self.assertIn("Desired cleaning start", select)
         self.assertIn("Desired cleaning end", select)
+        self.assertIn('USE_GLOBAL_OPTION = "Use global"', select)
+        self.assertIn('f"room_window_{bound}_control"', select)
 
     def test_cleaning_timer_is_discovered_from_the_robot_device(self) -> None:
         source = DISCOVERY_PATH.read_text(encoding="utf-8")

@@ -110,9 +110,11 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertNotIn("active", stored)
         self.assertEqual(stored["active_jobs"]["vacuum.alpha"]["room"], "kitchen")
 
-    def test_v2_round_trip_preserves_timestamped_history_and_job(self) -> None:
+    def test_v3_round_trip_preserves_window_overrides_history_and_job(self) -> None:
         state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
+        study_settings, _ = state.ensure_room("study", is_bedroom=False)
+        study_settings.desired_window_start = "10:15"
+        state.ensure_room("kitchen", is_bedroom=False)
         state.room_history["study"] = RoomHistory(
             vacuum_completed_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
             deferrals={"vacuum": datetime(2026, 8, 2, tzinfo=timezone.utc)},
@@ -131,11 +133,46 @@ class SchedulerStateTests(unittest.TestCase):
 
         self.assertFalse(migrated)
         self.assertFalse(restored.global_settings.observe_only)
+        self.assertEqual(restored.room_settings["study"].desired_window_start, "10:15")
+        self.assertIsNone(restored.room_settings["study"].desired_window_end)
+        self.assertIsNone(restored.room_settings["kitchen"].desired_window_start)
         self.assertEqual(
             restored.room_history["study"].deferrals["vacuum"],
             datetime(2026, 8, 2, tzinfo=timezone.utc),
         )
         self.assertEqual(restored.active_jobs["vacuum.beta"].expected_minutes, 25)
+
+        stored_room = restored.to_store()["room_settings"]["study"]
+        self.assertEqual(
+            stored_room["daily_window"],
+            {"version": 1, "start": "10:15", "end": None},
+        )
+
+    def test_v2_rooms_migrate_to_inherited_daily_windows(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.ensure_room("study", is_bedroom=False)
+        payload = state.to_store()
+        payload["schema_version"] = 2
+        payload["room_settings"]["study"].pop("daily_window")
+
+        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertTrue(migrated)
+        self.assertIsNone(restored.room_settings["study"].desired_window_start)
+        self.assertIsNone(restored.room_settings["study"].desired_window_end)
+        self.assertEqual(
+            restored.to_runtime_data()["settings"]["rooms"]["study"],
+            {
+                "enabled": True,
+                "vacuum_interval": 84,
+                "mop_interval": 168,
+                "expected_minutes": 30,
+                "carpet": False,
+                "ignore_desired_window": False,
+                "desired_window_start": None,
+                "desired_window_end": None,
+            },
+        )
 
     def test_invalid_samples_are_dropped_without_invalidating_a_v1_migration(self) -> None:
         state, migrated = SchedulerState.from_store(
@@ -158,9 +195,27 @@ class SchedulerStateTests(unittest.TestCase):
         with self.assertRaises(StateSchemaError):
             SchedulerState.from_store({"schema_version": SCHEMA_VERSION + 1}, ENTRY_DATA)
 
-    def test_v2_requires_all_structural_sections(self) -> None:
+    def test_current_schema_requires_all_structural_sections(self) -> None:
         with self.assertRaises(StateSchemaError):
             SchedulerState.from_store({"schema_version": SCHEMA_VERSION, "global": {}}, ENTRY_DATA)
+
+    def test_unknown_daily_window_version_is_rejected(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.ensure_room("study", is_bedroom=False)
+        payload = state.to_store()
+        payload["room_settings"]["study"]["daily_window"]["version"] = 2
+
+        with self.assertRaises(StateSchemaError):
+            SchedulerState.from_store(payload, ENTRY_DATA)
+
+    def test_invalid_persisted_daily_time_is_rejected(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.ensure_room("study", is_bedroom=False)
+        payload = state.to_store()
+        payload["room_settings"]["study"]["daily_window"]["start"] = "9:00"
+
+        with self.assertRaises(StateSchemaError):
+            SchedulerState.from_store(payload, ENTRY_DATA)
 
 
 if __name__ == "__main__":

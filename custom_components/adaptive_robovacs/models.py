@@ -9,10 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import math
+import re
 from typing import Iterable, Mapping
 
 
 VALID_OCCUPANCY_STATES = {"on", "off"}
+DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +111,24 @@ class ManualCleanRequest:
 
     robot_id: str
     area_ids: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedDailyWindow:
+    """One room's configured and effective daily cleaning window."""
+
+    configured_start: str | None
+    configured_end: str | None
+    start: str
+    end: str
+    start_inherited: bool
+    end_inherited: bool
+
+    @property
+    def valid(self) -> bool:
+        """Return whether the effective half-open interval is usable."""
+
+        return self.start != self.end
 
 
 def _service_entity_ids(service_data: Mapping[str, object]) -> list[str]:
@@ -373,6 +393,39 @@ def learned_duration_minutes(samples: Iterable[float], fallback: float, minimum:
     return values[index], len(values)
 
 
+def is_valid_daily_time(value: object) -> bool:
+    """Return whether a value is a zero-padded local ``HH:MM`` time."""
+
+    return isinstance(value, str) and DAILY_TIME_PATTERN.fullmatch(value) is not None
+
+
+def resolve_daily_window(
+    configured_start: str | None,
+    configured_end: str | None,
+    global_start: str,
+    global_end: str,
+) -> ResolvedDailyWindow:
+    """Resolve independently inherited room bounds against global defaults."""
+
+    values = {
+        "configured start": configured_start,
+        "configured end": configured_end,
+        "global start": global_start,
+        "global end": global_end,
+    }
+    for name, value in values.items():
+        if value is not None and not is_valid_daily_time(value):
+            raise ValueError(f"Invalid {name}: {value!r}")
+    return ResolvedDailyWindow(
+        configured_start=configured_start,
+        configured_end=configured_end,
+        start=configured_start if configured_start is not None else global_start,
+        end=configured_end if configured_end is not None else global_end,
+        start_inherited=configured_start is None,
+        end_inherited=configured_end is None,
+    )
+
+
 def in_daytime_window(now: datetime, start: str, end: str) -> bool:
     """Return whether a local time is in a configured half-open time range.
 
@@ -381,7 +434,7 @@ def in_daytime_window(now: datetime, start: str, end: str) -> bool:
     cross midnight avoids treating a valid night range as empty.
     """
 
-    if start == end:
+    if not is_valid_daily_time(start) or not is_valid_daily_time(end) or start == end:
         return False
     time_text = now.strftime("%H:%M")
     if start < end:
@@ -392,9 +445,19 @@ def in_daytime_window(now: datetime, start: str, end: str) -> bool:
 def next_window_start(now: datetime, start: str) -> datetime:
     """Return the next occurrence of a local HH:MM window start."""
 
+    if not is_valid_daily_time(start):
+        raise ValueError(f"Invalid daily window start: {start!r}")
     hour, minute = (int(part) for part in start.split(":", maxsplit=1))
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     return candidate if now < candidate else candidate + timedelta(days=1)
+
+
+def next_usable_window_start(now: datetime, start: str, end: str) -> datetime:
+    """Return now inside a valid window, otherwise its next start boundary."""
+
+    if not is_valid_daily_time(start) or not is_valid_daily_time(end) or start == end:
+        raise ValueError(f"Invalid daily window: {start!r}-{end!r}")
+    return now if in_daytime_window(now, start, end) else next_window_start(now, start)
 
 
 def desired_window_allows(

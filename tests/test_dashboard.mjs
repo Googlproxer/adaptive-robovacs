@@ -80,6 +80,14 @@ const baseStates = () => ({
     area_id: "kitchen",
     friendly_name: "Kitchen occupancy",
   }),
+  "select.kitchen_desired_start": adaptiveState("room_window_start_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen desired cleaning start",
+  }),
+  "select.kitchen_desired_end": adaptiveState("room_window_end_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen desired cleaning end",
+  }),
   "number.kitchen_cadence": adaptiveState("room_control", {
     area_id: "kitchen",
     friendly_name: "Kitchen cadence",
@@ -162,6 +170,8 @@ test("room card contains one selected room with status before controls", () => {
     { entity: "sensor.kitchen_next_clean", name: "Next clean" },
     { entity: "sensor.kitchen_last_cleaned", name: "Last cleaned" },
     { entity: "sensor.kitchen_occupancy", name: "Occupancy" },
+    { entity: "select.kitchen_desired_start", name: "Desired cleaning start" },
+    { entity: "select.kitchen_desired_end", name: "Desired cleaning end" },
     { entity: "number.kitchen_cadence", name: "Cadence" },
     { entity: "switch.kitchen_enabled", name: "Enabled" },
   ]);

@@ -123,6 +123,55 @@ class CadenceTests(unittest.TestCase):
             models.unresolved_occupancy_allowed("occupied", False, desired_window, "09:00", "20:00")
         )
 
+    def test_room_window_bounds_inherit_independently(self) -> None:
+        inherited = models.resolve_daily_window(None, None, "09:00", "20:00")
+        partial = models.resolve_daily_window("10:15", None, "09:00", "20:00")
+
+        self.assertEqual((inherited.start, inherited.end), ("09:00", "20:00"))
+        self.assertTrue(inherited.start_inherited)
+        self.assertTrue(inherited.end_inherited)
+        self.assertEqual((partial.start, partial.end), ("10:15", "20:00"))
+        self.assertFalse(partial.start_inherited)
+        self.assertTrue(partial.end_inherited)
+
+    def test_daily_window_validation_rejects_malformed_times_and_equal_bounds(self) -> None:
+        for value in ("9:00", "24:00", "09:60", "09:00:00", None):
+            self.assertFalse(models.is_valid_daily_time(value))
+        with self.assertRaises(ValueError):
+            models.resolve_daily_window("9:00", None, "09:00", "20:00")
+        self.assertFalse(
+            models.resolve_daily_window("09:00", "09:00", "08:00", "20:00").valid
+        )
+
+    def test_daily_window_boundaries_are_half_open_for_day_and_overnight_ranges(self) -> None:
+        self.assertTrue(models.in_daytime_window(self.now.replace(hour=9), "09:00", "20:00"))
+        self.assertFalse(models.in_daytime_window(self.now.replace(hour=20), "09:00", "20:00"))
+        self.assertTrue(models.in_daytime_window(self.now.replace(hour=22), "22:00", "05:00"))
+        self.assertTrue(models.in_daytime_window(self.now.replace(hour=4, minute=59), "22:00", "05:00"))
+        self.assertFalse(models.in_daytime_window(self.now.replace(hour=5), "22:00", "05:00"))
+
+    def test_next_usable_window_start_is_now_inside_and_next_boundary_outside(self) -> None:
+        inside = self.now.replace(hour=10, minute=30)
+        outside = self.now.replace(hour=21, minute=30)
+        self.assertEqual(
+            models.next_usable_window_start(inside, "09:00", "20:00"),
+            inside,
+        )
+        self.assertEqual(
+            models.next_usable_window_start(outside, "09:00", "20:00"),
+            self.now.replace(hour=9, minute=0) + timedelta(days=1),
+        )
+
+    def test_two_rooms_can_have_different_candidate_windows(self) -> None:
+        now = self.now.replace(hour=10)
+        morning = models.resolve_daily_window("09:00", "11:00", "01:00", "05:00")
+        afternoon = models.resolve_daily_window("14:00", "16:00", "01:00", "05:00")
+
+        self.assertTrue(models.desired_window_allows(False, now, morning.start, morning.end))
+        self.assertFalse(
+            models.desired_window_allows(False, now, afternoon.start, afternoon.end)
+        )
+
     def test_carpet_rooms_never_choose_a_mopping_operation(self) -> None:
         mop_due = self.now - timedelta(hours=1)
         vacuum_due = self.now + timedelta(hours=4)
