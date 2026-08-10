@@ -19,7 +19,8 @@ automatically on supported versions.
 - Supports party mode, manual-clean deferrals, learned vacancy forecasts,
   restart recovery, multi-robot ready-first allocation, double-pass settings,
   carpet-aware vacuum-only rooms, and capability-driven mopping controls.
-- Provides a self-updating Lovelace card and generated room/robot controls.
+- Provides target-scoped Lovelace cards for global settings, each vacuum, and
+  each room, with generated status and control rows.
 
 ## Installation
 
@@ -35,8 +36,9 @@ automatically on supported versions.
    Label radar occupancy entities `robovac-radar`. Home Assistant normalizes
    their underlying IDs to underscores (for example, `robovac_bedroom`), which
    the integration handles automatically.
-6. Add the supplied dashboard card resource and use the example dashboard
-   configuration. Review schedule previews before turning off observe-only mode.
+6. Add the supplied dashboard card resource and compose the global, per-vacuum,
+   and per-room cards using the example sections dashboard. Review schedule
+   previews before turning off observe-only mode.
 
 See [setup](docs/setup.md) and [dashboard setup](docs/dashboard.md). Home
 Assistant user-initiated room cleans are tracked automatically; native

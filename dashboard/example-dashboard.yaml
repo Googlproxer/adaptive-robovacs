@@ -3,6 +3,40 @@ views:
   - title: Robovacs
     path: robovacs
     icon: mdi:robot-vacuum
-    cards:
-      - type: custom:adaptive-robovacs-dashboard
-        columns: 4
+    type: sections
+    max_columns: 4
+    sections:
+      # Column 1: global settings followed by one card per vacuum.
+      - type: grid
+        cards:
+          - type: custom:adaptive-robovacs-global
+
+          - type: custom:adaptive-robovacs-vacuum
+            vacuum_entity_id: vacuum.first_robot
+
+          - type: custom:adaptive-robovacs-vacuum
+            vacuum_entity_id: vacuum.second_robot
+
+      # Column 2: one card per ground-floor room.
+      - type: grid
+        cards:
+          - type: custom:adaptive-robovacs-room
+            area_id: ground_room_one
+
+          - type: custom:adaptive-robovacs-room
+            area_id: ground_room_two
+
+      # Column 3: one card per upper-floor non-bedroom room.
+      - type: grid
+        cards:
+          - type: custom:adaptive-robovacs-room
+            area_id: upper_room_one
+
+      # Column 4: one card per bedroom, regardless of floor.
+      - type: grid
+        cards:
+          - type: custom:adaptive-robovacs-room
+            area_id: bedroom_one
+
+          - type: custom:adaptive-robovacs-room
+            area_id: bedroom_two

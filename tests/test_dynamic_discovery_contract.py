@@ -1,4 +1,4 @@
-"""Contract checks for live discovery changes."""
+"""Contract checks for live discovery and dashboard packaging."""
 
 from pathlib import Path
 import unittest
@@ -16,7 +16,7 @@ DASHBOARD_PATH = (
 
 
 class DynamicDiscoveryContractTests(unittest.TestCase):
-    """Ensure excluded rooms do not break state updates or clutter the card."""
+    """Keep registry discovery and the packaged frontend contracts stable."""
 
     def test_stale_room_entities_do_not_write_state(self) -> None:
         source = ENTITY_PATH.read_text(encoding="utf-8")
@@ -25,20 +25,26 @@ class DynamicDiscoveryContractTests(unittest.TestCase):
             source,
         )
 
-    def test_dashboard_honours_hidden_area_ids(self) -> None:
+    def test_dashboard_registers_only_the_target_scoped_cards(self) -> None:
         source = DASHBOARD_PATH.read_text(encoding="utf-8")
-        self.assertIn("hidden_area_ids", source)
-        self.assertIn("hiddenAreaIds.has(areaId)", source)
+        self.assertIn(
+            'customElements.define("adaptive-robovacs-global"',
+            source,
+        )
+        self.assertIn(
+            'customElements.define("adaptive-robovacs-vacuum"',
+            source,
+        )
+        self.assertIn(
+            'customElements.define("adaptive-robovacs-room"',
+            source,
+        )
+        self.assertNotIn(
+            'customElements.define("adaptive-robovacs-dashboard"',
+            source,
+        )
 
-    def test_dashboard_groups_rooms_into_floor_and_bedroom_columns(self) -> None:
-        source = DASHBOARD_PATH.read_text(encoding="utf-8")
-        self.assertIn('type: "grid"', source)
-        self.assertIn('"Scheduler & robot settings"', source)
-        self.assertIn('"Bedrooms"', source)
-        self.assertIn("schedule.attrs.bedroom", source)
-        self.assertIn("this._config.columns", source)
-
-    def test_local_dashboard_copy_matches_served_card(self) -> None:
+    def test_local_dashboard_copy_matches_served_cards(self) -> None:
         local_copy = (
             Path(__file__).parents[1] / "dashboard" / "adaptive-robovacs-dashboard.js"
         )
