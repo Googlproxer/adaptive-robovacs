@@ -211,6 +211,13 @@ class RecoveryTransitionTests(unittest.TestCase):
             )
         )
 
+    def test_idle_transition_does_not_complete_a_recovered_job(self) -> None:
+        self.assertFalse(
+            models.recovery_transition_is_observed(
+                "returning", "idle", self.recovered_at + timedelta(minutes=2), self.recovered_at
+            )
+        )
+
     def test_transition_from_before_recovery_remains_an_offline_completion(self) -> None:
         self.assertFalse(
             models.recovery_transition_is_observed(
@@ -284,6 +291,25 @@ class ActiveJobHoldTests(unittest.TestCase):
             models.held_job_transition("docked", "completion_pending", True), "complete"
         )
 
+    def test_pending_completion_accepts_a_direct_dock_observation(self) -> None:
+        self.assertTrue(
+            models.pending_completion_is_docked("docked", "completion_held")
+        )
+        self.assertFalse(models.pending_completion_is_docked("idle", "recovery_waiting"))
+        self.assertFalse(models.pending_completion_is_docked("docked", "held"))
+        self.assertFalse(
+            models.pending_completion_is_docked("returning", "completion_held")
+        )
+
+    def test_only_a_docked_robot_can_start_scheduled_work(self) -> None:
+        self.assertTrue(models.can_start_scheduled_clean("docked"))
+        self.assertFalse(models.can_start_scheduled_clean("idle"))
+        self.assertFalse(models.can_start_scheduled_clean("returning"))
+        self.assertFalse(models.can_start_scheduled_clean(None))
+
+    def test_idle_does_not_close_a_held_cancellation(self) -> None:
+        self.assertEqual(models.held_job_transition("idle", "cancelling", False), "held")
+
     def test_cancellation_rebases_due_queue_without_collapsing_spacing(self) -> None:
         now = datetime(2026, 8, 8, 12, 0)
         result = models.rebase_due_times(
@@ -310,7 +336,7 @@ class ActiveJobHoldTests(unittest.TestCase):
             models.offline_held_recovery_outcome(
                 "idle", "held", recovered - timedelta(minutes=29), 30, recovered
             ),
-            "cancelled",
+            "held",
         )
         self.assertEqual(
             models.offline_held_recovery_outcome("idle", "held", None, None, recovered),

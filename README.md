@@ -66,12 +66,13 @@ The hold survives automatic idle transitions and Home Assistant restarts, so an
 expected duration can never resume work after a fault. Resume with the robot's
 physical controls and the scheduler continues only after it observes
 `cleaning`. Cancel with the physical dock control and the scheduler observes
-`returning` followed by `docked` or `idle`; it records no clean credit or
+`returning` followed by `docked`; it records no clean credit or
 duration sample, then rebases enabled vacuum and eligible mop schedules on that
 floor 24 hours into the future while retaining their relative spacing. A clean
 already observed as complete before a later fault remains held until the robot
-physically continues its return. On restart, a held docked job is treated as a
-completion only if Home Assistant was offline for at least its expected clean
+is observed at the dock, including when it is placed there manually. On
+restart, a held docked job is treated as a completion only if Home Assistant
+was offline for at least its expected clean
 duration; otherwise it is treated as that physical cancellation.
 
 ## Releases and upgrades

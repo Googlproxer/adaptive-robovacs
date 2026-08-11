@@ -189,22 +189,43 @@ def held_job_transition(
 ) -> str:
     """Classify only the safe ways an interrupted job can leave its hold.
 
-    A docked or idle robot is not enough to infer user intent because some
+    A docked robot is not enough to infer user intent because some
     native integrations report it shortly after an error. A live ``returning``
     state is the physical-dock signal; a fresh ``cleaning`` state is a physical
     resume. A job that had already entered returning before its fault has a
-    confirmed clean phase and can complete once it reaches the dock.
+    confirmed clean phase and can complete once it is observed at the dock,
+    including when it was placed there manually.
     """
 
+    if pending_completion_is_docked(robot_state, phase):
+        return "complete"
     if robot_state == "cleaning":
         return "resumed"
     if robot_state == "returning":
         return "completion_pending" if completed_before_hold else "cancelling"
-    if phase == "completion_pending" and robot_state in {"docked", "idle"}:
-        return "complete"
-    if phase == "cancelling" and robot_state in {"docked", "idle"}:
+    if phase == "cancelling" and robot_state == "docked":
         return "cancelled"
     return "held"
+
+
+def pending_completion_is_docked(robot_state: str | None, phase: str | None) -> bool:
+    """Return whether a pending completion has reached the dock.
+
+    A completion-pending job has already established that its room clean
+    finished.  Its final dock observation is therefore sufficient regardless
+    of whether the robot navigated there by itself or was placed on the dock.
+    """
+
+    return (
+        phase in {"completion_pending", "completion_held", "recovery_waiting"}
+        and robot_state == "docked"
+    )
+
+
+def can_start_scheduled_clean(robot_state: str | None) -> bool:
+    """Return whether the robot is physically safe to start scheduled work."""
+
+    return robot_state == "docked"
 
 
 def offline_held_recovery_outcome(
@@ -216,7 +237,7 @@ def offline_held_recovery_outcome(
 ) -> str:
     """Classify an unobserved held-job ending after Home Assistant restarts."""
 
-    if robot_state not in {"docked", "idle"}:
+    if robot_state != "docked":
         return "held"
     if hold_phase == "cancelling":
         return "cancelled"
@@ -266,7 +287,7 @@ def recovery_transition_is_observed(
         and recovered_at
         and transition_at >= recovered_at
         and old_state in {"cleaning", "returning"}
-        and new_state in {"returning", "docked", "idle"}
+        and new_state in {"returning", "docked"}
     )
 
 

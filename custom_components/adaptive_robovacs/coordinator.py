@@ -47,6 +47,7 @@ from .jobs import JobLifecycle
 from .models import (
     Forecast,
     ResolvedDailyWindow,
+    can_start_scheduled_clean,
     desired_window_allows,
     due_at,
     forecast_vacancy,
@@ -54,6 +55,7 @@ from .models import (
     in_daytime_window,
     learned_duration_minutes,
     manual_deferral,
+    pending_completion_is_docked,
     resolve_daily_window,
     parse_manual_clean_request,
     offline_held_recovery_outcome,
@@ -463,6 +465,21 @@ class AdaptiveRoboVacCoordinator:
             state_text = state.state if state else "unavailable"
             hold = self.data["robot_holds"].get(entity_id)
 
+            if active and pending_completion_is_docked(
+                state_text, str(active.get("phase"))
+            ):
+                completion = _as_datetime(active.get("cleaning_finished")) or (
+                    state.last_changed if state else now
+                )
+                confidence = (
+                    str(active.get("completion_confidence", "observed"))
+                    if active.get("cleaning_finished")
+                    else "observed_pending_completion"
+                )
+                self._complete_job(entity_id, active, completion, confidence)
+                self.data["robot_holds"].pop(entity_id, None)
+                continue
+
             # Retain v1.0.9 holds written before their richer state was added.
             if not hold and active and active.get("phase") in {"paused", "error_waiting"}:
                 hold = {
@@ -541,11 +558,14 @@ class AdaptiveRoboVacCoordinator:
                     self._cancel_recovery_timer(entity_id)
                 continue
             expected_end = _as_datetime(active.get("expected_end"))
-            if active.get("seen_cleaning") and state and state.state in {"docked", "idle"}:
+            if active.get("seen_cleaning") and state and state.state == "docked":
                 if expected_end and now >= expected_end:
                     self._complete_job(entity_id, active, expected_end, "recovered_expected_end")
                 else:
                     self._set_recovery_waiting(entity_id, active, now)
+                continue
+            if active.get("seen_cleaning") and state and state.state == "idle":
+                self._set_recovery_waiting(entity_id, active, now)
                 continue
             if state is None or state.state in {"unavailable", "unknown"}:
                 self._set_recovery_waiting(entity_id, active, now)
@@ -924,7 +944,7 @@ class AdaptiveRoboVacCoordinator:
                 return False, "active job held while robot is paused"
             return False, "active job"
         state = self.hass.states.get(robot.entity_id)
-        if not state or state.state not in {"docked", "idle"}:
+        if not state or not can_start_scheduled_clean(state.state):
             return False, f"robot is {state.state if state else 'unavailable'}"
         battery = self._robot_battery(robot)
         if battery is None:
@@ -1102,6 +1122,22 @@ class AdaptiveRoboVacCoordinator:
                 active["last_observed_at"] = _iso(now)
                 changed = True
 
+            if active and pending_completion_is_docked(
+                state_text, str(active.get("phase"))
+            ):
+                completion = _as_datetime(active.get("cleaning_finished")) or (
+                    state.last_changed if state else now
+                )
+                confidence = (
+                    str(active.get("completion_confidence", "observed"))
+                    if active.get("cleaning_finished")
+                    else "observed_pending_completion"
+                )
+                self._complete_job(robot_id, active, completion, confidence)
+                self.data["robot_holds"].pop(robot_id, None)
+                changed = True
+                continue
+
             hold_action = self._reconcile_robot_hold(robot_id, state_text, active, now)
             if hold_action == "held":
                 if active:
@@ -1183,7 +1219,7 @@ class AdaptiveRoboVacCoordinator:
                 self._cancel_recovery_timer(robot_id)
                 changed = True
                 continue
-            if active.get("seen_cleaning") and state_text in {"docked", "idle"}:
+            if active.get("seen_cleaning") and state_text == "docked":
                 expected_end = _as_datetime(active.get("expected_end"))
                 if active.get("phase") == "recovery_waiting" and expected_end and now < expected_end:
                     continue
