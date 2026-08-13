@@ -91,6 +91,11 @@ class JobLifecycle:
         coordinator.data["recovery_events"] = coordinator.data["recovery_events"][-20:]
         coordinator.data["active"][robot_id] = None
         coordinator._cancel_recovery_timer(robot_id)
+        cancel_confirmation = getattr(
+            coordinator, "_cancel_start_confirmation", None
+        )
+        if cancel_confirmation:
+            cancel_confirmation(robot_id)
 
     def complete(
         self, robot_id: str, active: dict[str, Any], completion: datetime, confidence: str
@@ -151,6 +156,11 @@ class JobLifecycle:
         coordinator.data["recovery_events"] = coordinator.data["recovery_events"][-20:]
         coordinator.data["active"][robot_id] = None
         coordinator._cancel_recovery_timer(robot_id)
+        cancel_confirmation = getattr(
+            coordinator, "_cancel_start_confirmation", None
+        )
+        if cancel_confirmation:
+            cancel_confirmation(robot_id)
 
     def rebase_cancelled_floor(self, robot_id: str, cancelled_at: datetime) -> list[str]:
         """Rebase every enabled schedule on a physically cancelled robot's floor."""

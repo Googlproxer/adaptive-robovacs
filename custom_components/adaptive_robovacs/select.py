@@ -15,6 +15,7 @@ TIME_OPTIONS = tuple(
     for minute in range(0, 60, 15)
 )
 USE_GLOBAL_OPTION = "Use global"
+PASS_OPTIONS = ("Robot default", "1 pass", "2 passes")
 
 
 class _TimeSelect(AdaptiveEntity, SelectEntity):
@@ -60,6 +61,31 @@ class _RoomTimeSelect(AdaptiveEntity, SelectEntity):
         )
 
 
+class _RoomPassSelect(AdaptiveEntity, SelectEntity):
+    _attr_options = PASS_OPTIONS
+
+    def __init__(self, coordinator, area_id: str, name: str) -> None:
+        super().__init__(
+            coordinator,
+            f"room_{area_id}_pass_count",
+            name,
+            "room_pass_count_control",
+            area_id=area_id,
+        )
+        self.area_id = area_id
+
+    @property
+    def current_option(self) -> str:
+        value = self.coordinator.get_room_setting(self.area_id, "pass_count")
+        return "Robot default" if value is None else f"{value} pass" + ("es" if value == 2 else "")
+
+    async def async_select_option(self, option: str) -> None:
+        value = {"Robot default": None, "1 pass": 1, "2 passes": 2}[option]
+        await self.coordinator.async_set_room_setting(
+            self.area_id, "pass_count", value
+        )
+
+
 class _RobotSelect(AdaptiveEntity, SelectEntity):
     def __init__(self, coordinator, robot_entity_id: str, key: str, options: tuple[str, ...], label: str) -> None:
         super().__init__(
@@ -92,6 +118,16 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
     ]
     for robot in coordinator.discovery.robots.values():
         profile = robot.profile
+        if robot.adapter_capabilities.fan_speed_options:
+            entities.append(
+                _RobotSelect(
+                    coordinator,
+                    robot.entity_id,
+                    "fan_speed",
+                    robot.adapter_capabilities.fan_speed_options,
+                    "fan speed",
+                )
+            )
         if profile.mode_select_entity_id and profile.mode_options:
             entities.append(_RobotSelect(coordinator, robot.entity_id, "mode", profile.mode_options, "mode"))
         if profile.mop_mode_select_entity_id and profile.mop_mode_options:
@@ -112,6 +148,11 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
                     room.area_id,
                     "desired_window_end",
                     f"{room.name} desired cleaning end",
+                ),
+                _RoomPassSelect(
+                    coordinator,
+                    room.area_id,
+                    f"{room.name} cleaning passes",
                 ),
             ]
         )

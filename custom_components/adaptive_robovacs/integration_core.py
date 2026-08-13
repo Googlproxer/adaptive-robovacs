@@ -8,6 +8,8 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN, PLATFORMS
 from .coordinator import AdaptiveRoboVacCoordinator
 from .services import async_register_services, async_unregister_services
+from .repairs_manager import scheduler_halted_issue_id, two_pass_issue_id
+from homeassistant.helpers import issue_registry as ir
 
 type AdaptiveRoboVacsConfigEntry = ConfigEntry[AdaptiveRoboVacCoordinator]
 
@@ -36,3 +38,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: AdaptiveRoboVacsConfigE
         if not hass.data.get(DOMAIN):
             await async_unregister_services(hass)
     return unload_ok
+
+
+async def async_remove_entry(
+    hass: HomeAssistant, entry: AdaptiveRoboVacsConfigEntry
+) -> None:
+    """Remove Repairs issues owned solely by a deleted config entry."""
+
+    ir.async_delete_issue(
+        hass, DOMAIN, scheduler_halted_issue_id(entry.entry_id)
+    )
+    coordinator = entry.runtime_data
+    for area_id in coordinator.data.get("settings", {}).get("rooms", {}):
+        ir.async_delete_issue(
+            hass, DOMAIN, two_pass_issue_id(entry.entry_id, area_id)
+        )

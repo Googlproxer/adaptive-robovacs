@@ -50,6 +50,13 @@ class CadenceTests(unittest.TestCase):
         )
         self.assertIsNone(models.manual_deferral(self.now, self.now + timedelta(hours=25)))
 
+    def test_room_pass_override_never_downgrades_an_unsupported_request(self) -> None:
+        self.assertEqual(models.resolve_pass_count(None, False, {1, 2}), 1)
+        self.assertEqual(models.resolve_pass_count(None, True, {1, 2}), 2)
+        self.assertEqual(models.resolve_pass_count(1, True, {1, 2}), 1)
+        self.assertEqual(models.resolve_pass_count(2, False, {1, 2}), 2)
+        self.assertIsNone(models.resolve_pass_count(2, True, {1}))
+
     def test_due_at_honours_later_manual_deferral(self) -> None:
         result = models.due_at(
             self.now - timedelta(hours=100),

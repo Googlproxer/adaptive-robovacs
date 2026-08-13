@@ -13,12 +13,14 @@ automatically on supported versions.
 
 - Schedules common rooms and opt-in bedrooms using adjustable per-area cadence
   and independently inherited daily cleaning windows.
-- Uses Home Assistant's native vacuum segment-to-area mapping and calls
-  `vacuum.clean_area` with Home Assistant area IDs.
+- Resolves every vacuum through an integration-owned adapter. Unknown vendors
+  retain the portable `vacuum.clean_area` path; compatible Roborock vacuums can
+  use native two-pass cross-hatched room cleaning through Home Assistant's
+  existing area mapping.
 - Prefers occupancy sensors labelled `robovac-radar`, with occupancy/motion
   binary sensors in the same area as a fallback.
 - Supports party mode, manual-clean deferrals, learned vacancy forecasts,
-  restart recovery, multi-robot ready-first allocation, double-pass settings,
+  restart recovery, multi-robot ready-first allocation, room pass overrides,
   carpet-aware vacuum-only rooms, and capability-driven mopping controls.
 - Provides target-scoped Lovelace cards for global settings, each vacuum, and
   each room, with generated status and control rows.
@@ -55,11 +57,20 @@ room's start and end can independently use the global value or select a
 a room's **Ignore desired cleaning window** switch to permit its otherwise-safe
 clean outside those hours. A room with unresolved occupancy is retried only in
 that room's effective window, and bedroom-transit rooms remain excluded from
-that exception. A failed native-area dispatch is recorded as an **unknown
-error** in the room's diagnostic metadata, with the complete cause in the
-Adaptive RoboVacs integration log rather than a misleading map-repair
-instruction. The room remains eligible for future
-scheduler attempts, and a successful dispatch clears the error.
+that exception. A failed scheduler start is treated as a system failure. The
+first adapter preflight, profile, service, or start-confirmation failure
+persistently halts new dispatch across every robot and creates a Home Assistant
+**Repair** with a safe explanation. A late robot state cannot clear that halt
+automatically. Resolve the underlying availability or mapping problem, then
+use the Repair flow or the dashboard's confirmed **Recheck and resume** action.
+The recheck never sends a test clean, and the failed room remains due after
+scheduling is explicitly resumed.
+
+Native map and segment identifiers are read transiently from the selected
+vacuum entity's current Home Assistant area mapping. They are never copied to
+Adaptive RoboVacs storage, status entities, Repairs, or logs. See the
+[v1.3 troubleshooting guide](docs/setup.md#v130-troubleshooting) for recovery
+steps.
 
 An observed robot pause or error creates a durable per-robot scheduler hold.
 The hold survives automatic idle transitions and Home Assistant restarts, so an

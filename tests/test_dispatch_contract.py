@@ -11,14 +11,17 @@ COORDINATOR_PATH = (
     / "coordinator.py"
 )
 RUNTIME_PATH = COORDINATOR_PATH.with_name("runtime.py")
+ADAPTERS_PATH = COORDINATOR_PATH.parent / "adapters"
+GENERIC_PATH = ADAPTERS_PATH / "generic.py"
+ROBOROCK_PATH = ADAPTERS_PATH / "roborock.py"
 
 
 class VacuumDispatchContractTests(unittest.TestCase):
     """Guard the native clean-area service payload without importing HA."""
 
     def test_native_cleaning_area_id_payload_is_used(self) -> None:
-        source = RUNTIME_PATH.read_text(encoding="utf-8")
-        self.assertIn('"cleaning_area_id": [room.area_id]', source)
+        source = GENERIC_PATH.read_text(encoding="utf-8")
+        self.assertIn('"cleaning_area_id": list(request.area_ids)', source)
         self.assertNotIn('{"entity_id": robot.entity_id, "area_id": [room.area_id]}', source)
 
     def test_dispatch_errors_are_generic_in_state_and_detailed_in_logs(self) -> None:
@@ -27,10 +30,37 @@ class VacuumDispatchContractTests(unittest.TestCase):
             + COORDINATOR_PATH.read_text(encoding="utf-8")
         )
         self.assertIn('detail["map_status"] = "error"', source)
-        self.assertIn('detail["map_error"] = "unknown dispatch error"', source)
+        self.assertIn('detail["map_error"] = fault_summary(reason_code)', source)
         self.assertIn("_LOGGER.exception(", source)
-        self.assertIn("enter cleaning within 10 minutes", source)
+        self.assertIn('"start_confirmation_failed"', source)
         self.assertNotIn("unmapped; awaiting native map repair", source)
+
+    def test_roborock_native_dispatch_is_exactly_one_repeat_two_command(self) -> None:
+        source = ROBOROCK_PATH.read_text(encoding="utf-8")
+        self.assertIn('"command": "app_segment_clean"', source)
+        self.assertIn('"repeat": 2', source)
+        self.assertEqual(source.count('"send_command"'), 1)
+
+    def test_first_start_failure_halts_later_dispatches(self) -> None:
+        source = COORDINATOR_PATH.read_text(encoding="utf-8")
+        self.assertIn('self.data["scheduler_fault"] = {', source)
+        self.assertIn('and not self.data.get("scheduler_fault")', source)
+        self.assertIn("if not ok:", source)
+        self.assertIn("break", source[source.index("if not ok:"):])
+
+    def test_native_targets_do_not_cross_the_adapter_boundary(self) -> None:
+        public_source = "".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                COORDINATOR_PATH,
+                RUNTIME_PATH,
+                COORDINATOR_PATH.with_name("state.py"),
+                COORDINATOR_PATH.with_name("sensor.py"),
+                COORDINATOR_PATH.with_name("projections.py"),
+            )
+        )
+        self.assertNotIn('"segments"', public_source)
+        self.assertNotIn('"app_segment_clean"', public_source)
 
     def test_a_recorded_dispatch_error_does_not_exclude_future_candidates(self) -> None:
         source = COORDINATOR_PATH.read_text(encoding="utf-8")

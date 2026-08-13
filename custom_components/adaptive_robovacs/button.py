@@ -18,8 +18,21 @@ class _PreviewButton(AdaptiveEntity, ButtonEntity):
         await self.coordinator.async_evaluate(dry_run=True, reason="dashboard_preview")
 
 
+class _ResumeButton(AdaptiveEntity, ButtonEntity):
+    def __init__(self, coordinator) -> None:
+        super().__init__(
+            coordinator,
+            "recheck_and_resume",
+            "Recheck and resume",
+            "fault_resume_control",
+        )
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_recheck_and_resume()
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
     """Set up the scheduler preview control."""
 
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([_PreviewButton(coordinator)])
+    async_add_entities([_ResumeButton(coordinator), _PreviewButton(coordinator)])

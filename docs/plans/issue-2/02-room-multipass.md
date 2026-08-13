@@ -2,6 +2,9 @@
 
 **Target release:** v1.3.0.
 
+**Implementation status:** Implemented for v1.3.0; release and live deployment
+verification are recorded in the repository history and GitHub Release.
+
 ## Goal
 
 Introduce an integration-owned vacuum adapter layer, then use its first vendor

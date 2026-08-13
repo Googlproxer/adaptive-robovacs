@@ -7,7 +7,8 @@ validated, released, installed through HACS, and verified in Home Assistant.
 
 ## Baseline
 
-The checked-out `main` branch is integration version 1.2.1. Pull request
+Plan 2 is implemented for integration version 1.3.0. The preceding baseline
+was 1.2.1. Pull request
 [#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3) has been merged;
 it introduced a typed Store codec and separated runtime service calls, job
 lifecycle mutations, and dashboard projections. The remaining plans use that
@@ -28,7 +29,7 @@ feature work.
 | Issue item | Confirmed direction | Plan |
 | --- | --- | --- |
 | Per-room cleaning windows | One repeating daily interval; weekday/weekend schedules are deferred | [Implemented in v1.2.0](01-per-room-cleaning-windows.md) |
-| Multipass support | Target v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs | [Vacuum adapters and Roborock native multipass](02-room-multipass.md) |
+| Multipass support | Implemented for v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs | [Implemented plan](02-room-multipass.md) |
 | Mopping when water is available | A robot without the required live water/mop signals does not support scheduler mopping | [Water-aware mopping](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
 | Power level settings per room | Native fan speed, presented with the other supported per-room robot behaviors | [Per-room cleaning profiles](05-room-power-levels.md) |

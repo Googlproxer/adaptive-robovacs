@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
-from .integration_core import async_setup_entry, async_unload_entry
+from .integration_core import async_remove_entry, async_setup_entry, async_unload_entry
 from .services import async_register_services
 
 _STATIC_REGISTERED = f"{DOMAIN}_static_registered"

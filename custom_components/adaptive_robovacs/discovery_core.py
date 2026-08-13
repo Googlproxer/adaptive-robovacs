@@ -12,12 +12,15 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import label_registry as lr
 
+from .adapters.base import AdapterMatchContext
+from .adapters.registry import async_resolve_adapter
 from .const import (
     LABEL_BEDROOM,
     LABEL_BEDROOM_TRANSIT,
     LABEL_EXCLUDE,
     LABEL_RADAR,
 )
+from .models import AdapterCapabilities
 
 
 @dataclass(slots=True)
@@ -54,11 +57,18 @@ class DiscoveredRobot:
 
     entity_id: str
     name: str
+    registry_id: str
+    platform: str
     device_id: str | None
     dock_area_id: str | None
     floor_id: str | None
     supports_area_clean: bool
+    supports_send_command: bool
     profile: RobotProfile
+    adapter_id: str
+    adapter_schema_version: int
+    adapter_capabilities: AdapterCapabilities
+    adapter_diagnostic: str | None = None
 
 
 @dataclass(slots=True)
@@ -240,16 +250,46 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
         profile = _find_profile(
             hass, entries_by_device.get(entry.device_id, []), labels
         )
+        supports_area_clean = bool(
+            supported_features & int(VacuumEntityFeature.CLEAN_AREA)
+        )
+        supports_send_command = bool(
+            supported_features & int(VacuumEntityFeature.SEND_COMMAND)
+        )
+        platform = str(entry.platform)
+        context = AdapterMatchContext(
+            entity_id=entry.entity_id,
+            platform=platform,
+            supports_area_clean=supports_area_clean,
+            supports_send_command=supports_send_command,
+            profile=profile,
+            fan_speed_options=tuple(
+                str(option)
+                for option in (
+                    state.attributes.get("fan_speed_list", []) if state else []
+                )
+            ),
+        )
+        adapter, capabilities, adapter_diagnostic = await async_resolve_adapter(
+            hass, context
+        )
         result.robots[entry.entity_id] = DiscoveredRobot(
             entity_id=entry.entity_id,
             name=_robot_name(entry, devices, hass),
+            registry_id=str(
+                getattr(entry, "id", None) or f"{platform}:{entry.unique_id}"
+            ),
+            platform=platform,
             device_id=entry.device_id,
             dock_area_id=dock_area_id,
             floor_id=dock_area.floor_id if dock_area else None,
-            supports_area_clean=bool(
-                supported_features & int(VacuumEntityFeature.CLEAN_AREA)
-            ),
+            supports_area_clean=supports_area_clean,
+            supports_send_command=supports_send_command,
             profile=profile,
+            adapter_id=adapter.adapter_id,
+            adapter_schema_version=adapter.schema_version,
+            adapter_capabilities=capabilities,
+            adapter_diagnostic=adapter_diagnostic,
         )
 
     occupancy_by_area: dict[str, tuple[list[str], list[str]]] = {}

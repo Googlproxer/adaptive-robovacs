@@ -88,7 +88,7 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
             entities.append(
                 _RobotSwitch(coordinator, robot.entity_id, "mopping_enabled", "mopping enabled")
             )
-        if robot.profile.supports_double_pass:
+        if 2 in robot.adapter_capabilities.supported_pass_counts:
             entities.append(
                 _RobotSwitch(coordinator, robot.entity_id, "double_pass", "double pass")
             )

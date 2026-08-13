@@ -32,7 +32,7 @@ from .const import (
 from .models import is_valid_daily_time
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DAILY_WINDOW_VERSION = 1
 
 
@@ -104,6 +104,15 @@ def _optional_daily_time(value: object, name: str) -> str | None:
     return str(value)
 
 
+def _optional_pass_count(value: object) -> int | None:
+    if value is None:
+        return None
+    parsed = _integer(value, 0)
+    if parsed not in {1, 2}:
+        raise StateSchemaError("room pass_count must be 1, 2, or null")
+    return parsed
+
+
 @dataclass(slots=True)
 class GlobalSettings:
     observe_only: bool = True
@@ -154,6 +163,7 @@ class RoomSettings:
     ignore_desired_window: bool = False
     desired_window_start: str | None = None
     desired_window_end: str | None = None
+    pass_count: int | None = None
 
     @classmethod
     def defaults(cls, is_bedroom: bool) -> RoomSettings:
@@ -190,6 +200,7 @@ class RoomSettings:
             desired_window_end=_optional_daily_time(
                 raw_end, "room daily-window end"
             ),
+            pass_count=_optional_pass_count(value.get("pass_count")),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -207,6 +218,7 @@ class RoomSettings:
                 "start": self.desired_window_start,
                 "end": self.desired_window_end,
             },
+            "pass_count": self.pass_count,
         }
 
     def to_runtime(self) -> dict[str, object]:
@@ -221,6 +233,7 @@ class RoomSettings:
             "ignore_desired_window": self.ignore_desired_window,
             "desired_window_start": self.desired_window_start,
             "desired_window_end": self.desired_window_end,
+            "pass_count": self.pass_count,
         }
 
 
@@ -233,6 +246,7 @@ class RobotSettings:
     mode: str | None = None
     mop_mode: str | None = None
     mop_intensity: str | None = None
+    fan_speed: str | None = None
 
     @classmethod
     def defaults(cls, supports_mopping: bool) -> RobotSettings:
@@ -248,6 +262,7 @@ class RobotSettings:
             mode=_string(value.get("mode")),
             mop_mode=_string(value.get("mop_mode")),
             mop_intensity=_string(value.get("mop_intensity")),
+            fan_speed=_string(value.get("fan_speed")),
         )
 
 
@@ -401,6 +416,8 @@ class ActiveJob:
     held_at: datetime | None = None
     completion_before_hold: bool = False
     cancelling_at: datetime | None = None
+    adapter_id: str = "generic"
+    adapter_schema_version: int = 1
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> ActiveJob | None:
@@ -442,6 +459,10 @@ class ActiveJob:
             held_at=_timestamp(value.get("held_at")),
             completion_before_hold=bool(value.get("completion_before_hold", False)),
             cancelling_at=_timestamp(value.get("cancelling_at")),
+            adapter_id=str(value.get("adapter_id", "generic")),
+            adapter_schema_version=max(
+                1, _integer(value.get("adapter_schema_version"), 1)
+            ),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -472,6 +493,53 @@ class ActiveJob:
             "held_at": _iso(self.held_at),
             "completion_before_hold": self.completion_before_hold,
             "cancelling_at": _iso(self.cancelling_at),
+            "adapter_id": self.adapter_id,
+            "adapter_schema_version": self.adapter_schema_version,
+        }
+
+
+@dataclass(slots=True)
+class SchedulerFault:
+    """Durable global dispatch halt without raw vendor or exception data."""
+
+    reason_code: str
+    robot_registry_id: str
+    room_area_id: str
+    occurred_at: datetime
+    phase: str
+    native_command_may_have_started: bool = False
+    outcome_uncertain: bool = False
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> SchedulerFault | None:
+        reason_code = _string(value.get("reason_code"))
+        robot_registry_id = _string(value.get("robot_registry_id"))
+        room_area_id = _string(value.get("room_area_id"))
+        occurred_at = _timestamp(value.get("occurred_at"))
+        phase = _string(value.get("phase"))
+        if not all((reason_code, robot_registry_id, room_area_id, occurred_at, phase)):
+            return None
+        return cls(
+            reason_code=reason_code,
+            robot_registry_id=robot_registry_id,
+            room_area_id=room_area_id,
+            occurred_at=occurred_at,
+            phase=phase,
+            native_command_may_have_started=bool(
+                value.get("native_command_may_have_started", False)
+            ),
+            outcome_uncertain=bool(value.get("outcome_uncertain", False)),
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "reason_code": self.reason_code,
+            "robot_registry_id": self.robot_registry_id,
+            "room_area_id": self.room_area_id,
+            "occurred_at": _iso(self.occurred_at),
+            "phase": self.phase,
+            "native_command_may_have_started": self.native_command_may_have_started,
+            "outcome_uncertain": self.outcome_uncertain,
         }
 
 
@@ -552,6 +620,7 @@ class SchedulerState:
     robot_holds: dict[str, RobotHold] = field(default_factory=dict)
     audit: AuditState = field(default_factory=AuditState)
     evaluation: EvaluationState = field(default_factory=EvaluationState)
+    scheduler_fault: SchedulerFault | None = None
 
     @classmethod
     def create(cls, entry_data: Mapping[str, object]) -> SchedulerState:
@@ -561,7 +630,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v3 or convert older shapes, returning whether a save is required."""
+        """Load v4 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -569,7 +638,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version == 2:
+        if schema_version in {2, 3}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -619,6 +688,11 @@ class SchedulerState:
                 recovery_events=_event_list(data.get("recovery_events")),
             ),
             evaluation=EvaluationState.from_mapping(data),
+            scheduler_fault=(
+                SchedulerFault.from_mapping(value)
+                if isinstance((value := data.get("scheduler_fault")), Mapping)
+                else None
+            ),
         )
 
     @classmethod
@@ -665,6 +739,11 @@ class SchedulerState:
             },
             audit=AuditState.from_mapping(raw_audit),
             evaluation=EvaluationState.from_mapping(raw_evaluation),
+            scheduler_fault=(
+                SchedulerFault.from_mapping(value)
+                if isinstance((value := data.get("scheduler_fault")), Mapping)
+                else None
+            ),
         )
 
     def ensure_room(self, area_id: str, is_bedroom: bool) -> tuple[RoomSettings, RoomHistory]:
@@ -700,13 +779,16 @@ class SchedulerState:
             },
             "audit": self.audit.to_store(),
             "evaluation": self.evaluation.to_store(),
+            "scheduler_fault": (
+                self.scheduler_fault.to_store() if self.scheduler_fault else None
+            ),
         }
 
     def to_runtime_data(self) -> dict[str, Any]:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v3 codec, and platform entities use
+        persistent I/O stays on the typed v4 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 
@@ -760,6 +842,9 @@ class SchedulerState:
             "recovery_events": self.audit.recovery_events,
             "last_evaluation": _iso(self.evaluation.last_evaluation_at),
             "last_preview": self.evaluation.last_preview,
+            "scheduler_fault": (
+                self.scheduler_fault.to_store() if self.scheduler_fault else None
+            ),
         }
 
 

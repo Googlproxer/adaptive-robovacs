@@ -6,8 +6,9 @@ const DOCUMENTATION_URL =
 
 const GLOBAL_ROLES = new Map([
   ["scheduler_status", 0],
-  ["global_control", 1],
-  ["scheduler_control", 2],
+  ["fault_resume_control", 1],
+  ["global_control", 2],
+  ["scheduler_control", 3],
 ]);
 const VACUUM_ROLES = new Map([
   ["robot_status", 0],
@@ -17,9 +18,10 @@ const ROOM_ROLES = new Map([
   ["room_schedule", 0],
   ["room_last_cleaned", 1],
   ["room_occupancy", 2],
-  ["room_window_start_control", 3],
-  ["room_window_end_control", 4],
-  ["room_control", 5],
+  ["room_pass_count_control", 3],
+  ["room_window_start_control", 4],
+  ["room_window_end_control", 5],
+  ["room_control", 6],
 ]);
 
 const COMMON_FORM_SCHEMA = [
@@ -204,6 +206,8 @@ class AdaptiveRoboVacsCardBase extends HTMLElement {
         item.attrs.floor_id,
         item.attrs.bedroom,
         item.attrs.friendly_name,
+        item.attrs.failure_code,
+        item.attrs.repair_active,
       ])
       .sort(([left], [right]) => left.localeCompare(right));
     return JSON.stringify({
@@ -256,9 +260,24 @@ class AdaptiveRoboVacsGlobalCard extends AdaptiveRoboVacsCardBase {
     const context = this._entryContext();
     if (context.error) return this._messageConfiguration(context.error);
     const entities = context.entities.filter((item) => GLOBAL_ROLES.has(item.attrs[ROLE_ATTRIBUTE]));
-    const entityIds = this._orderedEntityIds(entities, GLOBAL_ROLES);
-    return entityIds.length
-      ? this._entitiesConfiguration(this._title(), entityIds)
+    const entityRows = this._orderedEntities(entities, GLOBAL_ROLES).map((item) =>
+      item.attrs[ROLE_ATTRIBUTE] === "fault_resume_control"
+        ? {
+          entity: item.entityId,
+          name: "Recheck and resume",
+          tap_action: {
+            action: "perform-action",
+            perform_action: "button.press",
+            target: { entity_id: item.entityId },
+            confirmation: {
+              text: "Recheck the failed request and resume scheduler dispatch? No test clean will be sent.",
+            },
+          },
+        }
+        : item.entityId
+    );
+    return entityRows.length
+      ? this._entitiesConfiguration(this._title(), entityRows)
       : this._messageConfiguration("No scheduler controls or status entities are available.");
   }
 }

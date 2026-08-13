@@ -106,6 +106,72 @@ class SchedulePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class AdapterCapabilities:
+    """Vendor-neutral capabilities advertised by one vacuum adapter."""
+
+    adapter_id: str
+    schema_version: int
+    portable_area_clean: bool
+    supported_pass_counts: frozenset[int]
+    native_area_pass_counts: frozenset[int] = frozenset()
+    supported_operations: frozenset[str] = frozenset({"vacuum"})
+    fan_speed_options: tuple[str, ...] = ()
+    mode_options: tuple[str, ...] = ()
+    mop_mode_options: tuple[str, ...] = ()
+    mop_intensity_options: tuple[str, ...] = ()
+    water_readiness: str = "unknown"
+
+    def supports(self, operation: str, passes: int) -> bool:
+        """Return whether the normalized request can be attempted."""
+
+        return operation in self.supported_operations and passes in self.supported_pass_counts
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterDispatchRequest:
+    """A vendor-neutral room-clean request passed to an adapter."""
+
+    robot_entity_id: str
+    area_ids: tuple[str, ...]
+    operation: str
+    passes: int
+    cleaning_profile: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterDispatchResult:
+    """Normalized adapter preflight or dispatch result."""
+
+    status: str
+    code: str
+    summary: str
+    native_attempted: bool = False
+    outcome_uncertain: bool = False
+
+    @property
+    def accepted(self) -> bool:
+        return self.status == "accepted"
+
+    @property
+    def ready(self) -> bool:
+        return self.status in {"ready", "accepted"}
+
+
+def resolve_pass_count(
+    room_pass_count: int | None,
+    robot_default_double_pass: bool,
+    supported_pass_counts: Iterable[int],
+) -> int | None:
+    """Resolve a room override against one robot without downgrading it."""
+
+    supported = frozenset(int(value) for value in supported_pass_counts)
+    requested = room_pass_count if room_pass_count is not None else (
+        2 if robot_default_double_pass else 1
+    )
+    return requested if requested in supported else None
+
+
+@dataclass(frozen=True, slots=True)
 class ManualCleanRequest:
     """A room-targeted clean explicitly initiated by a Home Assistant user."""
 

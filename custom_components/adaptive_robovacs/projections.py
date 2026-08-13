@@ -102,6 +102,7 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "desired_window_start_inherited": desired_window.start_inherited,
         "desired_window_end_inherited": desired_window.end_inherited,
         "desired_window_valid": desired_window.valid,
+        "pass_count": settings.get("pass_count"),
         "occupancy": detail["occupancy"],
         "occupancy_source": detail["source"],
         "unavailable_radars": detail["unavailable_radars"],
@@ -123,6 +124,11 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "block_reason": reason,
         "map_status": detail.get("map_status", "unknown"),
         "map_error": detail.get("map_error"),
+        "failure": (
+            coordinator.scheduler_fault_view()
+            if coordinator.fault_affects_room(room)
+            else None
+        ),
     }
 
 
@@ -152,5 +158,25 @@ def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict
         "active_room": ", ".join(active_rooms) if active_rooms else None,
         "active_rooms": active_rooms,
         "profile": robot.profile,
+        "adapter_id": robot.adapter_id,
+        "adapter_schema_version": robot.adapter_schema_version,
+        "adapter_capabilities": {
+            "portable_area_clean": robot.adapter_capabilities.portable_area_clean,
+            "supported_pass_counts": sorted(
+                robot.adapter_capabilities.supported_pass_counts
+            ),
+            "native_area_pass_counts": sorted(
+                robot.adapter_capabilities.native_area_pass_counts
+            ),
+            "supported_operations": sorted(
+                robot.adapter_capabilities.supported_operations
+            ),
+        },
+        "adapter_diagnostic": robot.adapter_diagnostic,
+        "failure": (
+            coordinator.scheduler_fault_view()
+            if coordinator.fault_affects_robot(robot)
+            else None
+        ),
         "settings": coordinator._robot_settings(robot),
     }

@@ -46,6 +46,7 @@ const adaptiveState = (role, attributes = {}) => ({
 
 const baseStates = () => ({
   "sensor.scheduler": adaptiveState("scheduler_status"),
+  "button.resume": adaptiveState("fault_resume_control"),
   "number.forecast": adaptiveState("global_control"),
   "select.window": adaptiveState("global_control"),
   "button.preview": adaptiveState("scheduler_control"),
@@ -87,6 +88,10 @@ const baseStates = () => ({
   "select.kitchen_desired_end": adaptiveState("room_window_end_control", {
     area_id: "kitchen",
     friendly_name: "Kitchen desired cleaning end",
+  }),
+  "select.kitchen_passes": adaptiveState("room_pass_count_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen cleaning passes",
   }),
   "number.kitchen_cadence": adaptiveState("room_control", {
     area_id: "kitchen",
@@ -145,6 +150,18 @@ test("global card includes scheduler status and controls in role order", () => {
   assert.equal(configuration.title, "Scheduler");
   assert.deepEqual(configuration.entities, [
     "sensor.scheduler",
+    {
+      entity: "button.resume",
+      name: "Recheck and resume",
+      tap_action: {
+        action: "perform-action",
+        perform_action: "button.press",
+        target: { entity_id: "button.resume" },
+        confirmation: {
+          text: "Recheck the failed request and resume scheduler dispatch? No test clean will be sent.",
+        },
+      },
+    },
     "number.forecast",
     "select.window",
     "button.preview",
@@ -170,6 +187,7 @@ test("room card contains one selected room with status before controls", () => {
     { entity: "sensor.kitchen_next_clean", name: "Next clean" },
     { entity: "sensor.kitchen_last_cleaned", name: "Last cleaned" },
     { entity: "sensor.kitchen_occupancy", name: "Occupancy" },
+    { entity: "select.kitchen_passes", name: "Cleaning passes" },
     { entity: "select.kitchen_desired_start", name: "Desired cleaning start" },
     { entity: "select.kitchen_desired_end", name: "Desired cleaning end" },
     { entity: "number.kitchen_cadence", name: "Cadence" },
@@ -263,6 +281,16 @@ test("friendly-name and ownership changes invalidate the render signature", () =
     ...states["vacuum.robot_one"],
     attributes: { friendly_name: "Renamed Robot" },
   };
+  assert.notEqual(card._entitySignature(), original);
+});
+
+test("failure diagnostics invalidate the render signature", () => {
+  const states = baseStates();
+  const { card } = configure(RoomCard, { area_id: "kitchen" }, states);
+  const original = card._entitySignature();
+  states["sensor.kitchen_next_clean"].attributes.failure_code =
+    "area_mapping_missing";
+  states["sensor.kitchen_next_clean"].attributes.repair_active = true;
   assert.notEqual(card._entitySignature(), original);
 });
 

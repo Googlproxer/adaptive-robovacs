@@ -39,6 +39,7 @@ from .const import (
     FALLBACK_SAMPLE_COUNT,
     HISTORY_DAYS,
     SIGNAL_DISCOVERY_UPDATED,
+    START_CONFIRMATION_TIMEOUT,
     STORAGE_KEY,
     STORE_VERSION,
 )
@@ -62,12 +63,19 @@ from .models import (
     rebase_due_times,
     recovery_transition_is_observed,
     resolve_occupancy,
+    resolve_pass_count,
     select_operation,
     unresolved_occupancy_allowed,
 )
 from .projections import robot_state, room_state
 from .state import SchedulerState, StateSchemaError
 from .runtime import HomeAssistantRuntime
+from .repairs_manager import (
+    async_create_scheduler_halted_issue,
+    async_delete_scheduler_halted_issue,
+    async_sync_two_pass_issues,
+    fault_summary,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -134,6 +142,7 @@ def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
         "recovery_events": [],
         "last_evaluation": None,
         "last_preview": {},
+        "scheduler_fault": None,
     }
 
 
@@ -155,6 +164,7 @@ class AdaptiveRoboVacCoordinator:
         self._listeners: set[EntityListener] = set()
         self._watch_entity_ids: set[str] = set()
         self._recovery_timers: dict[str, Callable[[], None]] = {}
+        self._start_confirmation_timers: dict[str, Callable[[], None]] = {}
         self.jobs = JobLifecycle(self)
         self.runtime = HomeAssistantRuntime(self)
 
@@ -181,6 +191,8 @@ class AdaptiveRoboVacCoordinator:
                 await self._async_save()
 
         await self.async_refresh_discovery()
+        if self.data.get("scheduler_fault"):
+            async_create_scheduler_halted_issue(self)
         await self._async_recover_active_jobs()
         self._unsubscribers.extend(
             [
@@ -200,6 +212,8 @@ class AdaptiveRoboVacCoordinator:
         await self._async_save()
         while self._recovery_timers:
             self._recovery_timers.popitem()[1]()
+        while self._start_confirmation_timers:
+            self._start_confirmation_timers.popitem()[1]()
         while self._unsubscribers:
             self._unsubscribers.pop()()
 
@@ -261,6 +275,7 @@ class AdaptiveRoboVacCoordinator:
 
         if prior_rooms != set(self.discovery.rooms) or prior_robots != set(self.discovery.robots):
             async_dispatcher_send(self.hass, SIGNAL_DISCOVERY_UPDATED, self.entry.entry_id)
+        async_sync_two_pass_issues(self)
         self._notify_listeners()
 
     def _room_data(self, area_id: str) -> dict[str, Any]:
@@ -280,6 +295,7 @@ class AdaptiveRoboVacCoordinator:
                 "ignore_desired_window": False,
                 "desired_window_start": None,
                 "desired_window_end": None,
+                "pass_count": None,
             },
         )
         # Existing persisted settings predate newer optional room controls.
@@ -287,6 +303,7 @@ class AdaptiveRoboVacCoordinator:
         settings.setdefault("ignore_desired_window", False)
         settings.setdefault("desired_window_start", None)
         settings.setdefault("desired_window_end", None)
+        settings.setdefault("pass_count", None)
         return settings
 
     def _desired_window(self, room: DiscoveredRoom) -> ResolvedDailyWindow:
@@ -311,6 +328,7 @@ class AdaptiveRoboVacCoordinator:
                 "mode": None,
                 "mop_mode": None,
                 "mop_intensity": None,
+                "fan_speed": None,
             },
         )
 
@@ -321,6 +339,10 @@ class AdaptiveRoboVacCoordinator:
     @property
     def party_mode(self) -> bool:
         return bool(self.data.get("party_mode", False))
+
+    @property
+    def scheduler_halted(self) -> bool:
+        return bool(self.data.get("scheduler_fault"))
 
     def get_global_setting(self, key: str) -> Any:
         """Return a global control value without exposing mutable Store data."""
@@ -352,6 +374,7 @@ class AdaptiveRoboVacCoordinator:
             "ignore_desired_window",
             "desired_window_start",
             "desired_window_end",
+            "pass_count",
         }:
             raise ValueError(f"Unknown room setting: {key}")
         return self._room_settings(room)[key]
@@ -362,7 +385,192 @@ class AdaptiveRoboVacCoordinator:
         return {
             "last_evaluation": self.data.get("last_evaluation"),
             "preview": self.data.get("last_preview", {}),
+            "scheduler_fault": self.scheduler_fault_view(),
         }
+
+    def robot_for_registry_id(self, registry_id: str) -> DiscoveredRobot | None:
+        """Resolve a stable entity-registry identity to the current vacuum."""
+
+        return next(
+            (
+                robot
+                for robot in self.discovery.robots.values()
+                if robot.registry_id == registry_id
+            ),
+            None,
+        )
+
+    def scheduler_fault_view(self) -> dict[str, Any] | None:
+        """Project the durable dispatch fault without sensitive adapter data."""
+
+        fault = self.data.get("scheduler_fault")
+        if not fault:
+            return None
+        robot = self.robot_for_registry_id(str(fault.get("robot_registry_id", "")))
+        room = self.discovery.rooms.get(str(fault.get("room_area_id", "")))
+        reason_code = str(fault.get("reason_code", "start_outcome_uncertain"))
+        return {
+            "failure_code": reason_code,
+            "failure_summary": fault_summary(reason_code),
+            "failure_since": fault.get("occurred_at"),
+            "failure_phase": fault.get("phase"),
+            "repair_active": True,
+            "robot": robot.name if robot else None,
+            "room": room.name if room else None,
+        }
+
+    def fault_affects_robot(self, robot: DiscoveredRobot) -> bool:
+        fault = self.data.get("scheduler_fault")
+        return bool(fault and fault.get("robot_registry_id") == robot.registry_id)
+
+    def fault_affects_room(self, room: DiscoveredRoom) -> bool:
+        fault = self.data.get("scheduler_fault")
+        return bool(fault and fault.get("room_area_id") == room.area_id)
+
+    async def _async_latch_scheduler_fault(
+        self,
+        robot: DiscoveredRobot,
+        room: DiscoveredRoom,
+        reason_code: str,
+        phase: str,
+        *,
+        native_command_may_have_started: bool,
+        outcome_uncertain: bool,
+    ) -> None:
+        """Persist the first start failure before any later dispatch can occur."""
+
+        if self.data.get("scheduler_fault"):
+            return
+        occurred_at = _now()
+        self.data["scheduler_fault"] = {
+            "reason_code": reason_code,
+            "robot_registry_id": robot.registry_id,
+            "room_area_id": room.area_id,
+            "occurred_at": _iso(occurred_at),
+            "phase": phase,
+            "native_command_may_have_started": native_command_may_have_started,
+            "outcome_uncertain": outcome_uncertain,
+        }
+        active = self.data["active"].get(robot.entity_id)
+        if outcome_uncertain and active:
+            active["phase"] = "start_outcome_uncertain"
+            active["last_observed_at"] = _iso(occurred_at)
+        else:
+            self.data["active"][robot.entity_id] = None
+        detail = self._room_data(room.area_id)
+        detail["map_status"] = "error"
+        detail["map_error"] = fault_summary(reason_code)
+        self._cancel_start_confirmation(robot.entity_id)
+        await self._async_save()
+        async_create_scheduler_halted_issue(self)
+        self._notify_listeners()
+
+    async def async_recheck_and_resume(self) -> bool:
+        """Recheck without dispatching and explicitly clear a verified halt."""
+
+        async with self._lock:
+            fault = self.data.get("scheduler_fault")
+            if not fault:
+                return False
+            await self.async_refresh_discovery()
+            robot = self.robot_for_registry_id(str(fault.get("robot_registry_id", "")))
+            room = self.discovery.rooms.get(str(fault.get("room_area_id", "")))
+            if robot is None or room is None:
+                return False
+            state = self.hass.states.get(robot.entity_id)
+            if not state or state.state != "docked":
+                return False
+            settings = self._robot_settings(robot)
+            battery = self._robot_battery(robot)
+            if (
+                not settings.get("enabled", True)
+                or battery is None
+                or battery < float(settings.get("minimum_battery", DEFAULT_MINIMUM_BATTERY))
+            ):
+                return False
+            active = self.data["active"].get(robot.entity_id)
+            passes = int(active.get("passes", 1)) if active else resolve_pass_count(
+                self._room_settings(room).get("pass_count"),
+                bool(settings.get("double_pass")),
+                robot.adapter_capabilities.supported_pass_counts,
+            )
+            if passes is None:
+                return False
+            candidate = {
+                "room": room,
+                "operation": active.get("operation", "vacuum") if active else "vacuum",
+                "passes": passes,
+            }
+            if not self.runtime.profile_is_ready(
+                robot, str(candidate["operation"]), passes
+            ):
+                return False
+            try:
+                preflight = await self.runtime.async_preflight(robot, candidate)
+            except Exception:
+                _LOGGER.exception(
+                    "Adaptive RoboVacs non-dispatching repair recheck failed: robot=%s room=%s adapter=%s",
+                    robot.entity_id,
+                    room.name,
+                    robot.adapter_id,
+                )
+                return False
+            if not preflight.ready:
+                return False
+            if active and not active.get("seen_cleaning"):
+                self.data["active"][robot.entity_id] = None
+            self.data["scheduler_fault"] = None
+            detail = self._room_data(room.area_id)
+            detail["map_status"] = "mapped"
+            detail["map_error"] = None
+            await self._async_save()
+            async_delete_scheduler_halted_issue(self)
+            self._notify_listeners()
+            return True
+
+    async def async_recheck_room_compatibility(self, area_id: str) -> bool:
+        """Recheck a saved two-pass room without sending a clean."""
+
+        async with self._lock:
+            await self.async_refresh_discovery()
+            room = self.discovery.rooms.get(area_id)
+            if room is None:
+                return False
+            if self._room_settings(room).get("pass_count") != 2:
+                return True
+            compatible = any(
+                robot.floor_id == room.floor_id
+                and robot.supports_area_clean
+                and 2 in robot.adapter_capabilities.supported_pass_counts
+                for robot in self.discovery.robots.values()
+            )
+            if compatible:
+                async_sync_two_pass_issues(self)
+            return compatible
+
+    def _cancel_start_confirmation(self, robot_id: str) -> None:
+        unsubscribe = self._start_confirmation_timers.pop(robot_id, None)
+        if unsubscribe:
+            unsubscribe()
+
+    def _schedule_start_confirmation(self, robot_id: str) -> None:
+        """Schedule a bounded accepted-command confirmation check."""
+
+        self._cancel_start_confirmation(robot_id)
+        deadline = _now() + START_CONFIRMATION_TIMEOUT
+
+        @callback
+        def check_start(_timestamp: datetime) -> None:
+            self._start_confirmation_timers.pop(robot_id, None)
+            self.hass.async_create_task(
+                self.async_evaluate(
+                    dry_run=True, reason=f"start-confirmation:{robot_id}"
+                )
+            )
+
+        self._start_confirmation_timers[robot_id] = async_track_point_in_utc_time(
+            self.hass, check_start, deadline
+        )
 
     async def async_set_global(self, key: str, value: Any) -> None:
         """Update a global control exposed by a native entity."""
@@ -404,10 +612,13 @@ class AdaptiveRoboVacCoordinator:
             "ignore_desired_window",
             "desired_window_start",
             "desired_window_end",
+            "pass_count",
         }:
             raise ValueError(f"Unknown room setting: {key}")
         room = self.discovery.rooms[area_id]
         settings = self._room_settings(room)
+        if key == "pass_count" and value not in {None, 1, 2}:
+            raise ValueError("Room pass count must be Robot default, 1, or 2")
         if key in {"desired_window_start", "desired_window_end"}:
             configured_start = value if key == "desired_window_start" else settings.get(
                 "desired_window_start"
@@ -439,6 +650,7 @@ class AdaptiveRoboVacCoordinator:
             "mode",
             "mop_mode",
             "mop_intensity",
+            "fan_speed",
         }:
             raise ValueError(f"Unknown robot setting: {key}")
         self._robot_settings(self.discovery.robots[entity_id])[key] = value
@@ -540,6 +752,25 @@ class AdaptiveRoboVacCoordinator:
 
             if not active:
                 continue
+            if (
+                active.get("source") == "scheduler"
+                and not active.get("seen_cleaning")
+                and active.get("phase")
+                in {"dispatching", "accepted", "start_outcome_uncertain"}
+                and state_text not in {"cleaning", "returning"}
+            ):
+                robot = self.discovery.robots.get(entity_id)
+                room = self.discovery.rooms.get(str(active.get("room", "")))
+                if robot and room and not self.data.get("scheduler_fault"):
+                    await self._async_latch_scheduler_fault(
+                        robot,
+                        room,
+                        "start_outcome_uncertain",
+                        "restart_recovery",
+                        native_command_may_have_started=True,
+                        outcome_uncertain=True,
+                    )
+                continue
             if state and state.state in {"cleaning", "returning"}:
                 active["recovered_at"] = _iso(now)
                 if state.state == "returning":
@@ -590,6 +821,8 @@ class AdaptiveRoboVacCoordinator:
             fallback = float(self._room_settings(rooms[0])["expected_minutes"]) if rooms else DEFAULT_EXPECTED_MINUTES
         active.setdefault("source", "scheduler")
         active.setdefault("passes", 1)
+        active.setdefault("adapter_id", "generic")
+        active.setdefault("adapter_schema_version", 1)
         active.setdefault("expected_minutes", fallback)
         active.setdefault(
             "last_observed_at",
@@ -712,6 +945,7 @@ class AdaptiveRoboVacCoordinator:
                 active["timer_start"] = timer
         active["seen_cleaning"] = True
         active["phase"] = "cleaning"
+        self._cancel_start_confirmation(robot_id)
         self._cancel_recovery_timer(robot_id)
 
     def _apply_robot_cancellation_deferral(self, robot_id: str, cancelled_at: datetime) -> list[str]:
@@ -917,8 +1151,12 @@ class AdaptiveRoboVacCoordinator:
         except (TypeError, ValueError):
             return None
 
-    def _robot_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]:
+    def _robot_ready(
+        self, robot: DiscoveredRobot, *, ignore_scheduler_fault: bool = False
+    ) -> tuple[bool, str]:
         settings = self._robot_settings(robot)
+        if self.data.get("scheduler_fault") and not ignore_scheduler_fault:
+            return False, "scheduler dispatch halted"
         if not settings.get("enabled", True):
             return False, "robot disabled"
         if not robot.supports_area_clean:
@@ -1054,11 +1292,21 @@ class AdaptiveRoboVacCoordinator:
         vacuum_due = self._room_due(room, "vacuum", now)
         carpet = bool(settings.get("carpet", False))
         mop_due = None if carpet else self._room_due(room, "mop", now)
+        requested_pass_count = settings.get("pass_count")
         capable = [
             robot
             for robot in self.discovery.robots.values()
-            if robot.floor_id == room.floor_id and robot.supports_area_clean
+            if robot.floor_id == room.floor_id
+            and robot.supports_area_clean
+            and resolve_pass_count(
+                requested_pass_count,
+                bool(self._robot_settings(robot).get("double_pass")),
+                robot.adapter_capabilities.supported_pass_counts,
+            )
+            is not None
         ]
+        if requested_pass_count == 2 and not capable:
+            return None, "two-pass cleaning has no compatible vacuum"
         can_mop = any(self._mop_ready(robot) for robot in capable)
         mop_makes_room_due = not carpet and can_mop and mop_due is not None and mop_due <= now
         if vacuum_due > now and not mop_makes_room_due:
@@ -1079,7 +1327,15 @@ class AdaptiveRoboVacCoordinator:
             if not allowed:
                 return None, reason
         operation, due = select_operation(vacuum_due, mop_due, can_mop, carpet, now)
-        passes = 2 if any(bool(self._robot_settings(robot).get("double_pass")) for robot in capable) else 1
+        resolved_passes = [
+            resolve_pass_count(
+                requested_pass_count,
+                bool(self._robot_settings(robot).get("double_pass")),
+                robot.adapter_capabilities.supported_pass_counts,
+            )
+            for robot in capable
+        ]
+        passes = max((value for value in resolved_passes if value is not None), default=1)
         duration_minutes, duration_sample_count = self._effective_duration(room, operation, passes)
         forecast = (
             Forecast(True, 0.0, "unresolved occupancy desired-window policy")
@@ -1099,8 +1355,10 @@ class AdaptiveRoboVacCoordinator:
             "passes": passes,
         }, "ready"
 
-    async def _async_apply_profile(self, robot: DiscoveredRobot, operation: str) -> None:
-        await self.runtime.async_apply_profile(robot, operation)
+    async def _async_apply_profile(
+        self, robot: DiscoveredRobot, operation: str, passes: int = 1
+    ) -> None:
+        await self.runtime.async_apply_profile(robot, operation, passes)
 
     async def _async_dispatch(
         self, robot: DiscoveredRobot, candidate: dict[str, Any], now: datetime
@@ -1121,6 +1379,47 @@ class AdaptiveRoboVacCoordinator:
             if active and state_text not in {"unavailable", "unknown"}:
                 active["last_observed_at"] = _iso(now)
                 changed = True
+
+            if (
+                active
+                and active.get("source") == "scheduler"
+                and active.get("phase") == "accepted"
+                and not active.get("seen_cleaning")
+            ):
+                accepted_at = _as_datetime(
+                    active.get("accepted_at") or active.get("started")
+                )
+                immediate_failure = state_text in {
+                    "paused",
+                    "error",
+                    "returning",
+                    "unavailable",
+                    "unknown",
+                }
+                confirmation_expired = bool(
+                    state_text != "cleaning"
+                    and accepted_at
+                    and now - accepted_at >= START_CONFIRMATION_TIMEOUT
+                )
+                if immediate_failure or confirmation_expired:
+                    robot = self.discovery.robots.get(robot_id)
+                    room = self.discovery.rooms.get(str(active.get("room", "")))
+                    if robot and room:
+                        uncertain = state_text not in {"docked", "idle"}
+                        await self._async_latch_scheduler_fault(
+                            robot,
+                            room,
+                            (
+                                "start_outcome_uncertain"
+                                if uncertain
+                                else "start_confirmation_failed"
+                            ),
+                            "start_confirmation",
+                            native_command_may_have_started=uncertain,
+                            outcome_uncertain=uncertain,
+                        )
+                        changed = True
+                        continue
 
             if active and pending_completion_is_docked(
                 state_text, str(active.get("phase"))
@@ -1249,19 +1548,10 @@ class AdaptiveRoboVacCoordinator:
                         }
                     )
                 else:
-                    detail = self._room_data(active["room"])
-                    detail["map_status"] = "error"
-                    detail["map_error"] = "unknown dispatch error"
-                    _LOGGER.error(
-                        "Adaptive RoboVacs room dispatch was accepted but did not "
-                        "enter cleaning within 10 minutes: robot=%s area_id=%s "
-                        "operation=%s started=%s current_state=%s",
-                        robot_id,
-                        active["room"],
-                        active.get("operation"),
-                        active.get("started"),
-                        state_text,
-                    )
+                    # Scheduler-owned jobs are handled by the bounded confirmation
+                    # branch above. This legacy fallback is retained for malformed
+                    # checkpoints that predate accepted_at.
+                    continue
                 self.data["active"][robot_id] = None
                 self._cancel_recovery_timer(robot_id)
                 changed = True
@@ -1369,6 +1659,12 @@ class AdaptiveRoboVacCoordinator:
                     and robot.entity_id not in used_robots
                     and robot_ready[robot.entity_id][0]
                     and (candidate["operation"] not in {"mop", "vac_and_mop"} or self._mop_ready(robot))
+                    and resolve_pass_count(
+                        self._room_settings(room).get("pass_count"),
+                        bool(self._robot_settings(robot).get("double_pass")),
+                        robot.adapter_capabilities.supported_pass_counts,
+                    )
+                    is not None
                 ]
                 if not eligible:
                     reasons.setdefault(room.area_id, "no ready compatible robot")
@@ -1381,7 +1677,14 @@ class AdaptiveRoboVacCoordinator:
                     reverse=True,
                 )
                 robot = eligible[0]
-                passes = 2 if bool(self._robot_settings(robot).get("double_pass")) else 1
+                passes = resolve_pass_count(
+                    self._room_settings(room).get("pass_count"),
+                    bool(self._robot_settings(robot).get("double_pass")),
+                    robot.adapter_capabilities.supported_pass_counts,
+                )
+                if passes is None:
+                    reasons.setdefault(room.area_id, "no ready compatible robot")
+                    continue
                 if candidate["passes"] != passes:
                     duration_minutes, duration_sample_count = self._effective_duration(
                         room, candidate["operation"], passes, robot.entity_id
@@ -1403,6 +1706,8 @@ class AdaptiveRoboVacCoordinator:
                 "reason": reason,
                 "observe_only": self.observe_only,
                 "party_mode": self.party_mode,
+                "dispatch_halted": bool(self.data.get("scheduler_fault")),
+                "scheduler_fault": self.scheduler_fault_view(),
                 "candidates": [
                     {
                         "room": item["room"].area_id,
@@ -1411,11 +1716,17 @@ class AdaptiveRoboVacCoordinator:
                         "due_at": _iso(item["due_at"]),
                         "confidence": item["confidence"],
                         "basis": item["reason"],
+                        "passes": item["passes"],
                     }
                     for item in candidates
                 ],
                 "assignments": [
-                    {"robot": robot.entity_id, "room": item["room"].area_id}
+                    {
+                        "robot": robot.entity_id,
+                        "room": item["room"].area_id,
+                        "passes": item["passes"],
+                        "adapter_id": robot.adapter_id,
+                    }
                     for robot, item in assignments
                 ],
                 "blocks": reasons,
@@ -1429,12 +1740,20 @@ class AdaptiveRoboVacCoordinator:
             await self._async_save()
 
             dispatches: list[str] = []
-            if not dry_run and not self.observe_only and not self.party_mode:
+            if (
+                not dry_run
+                and not self.observe_only
+                and not self.party_mode
+                and not self.data.get("scheduler_fault")
+            ):
                 for robot, candidate in assignments:
                     ok, message = await self._async_dispatch(robot, candidate, now)
                     dispatches.append(message)
                     if not ok:
                         _LOGGER.warning("Adaptive RoboVacs: %s", message)
+                        break
+            elif self.data.get("scheduler_fault"):
+                dispatches.append("scheduler dispatch halted")
             elif self.observe_only:
                 dispatches.append("observe-only mode")
             elif self.party_mode:

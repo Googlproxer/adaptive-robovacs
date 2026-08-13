@@ -23,6 +23,7 @@ SCHEMA_VERSION = state_module.SCHEMA_VERSION
 ActiveJob = state_module.ActiveJob
 RoomHistory = state_module.RoomHistory
 SchedulerState = state_module.SchedulerState
+SchedulerFault = state_module.SchedulerFault
 StateSchemaError = state_module.StateSchemaError
 
 
@@ -110,10 +111,11 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertNotIn("active", stored)
         self.assertEqual(stored["active_jobs"]["vacuum.alpha"]["room"], "kitchen")
 
-    def test_v3_round_trip_preserves_window_overrides_history_and_job(self) -> None:
+    def test_v4_round_trip_preserves_window_pass_fault_and_job_adapter(self) -> None:
         state = SchedulerState.create(ENTRY_DATA)
         study_settings, _ = state.ensure_room("study", is_bedroom=False)
         study_settings.desired_window_start = "10:15"
+        study_settings.pass_count = 2
         state.ensure_room("kitchen", is_bedroom=False)
         state.room_history["study"] = RoomHistory(
             vacuum_completed_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
@@ -127,6 +129,17 @@ class SchedulerStateTests(unittest.TestCase):
             source="scheduler",
             expected_minutes=25,
             expected_end=datetime(2026, 8, 3, 9, 25, tzinfo=timezone.utc),
+            adapter_id="roborock",
+            adapter_schema_version=1,
+        )
+        state.scheduler_fault = SchedulerFault(
+            reason_code="start_outcome_uncertain",
+            robot_registry_id="registry-robot",
+            room_area_id="study",
+            occurred_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
+            phase="dispatch",
+            native_command_may_have_started=True,
+            outcome_uncertain=True,
         )
 
         restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
@@ -141,6 +154,18 @@ class SchedulerStateTests(unittest.TestCase):
             datetime(2026, 8, 2, tzinfo=timezone.utc),
         )
         self.assertEqual(restored.active_jobs["vacuum.beta"].expected_minutes, 25)
+        self.assertEqual(restored.active_jobs["vacuum.beta"].adapter_id, "roborock")
+        self.assertEqual(restored.room_settings["study"].pass_count, 2)
+        self.assertEqual(restored.scheduler_fault.robot_registry_id, "registry-robot")
+
+        runtime_restored, runtime_migrated = SchedulerState.from_store(
+            restored.to_runtime_data(), ENTRY_DATA
+        )
+        self.assertTrue(runtime_migrated)
+        self.assertEqual(
+            runtime_restored.scheduler_fault.reason_code,
+            "start_outcome_uncertain",
+        )
 
         stored_room = restored.to_store()["room_settings"]["study"]
         self.assertEqual(
@@ -171,8 +196,22 @@ class SchedulerStateTests(unittest.TestCase):
                 "ignore_desired_window": False,
                 "desired_window_start": None,
                 "desired_window_end": None,
+                "pass_count": None,
             },
         )
+
+    def test_v3_payload_migrates_room_passes_to_robot_default(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.ensure_room("study", is_bedroom=False)
+        payload = state.to_store()
+        payload["schema_version"] = 3
+        payload["room_settings"]["study"].pop("pass_count")
+        payload.pop("scheduler_fault")
+
+        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertTrue(migrated)
+        self.assertIsNone(restored.room_settings["study"].pass_count)
 
     def test_invalid_samples_are_dropped_without_invalidating_a_v1_migration(self) -> None:
         state, migrated = SchedulerState.from_store(

@@ -21,6 +21,8 @@ class _SchedulerSensor(AdaptiveEntity, SensorEntity):
 
     @property
     def native_value(self) -> str:
+        if self.coordinator.scheduler_halted:
+            return "Scheduler halted"
         if self.coordinator.observe_only:
             return "observe-only"
         if self.coordinator.party_mode:
@@ -29,9 +31,14 @@ class _SchedulerSensor(AdaptiveEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        failure = self.coordinator.scheduler_fault_view()
         return {
             **super().extra_state_attributes,
             **self.coordinator.scheduler_summary(),
+            "failure_code": failure.get("failure_code") if failure else None,
+            "failure_summary": failure.get("failure_summary") if failure else None,
+            "failure_since": failure.get("failure_since") if failure else None,
+            "repair_active": bool(failure),
         }
 
 
@@ -50,11 +57,14 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         state = self.coordinator.robot_state(self.robot_entity_id)
+        if state["failure"]:
+            return "Scheduler halted"
         return state["state"]
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         state = self.coordinator.robot_state(self.robot_entity_id)
+        failure = state["failure"]
         return {
             **super().extra_state_attributes,
             "floor_id": state["floor_id"],
@@ -70,6 +80,15 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             "cleaning_mode": state["settings"].get("mode"),
             "double_pass": state["settings"].get("double_pass"),
             "mopping_enabled": state["settings"].get("mopping_enabled"),
+            "fan_speed": state["settings"].get("fan_speed"),
+            "adapter_id": state["adapter_id"],
+            "adapter_schema_version": state["adapter_schema_version"],
+            "adapter_capabilities": state["adapter_capabilities"],
+            "adapter_diagnostic": state["adapter_diagnostic"],
+            "failure_code": failure.get("failure_code") if failure else None,
+            "failure_summary": failure.get("failure_summary") if failure else None,
+            "failure_since": failure.get("failure_since") if failure else None,
+            "repair_active": bool(failure),
         }
 
 
@@ -81,6 +100,8 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         state = self.coordinator.room_state(self.area_id)
+        if state["failure"]:
+            return "Scheduler halted"
         if state["active"]:
             if state["active"].get("phase") == "recovery_waiting":
                 return "Completion pending"
@@ -115,6 +136,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         state = self.coordinator.room_state(self.area_id)
         candidate = state["next_candidate"]
+        failure = state["failure"]
         return {
             **super().extra_state_attributes,
             "room": state["name"],
@@ -130,6 +152,12 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "desired_window_start_inherited": state["desired_window_start_inherited"],
             "desired_window_end_inherited": state["desired_window_end_inherited"],
             "desired_window_valid": state["desired_window_valid"],
+            "pass_count": state["pass_count"],
+            "effective_pass_count": (
+                state["active"].get("passes")
+                if state["active"]
+                else candidate.get("passes") if candidate else None
+            ),
             "vacuum_due_at": state["vacuum_due"].isoformat(),
             "mop_due_at": state["mop_due"].isoformat() if state["mop_due"] else None,
             "estimated_start": candidate["due_at"].isoformat() if candidate else None,
@@ -154,6 +182,10 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "active_hold_reason": state["active"].get("hold_reason") if state["active"] else None,
             "learned_duration_minutes": state["effective_duration_minutes"],
             "duration_sample_count": state["duration_sample_count"],
+            "failure_code": failure.get("failure_code") if failure else None,
+            "failure_summary": failure.get("failure_summary") if failure else None,
+            "failure_since": failure.get("failure_since") if failure else None,
+            "repair_active": bool(failure),
         }
 
 

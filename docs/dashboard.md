@@ -12,9 +12,9 @@ The available card types are:
 
 | Card | Instances | Contents |
 | --- | --- | --- |
-| `custom:adaptive-robovacs-global` | One | Scheduler status, Party Mode, observe-only mode, cleaning windows, forecast confidence, and schedule preview. |
-| `custom:adaptive-robovacs-vacuum` | One per vacuum | Status/activity plus every robot-owned setting and control. |
-| `custom:adaptive-robovacs-room` | One per room | Schedule, last-cleaned and occupancy status, inherited/overridden daily window controls, plus every other room-owned setting and control. |
+| `custom:adaptive-robovacs-global` | One | Scheduler status, Repairs halt/resume, Party Mode, observe-only mode, cleaning windows, forecast confidence, and schedule preview. |
+| `custom:adaptive-robovacs-vacuum` | One per vacuum | Status/activity, adapter capabilities, safe failure diagnostics, and every robot-owned setting and control. |
+| `custom:adaptive-robovacs-room` | One per room | Schedule, last-cleaned and occupancy status, pass count, failure diagnostics, inherited/overridden daily window controls, plus every other room-owned setting and control. |
 
 All three cards are available in Home Assistant's card picker and have visual
 editors. The integration entry is optional when only one Adaptive RoboVacs
@@ -34,6 +34,26 @@ an overnight interval is supported, while equal effective bounds are invalid
 and block window-bound scheduling until one bound changes.
 The room schedule entity reports the configured bounds, effective bounds,
 inheritance flags, validity, and next usable start as attributes.
+
+Each room also has a **Cleaning passes** selector:
+
+- **Robot default** preserves the vacuum card's existing **Double pass**
+  default.
+- **1 pass** explicitly requests one portable pass.
+- **2 passes** requires a compatible adapter and never silently downgrades or
+  emulates the request with a second dispatch.
+
+Compatible Roborock vacuums perform two passes with one native cross-hatched
+segment command. Other vendors keep the portable Home Assistant path until a
+vendor adapter advertises enhanced support.
+
+If a scheduler-selected clean fails to start, the global status changes to
+**Scheduler halted**, and the matching vacuum and room status rows show the
+same safe failure. Home Assistant also creates a Repair. After correcting the
+vacuum availability, vendor integration, or area mapping, press **Recheck and
+resume**. The dashboard asks for confirmation; the recheck sends no vacuum
+command and resumes only if the prerequisites are valid. Dismissing the Repair
+does not resume dispatch.
 
 ## Four-column layout
 

@@ -1,0 +1,60 @@
+"""Static contracts for actionable Home Assistant Repairs integration."""
+
+import json
+from pathlib import Path
+import unittest
+
+
+PACKAGE = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs"
+
+
+class RepairsContractTests(unittest.TestCase):
+    def test_issue_and_fix_flow_translations_are_complete(self) -> None:
+        strings = json.loads((PACKAGE / "strings.json").read_text(encoding="utf-8"))
+        translations = json.loads(
+            (PACKAGE / "translations" / "en.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(strings, translations)
+        for key in ("scheduler_halted", "two_pass_no_longer_supported"):
+            self.assertIn(key, translations["issues"])
+            self.assertIn(key, translations["repairs"]["issues"])
+            self.assertIn(
+                "confirm",
+                translations["repairs"]["issues"][key]["fix_flow"]["step"],
+            )
+
+    def test_scheduler_halt_issue_is_persistent_fixable_and_error_severity(self) -> None:
+        source = (PACKAGE / "repairs_manager.py").read_text(encoding="utf-8")
+        self.assertIn("is_fixable=True", source)
+        self.assertIn("is_persistent=True", source)
+        self.assertIn("severity=ir.IssueSeverity.ERROR", source)
+        self.assertIn('translation_key="scheduler_halted"', source)
+
+    def test_repair_flow_uses_the_same_non_dispatching_resume_method(self) -> None:
+        repairs = (PACKAGE / "repairs.py").read_text(encoding="utf-8")
+        coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+        self.assertIn("async_recheck_and_resume", repairs)
+        method = coordinator[coordinator.index("    async def async_recheck_and_resume"):]
+        method = method[:method.index("    def _cancel_start_confirmation")]
+        self.assertIn("runtime.async_preflight", method)
+        self.assertNotIn("async_dispatch", method)
+        self.assertNotIn("services.async_call", method)
+
+    def test_repairs_and_public_fault_state_exclude_native_targets_and_raw_errors(self) -> None:
+        source = "".join(
+            (PACKAGE / path).read_text(encoding="utf-8")
+            for path in (
+                "repairs_manager.py",
+                "repairs.py",
+                "state.py",
+                "sensor.py",
+                "projections.py",
+            )
+        )
+        self.assertNotIn('"segments"', source)
+        self.assertNotIn('"app_segment_clean"', source)
+        self.assertNotIn("raw_exception", source)
+
+
+if __name__ == "__main__":
+    unittest.main()

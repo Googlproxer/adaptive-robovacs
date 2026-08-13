@@ -24,11 +24,22 @@ room, or sensor is picked up during the next evaluation without a reload.
 
 For each vacuum, open its entity settings and map its vendor room segments to
 Home Assistant areas. This is Home Assistant's built-in mapping used by
-`vacuum.clean_area`; no segment names or IDs are stored in this project.
+`vacuum.clean_area` and by enhanced adapters; no segment names or IDs are
+stored in this project.
 
-An unsupported or failed room dispatch is shown as **Unmapped** and is skipped.
-Repair the native mapping, then use **Preview schedule**. The scheduler will
-retry the room automatically on its next due evaluation.
+Every discovered vacuum resolves to one adapter from stable Home Assistant
+entity-registry platform metadata. The generic fallback retains the portable
+`vacuum.clean_area`, profile select, and fan-speed actions. A compatible
+Roborock adapter additionally supports native two-pass cross-hatched room
+cleaning. It rereads the selected vacuum's current area mapping immediately
+before dispatch, accepts numeric or unambiguous single-map compound segments,
+and fails closed on missing, stale, malformed, or multi-map evidence.
+
+Each room's **Cleaning passes** selector supports **Robot default**, **1 pass**,
+and **2 passes**. Robot default preserves the vacuum card's existing
+**Double pass** default. An explicit two-pass room is eligible only for a
+vacuum advertising native two-pass capability. The scheduler never emulates
+two passes with two commands and never silently downgrades the room.
 
 ## Occupancy rules
 
@@ -60,3 +71,55 @@ Enable a room's **Carpet (no mopping)** switch to make that room vacuum-only.
 Its stored mopping cadence and history are retained so turning the switch back
 off restores the prior mop schedule; carpeted rooms never receive a mop-only or
 vacuum-and-mop dispatch while the switch is on.
+
+## v1.3.0 troubleshooting
+
+### Scheduler halted after a start failure
+
+The first scheduler-selected clean that fails during adapter preflight,
+profile application, service dispatch, or two-minute start confirmation stops
+all later scheduler dispatch across every vacuum. Existing and manually
+started cleans are not stopped. The failure is durable across Home Assistant
+restarts and appears in three places:
+
+- **Scheduler halted** on the global card;
+- the same status on the affected vacuum and room cards, with safe diagnostic
+  attributes; and
+- one persistent error in **Settings > System > Repairs**.
+
+Check that the affected vacuum is available and docked, its vendor integration
+is healthy, the required profile options still exist, and the requested room
+is mapped through the vacuum entity's **Map vacuum segments to areas** action.
+Then complete the Repair flow or press the dashboard's confirmed **Recheck and
+resume** action. The shared recheck validates availability, battery, profile,
+adapter capability, and mapping without sending a clean. If it succeeds, it
+clears the halt and leaves the room due for the next normal safety-gated
+evaluation.
+
+Ignoring or dismissing the Repair, restarting Home Assistant, refreshing
+discovery, or observing the vacuum start late does not resume future dispatch.
+If the outcome was uncertain, the saved checkpoint remains authoritative until
+the vacuum is safely docked and the explicit recheck succeeds.
+
+### Mapping failures
+
+- **Mapping missing**: add the Home Assistant area to the selected vacuum's
+  segment mapping.
+- **Mapping stale**: refresh the vendor integration/map and update the mapping
+  so every target is present in the vacuum's current segment evidence.
+- **Mapping ambiguous**: ensure the requested area belongs to one active map.
+  The initial Roborock adapter deliberately rejects mixed or multiple map
+  evidence instead of risking a clean in another room.
+
+Adaptive RoboVacs never shows or stores native target IDs. For an advanced bug
+report, include the integration version, safe failure code, affected friendly
+vacuum/room names, and relevant Adaptive RoboVacs logs; redact any local map or
+segment details before sharing.
+
+### Two-pass compatibility Repair
+
+If a room is saved as **2 passes** and no compatible vacuum serves its floor,
+Home Assistant creates a separate Repair and leaves the room due but blocked.
+Restore a compatible vacuum or change **Cleaning passes** to **Robot default**
+or **1 pass**, then recheck. This pre-allocation configuration problem does not
+engage the scheduler-wide halt because no start was attempted.
