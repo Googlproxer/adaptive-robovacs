@@ -343,7 +343,13 @@ def resolve_cleaning_profile(
     }
     requested = requested_cleaning_profile(room_settings, robot_settings)
     values = {key: getattr(requested, key) for key in PROFILE_SETTING_KEYS}
-    for key, value in values.items():
+    applicable_keys = (
+        ("fan_speed", "mode", "mop_mode", "mop_intensity")
+        if operation == "mop"
+        else ("fan_speed", "mode")
+    )
+    for key in applicable_keys:
+        value = values[key]
         if value is not None and value not in option_sets[key]:
             return None
 

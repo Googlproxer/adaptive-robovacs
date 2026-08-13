@@ -12,7 +12,7 @@ work.
 ## Baseline
 
 Plans 1 through 3 and plan 5 are implemented. The remaining plans target the
-architecture deployed in integration version 1.5.0:
+architecture deployed in integration version 1.5.1:
 
 - v1.1 introduced one global card, one card per vacuum, and one card per room;
 - v1.2 introduced independently inherited per-room daily windows;
@@ -36,7 +36,9 @@ architecture deployed in integration version 1.5.0:
   Store validation and config-entry shutdown/removal; and
 - v1.5.0 added exact per-room profile inheritance/overrides, adapter-owned
   profile validation/application, complete profile Repairs, and the three
-  safety-gated manual room actions shared with issue #4.
+  safety-gated manual room actions shared with issue #4; and
+- v1.5.1 scoped exact profile validation to the current physical operation, so
+  retained mop-only values cannot block an otherwise compatible vacuum stage.
 
 Pull request [#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3)
 introduced the typed Store codec and separated runtime service calls, job

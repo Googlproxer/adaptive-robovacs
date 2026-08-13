@@ -275,6 +275,30 @@ class CleaningProfileTests(unittest.TestCase):
             )
         )
 
+    def test_vacuum_profile_ignores_retained_mop_only_values(self) -> None:
+        resolved = models.resolve_cleaning_profile(
+            "vacuum",
+            {},
+            {
+                "fan_speed": "max",
+                "mode": None,
+                "mop_mode": "removed_mop_mode",
+                "mop_intensity": "removed_mop_intensity",
+            },
+            self.capabilities,
+        )
+
+        self.assertEqual(
+            resolved.to_mapping(),
+            {
+                "operation": "vacuum",
+                "fan_speed": "max",
+                "mode": "vacuum",
+                "mop_mode": None,
+                "mop_intensity": None,
+            },
+        )
+
     def test_supported_fields_require_a_robot_default_or_room_override(self) -> None:
         self.assertIsNone(
             models.resolve_cleaning_profile(
