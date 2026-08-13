@@ -1,5 +1,7 @@
 # Plan: Vacuum adapters and Roborock native two-pass cleaning
 
+**Target release:** v1.3.0.
+
 ## Goal
 
 Introduce an integration-owned vacuum adapter layer, then use its first vendor
@@ -40,6 +42,9 @@ explicitly.
 - Roborock is the first enhanced adapter because compatible hardware is
   available for live verification. A vendor adapter and even individual models
   may advertise different capabilities.
+- User-actionable adapter failures are surfaced through Home Assistant Repairs
+  and on the relevant dashboard card. Users must not need system-log access to
+  understand the affected robot or room and the safe next action.
 
 ## Current behavior and technical boundary
 
@@ -119,8 +124,164 @@ Immediately before dispatch, the selected adapter:
 
 The result is a typed accepted, unsupported, mapping-error, or dispatch-error
 outcome. Complete technical context is logged without native target IDs;
-dashboard users receive a stable generic reason. Unsupported or failed work
-remains due and is not marked unmapped merely because a vendor feature failed.
+dashboard users receive a stable generic reason. Unsupported work remains due
+and is not marked unmapped merely because a vendor feature failed. Once the
+scheduler has committed to starting a candidate, any preflight, dispatch, or
+start-confirmation failure also raises the durable scheduler-wide fault below.
+
+## Scheduler-wide start-failure latch
+
+A scheduler-selected clean that fails to start is a system failure, not an
+ordinary per-room deferral. The integration must immediately enter a durable
+**dispatch halted** state and must not attempt to start any further clean on any
+robot until a user explicitly resolves and resumes the scheduler.
+
+### What counts as a start failure
+
+- Adapter preflight rejects the selected job after allocation, including a
+  missing, stale, malformed, ambiguous, or unsafe Home Assistant area mapping.
+- Applying the selected cleaning profile or invoking the generic/vendor clean
+  action raises, is rejected, or exceeds its bounded service timeout.
+- Home Assistant accepts the action but the selected robot does not report
+  `cleaning` within a bounded start-confirmation deadline and instead remains
+  idle/docked, becomes unavailable, pauses/errors, or returns to its dock.
+- The integration cannot safely determine whether the command started. An
+  uncertain outcome fails closed: do not issue another command that could
+  duplicate work.
+
+Normal candidate ineligibility before allocation—occupancy, time window,
+battery, a busy robot, Party Mode, observe-only mode, or no compatible robot—is
+not a start failure because no start was attempted. User-initiated/native-app
+commands are observations, not scheduler attempts, and cannot create this
+fault.
+
+### Fault behavior
+
+- Store one typed scheduler fault containing a stable reason code, safe Home
+  Assistant registry identity for the robot/room, first occurrence, current
+  phase, and whether a native command may have been attempted. Never persist a
+  raw exception, native command, payload, map ID, or segment ID.
+- Persist and save the fault before any later evaluation can dispatch. Every
+  dispatch entry point, including manual integration evaluation, must check the
+  same latch. Restart recovery restores the halt before scheduling resumes.
+- Clear the failed job's provisional checkpoint only when the integration can
+  prove no clean started. For an uncertain outcome, retain a recovery
+  checkpoint and let the robot's observed state remain authoritative while the
+  global dispatch halt prevents another start.
+- Do not stop a clean already in progress. If the failed/uncertain robot later
+  reports `cleaning`, track that observed work safely, but keep future
+  scheduler dispatch halted until explicit user resolution.
+- Do not advance room cadence, record duration learning, or mark a clean
+  complete merely because the user acknowledges the fault.
+- Create one immediate persistent `IssueSeverity.ERROR` Repair for the config
+  entry; there is no retry threshold for a start failure. The Repair identifies
+  the affected friendly robot/room, the safe failure class, and the required
+  next action without exposing raw integration details.
+- Show **Scheduler halted** at the top of the global card and show the matching
+  safe failure on the affected vacuum/room card. All previews must state that
+  dispatch is halted even if otherwise eligible work exists.
+- Dismissing or ignoring the Repair does not clear the latch. Resolution uses a
+  dedicated Repairs flow or confirmed global-card **Recheck and resume** action
+  that calls the same coordinator method.
+- Recheck validates all non-dispatching prerequisites relevant to the fault,
+  including entity availability, adapter capability, readiness, and current
+  Home Assistant area mapping. It never sends a vacuum command. If checks pass,
+  an explicit user confirmation clears the fault and Repair; the next normal
+  scheduler evaluation may try work. If the next start fails, the latch and
+  Repair are recreated immediately.
+
+## User-visible failures and Home Assistant Repairs
+
+Home Assistant Repairs is the primary notification surface when a failure
+requires user intervention. Dashboard diagnostics remain the immediate local
+status surface and cover non-actionable or transient states that do not belong
+in Repairs.
+
+### Failure classification
+
+Normalize adapter failures into stable reason codes before they reach the
+coordinator. The initial classes are:
+
+- `area_mapping_missing`, `area_mapping_stale`, and
+  `area_mapping_ambiguous`: actionable mapping failures. If encountered during
+  an allocated start attempt, they trigger the scheduler-wide halt and its
+  **error** Repair because the user can update the selected vacuum's Home
+  Assistant area mapping. A discovery-time warning before allocation is shown
+  on the target card without halting dispatch.
+- `two_pass_no_longer_supported`: an actionable configuration failure when a
+  saved two-pass room no longer has an eligible robot. Create an **error**
+  Repair directing the user to restore a compatible robot or change the room
+  to one pass/robot default.
+- `profile_apply_failed`, `generic_dispatch_failed`,
+  `native_dispatch_failed`, `start_confirmation_failed`, and
+  `start_outcome_uncertain`: immediate system failures. They create or update
+  the single scheduler-halted **error** Repair on the first occurrence; no
+  automatic retry or consecutive-failure threshold applies. The Repair gives
+  concrete checks: robot availability, vendor integration health, and Home
+  Assistant area mapping.
+- `adapter_probe_failed`, ambiguous adapter registration, and unexpected
+  internal errors: show a safe dashboard diagnostic and log full developer
+  context. Do not create a Repair unless the condition can be translated into
+  a specific user action.
+
+Party Mode, observe-only mode, ordinary occupancy blocking, a robot being busy,
+and a room waiting for its window are normal scheduler states, not failures and
+never create Repairs issues.
+
+### Repair issue contract
+
+- Create issues through `homeassistant.helpers.issue_registry` under the
+  `adaptive_robovacs` domain. Use deterministic issue IDs derived from stable
+  Home Assistant registry/config-entry identity plus the normalized reason;
+  never include a friendly name, mutable entity ID, native map ID, or segment
+  ID in the issue ID.
+- Deduplicate pre-allocation/configuration issues by affected target and reason.
+  Deduplicate all start failures into one scheduler-halted issue per config
+  entry because the latch prevents a second scheduler start. Keep timestamps
+  and safe local identity in issue `data`, not in user-facing identifiers.
+- Use `IssueSeverity.ERROR`: the clean is currently blocked and requires
+  attention. Reserve `CRITICAL` for Home Assistant-wide panic conditions and
+  do not use `WARNING`, which Home Assistant defines for future breakage.
+- Event-detected mapping and scheduler-halted issues are persistent across Home
+  Assistant restarts. Recreate currently active, actionable issues during
+  coordinator recovery without relying on raw exception persistence.
+- Provide complete English issue translations in
+  `custom_components/adaptive_robovacs/translations/en.json`, with a concise
+  title and actionable description. Translation placeholders may contain the
+  current robot/room friendly names and safe reason text, but never native
+  targets or raw exception messages.
+- Link non-fixable issues to a versioned troubleshooting section in the
+  repository documentation. Do not direct ordinary users to system logs as the
+  only remedy.
+- Delete a configuration issue only after the underlying condition is verified
+  resolved. Delete the scheduler-halted issue only through the explicit
+  successful recheck-and-resume path; neither rediscovery nor a late observed
+  `cleaning` state clears it automatically. This also gives a previously
+  ignored issue the correct Home Assistant lifecycle.
+- Unloading a config entry does not falsely resolve an active issue. Removing
+  the config entry removes issues owned solely by that entry.
+
+### Repair flows and dashboard behavior
+
+- Add `repairs.py` with a recheck flow for mapping/capability issues and the
+  scheduler-wide dispatch halt.
+  The flow explains where the user maintains Home Assistant's vacuum segment
+  mapping and re-runs adapter preflight; it completes only when the condition
+  is actually valid. It never edits Home Assistant's mapping, exposes native
+  IDs, or dispatches a clean.
+- The scheduler-halted Repair is fixable only through non-dispatching recheck
+  plus explicit user confirmation. The repair flow never performs a test clean;
+  the scheduler performs the next real attempt later through normal safety
+  gates.
+- Project `failure_code`, a concise `failure_summary`, `failure_since`, and
+  `repair_active` on the existing matching room or vacuum status entity. Keep
+  raw exceptions and vendor payloads out of entity attributes.
+- Render an error/status row before ordinary controls on the affected
+  per-room or per-vacuum card. The row states what is blocked and the user
+  action in plain language. The global card may show an aggregate count but
+  must not duplicate every detailed failure.
+- Acknowledge/dismiss actions in Repairs do not mark scheduler work complete,
+  advance cadence, clear the dispatch-halted latch, or bypass a safety gate.
 
 ## Implementation plan
 
@@ -167,8 +328,9 @@ remains due and is not marked unmapped merely because a vendor feature failed.
     one-pass command is required to clear sticky repeat state.
 11. Check `VacuumEntityFeature.SEND_COMMAND`, adapter capability, current
     mapping, and robot readiness immediately before the call. A failed native
-    call clears only the provisional dispatch checkpoint, records a generic
-    vendor-dispatch error, and leaves the room due.
+    call records a generic vendor-dispatch reason, safely resolves or retains
+    the provisional checkpoint according to outcome certainty, leaves the room
+    due, and engages the scheduler-wide dispatch halt before returning.
 12. Add mocked tests for payload construction and prohibited data retention.
     Include numeric and compound segment formats, multiple mapped segments,
     duplicate targets, absent mapping, cross-map ambiguity, unsupported model,
@@ -199,6 +361,35 @@ remains due and is not marked unmapped merely because a vendor feature failed.
     Keep both dashboard JavaScript copies byte identical if frontend ordering
     changes.
 
+### Phase D: Failure reporting and Repairs
+
+19. Add typed failure classification and a coordinator-owned scheduler fault
+    latch. Persist only the stable reason, affected Home Assistant registry
+    identity, first occurrence, phase/outcome certainty, and user-resolution
+    state needed for restart-safe deduplication. Do not persist native
+    commands, payloads, map IDs, segment IDs, or raw exception strings.
+20. Add a Repairs manager that creates, refreshes, and deletes translated
+    issues according to the lifecycle above. Cover config-entry setup,
+    rediscovery, recovery, unload, and removal without leaving orphan issues.
+21. Add `repairs.py` recheck flows for mapping, unsatisfied capability, and the
+    dispatch-halted fault. Add a confirmed global-card **Recheck and resume**
+    button using the same coordinator method. Reuse adapter preflight in
+    non-dispatching mode; never issue a vacuum command from either path.
+22. Add safe failure attributes to existing room/vacuum projections and a
+    deterministic error row to the matching dashboard card. Recompose cards
+    when a failure begins, changes class, or clears, while ordinary state
+    updates continue without rebuilding.
+23. Add translated English issue titles/descriptions and versioned
+    troubleshooting documentation for v1.3.0. Include mapping maintenance,
+    compatibility changes, start failure, the scheduler-wide halt, explicit
+    resume, uncertain outcomes, recovery, ignore/dismiss behavior, and when
+    system logs are useful for an advanced bug report.
+24. Add Repairs contract and lifecycle tests: translation completeness, stable
+    IDs, immediate halt behavior, restart recreation, repair-flow/card recheck,
+    explicit resume, verified deletion, ignored issue behavior, config-entry
+    removal, and absence of sensitive/native data from issues and dashboard
+    attributes.
+
 ## Future vendor adapter rules
 
 - Add a new module and registry entry; never add vendor conditionals to the
@@ -222,17 +413,30 @@ remains due and is not marked unmapped merely because a vendor feature failed.
 - Adapter resolver and schema tests cover deterministic selection, partial
   delegation, capability refresh, heterogeneous floors, and no fallback after
   a native attempt.
+- Start-failure tests cover preflight rejection, profile failure, generic and
+  native service errors/timeouts, accepted-but-never-cleaning, uncertain
+  outcome, a late `cleaning` observation, all dispatch entry points, and two
+  robots. Each first failure must prevent every later scheduler start until an
+  explicit successful recheck and confirmation.
 - Roborock tests prove that a requested Home Assistant area resolves only
   through that entity's current mapping and that only those transient targets
   enter the native repeat payload.
 - Persistence and logging tests prove native segment/map identifiers never
-  enter Store, checkpoints, entity attributes, previews, or logs.
+  enter Store, checkpoints, Repairs issues, entity attributes, previews, or
+  logs.
 - Scheduler tests cover robot default, explicit one pass, explicit two passes,
   unsupported requests, allocation across mixed vendors, duration separation,
   and restart recovery during an active two-pass job.
 - Hardware verification proves native cross-hatching, safe rejection of stale
   or ambiguous mappings, and a later one-pass clean that is not left in
   two-pass mode.
+- Repairs tests prove each actionable failure appears once with translated,
+  useful instructions, survives restart when appropriate, and that a
+  scheduler-halted issue clears only after a successful non-dispatching recheck
+  and explicit user confirmation—not dismissal, rediscovery, or late cleaning.
+- Dashboard tests prove the affected room or vacuum shows the safe failure
+  summary without raw integration errors and that normal scheduler states do
+  not appear as failures.
 - Run the full repository unit suite, frontend contracts when applicable, and
   compile every integration Python module.
 
@@ -249,6 +453,26 @@ remains due and is not marked unmapped merely because a vendor feature failed.
 - Unsupported robots cannot receive emulated or downgraded two-pass work.
 - Preview, allocation, active state, recovery, and duration learning agree on
   the selected adapter and resolved pass count.
+- An actionable mapping, compatibility, or clean-start failure is
+  visible in Home Assistant Repairs and on the affected dashboard card without
+  requiring access to system logs.
+- Repairs remain deduplicated and actionable, do not expose native identifiers
+  or raw exceptions, and disappear only when the underlying failure has been
+  verified resolved.
+- The first scheduler-selected clean that fails or cannot be confirmed to start
+  persistently halts all further scheduler dispatch across every robot. Only a
+  successful non-dispatching recheck plus explicit user confirmation resumes
+  scheduling; automatic evaluation, restart, Repair dismissal, or a late robot
+  state change cannot clear the halt.
+
+## Release scope
+
+This adapter foundation, Roborock two-pass support, room multipass control, and
+failure/Repairs experience ship together as **v1.3.0**. Implementation must
+bump `manifest.json` from the then-current 1.2.x version to `1.3.0`, create the
+annotated `v1.3.0` tag and full GitHub Release, install that exact release
+through HACS, restart Home Assistant, and verify the generic fallback,
+Roborock native path, dashboard diagnostics, and Repairs lifecycle live.
 
 ## Upstream references
 
@@ -256,3 +480,6 @@ remains due and is not marked unmapped merely because a vendor feature failed.
 - [Home Assistant vacuum action schema](https://github.com/home-assistant/core/blob/dev/homeassistant/components/vacuum/services.yaml)
 - [Home Assistant Roborock vacuum implementation](https://github.com/home-assistant/core/blob/dev/homeassistant/components/roborock/vacuum.py)
 - [Roborock native repeat command example](https://github.com/home-assistant/core/issues/115476)
+- [Home Assistant Repairs developer contract](https://developers.home-assistant.io/docs/core/platform/repairs/)
+- [Home Assistant repair-issue quality rule](https://developers.home-assistant.io/docs/core/integration-quality-scale/rules/repair-issues/)
+- [Custom integration translations](https://developers.home-assistant.io/docs/internationalization/custom_integration/)

@@ -28,7 +28,7 @@ feature work.
 | Issue item | Confirmed direction | Plan |
 | --- | --- | --- |
 | Per-room cleaning windows | One repeating daily interval; weekday/weekend schedules are deferred | [Implemented in v1.2.0](01-per-room-cleaning-windows.md) |
-| Multipass support | Add a generic/vendor adapter contract, then use a Roborock adapter for mapped native two-pass cross-hatching | [Vacuum adapters and Roborock native multipass](02-room-multipass.md) |
+| Multipass support | Target v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs | [Vacuum adapters and Roborock native multipass](02-room-multipass.md) |
 | Mopping when water is available | A robot without the required live water/mop signals does not support scheduler mopping | [Water-aware mopping](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
 | Power level settings per room | Native fan speed, presented with the other supported per-room robot behaviors | [Per-room cleaning profiles](05-room-power-levels.md) |
@@ -82,6 +82,13 @@ Every implementation must retain these repository contracts:
 - Log complete dispatch, profile, and notification failures with safe context
   while exposing only generic dashboard errors. Failures must not permanently
   exclude a room.
+- Surface user-actionable failures as translated, deduplicated Home Assistant
+  Repairs issues and safe target-card diagnostics. Do not create Repairs noise
+  for normal scheduler waits or transient conditions that need no user action.
+- Treat any scheduler-selected clean that fails or cannot be confirmed to start
+  as a durable system-wide dispatch halt. Create an immediate Repairs error and
+  start no further cleans on any robot until the user completes a successful
+  non-dispatching recheck and explicitly resumes the scheduler.
 - Treat each shipped item as an integration release: bump `manifest.json`, run
   the complete validation suite, create the matching annotated semantic tag
   and GitHub Release, update through HACS, and restart Home Assistant only after
@@ -114,7 +121,9 @@ migrations and public controls needed by that release.
    first vendor adapter. Adapters may run native commands, but native targets
    must be resolved from the user-maintained Home Assistant area mapping for
    every dispatch and must never be persisted by Adaptive RoboVacs. Vacuums
-   without an adapter retain the portable Home Assistant behavior.
+   without an adapter retain the portable Home Assistant behavior. This work
+   targets v1.3.0 and includes user-visible dashboard diagnostics and Home
+   Assistant Repairs issues for actionable adapter failures.
 3. Scheduler mopping requires authoritative water/mop telemetry. A robot with
    no supported water signal is not mop-capable in this integration.
 4. Cross-room occupancy models undirected adjacency. If either adjacent room
