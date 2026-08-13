@@ -41,8 +41,10 @@ single-choice select merely to fit the existing renderer.
   configuration problem. Show it on both affected room cards and create one
   translated, deduplicated Repair for user action. Auto-clear that Repair when
   discovery recovers or the edge is removed.
-- Do not stop an already-running job when an adjacent room later becomes
-  occupied, matching the existing start-safety model.
+- Do not stop an already-running stage when an adjacent room later becomes
+  occupied, matching the existing start-safety model. Every later stage in an
+  ordered cleaning occurrence is a new start: it must recheck adjacency and,
+  when blocked, persist the remaining sequence until a newly valid safe window.
 - Adjacency occupancy is a pre-dispatch safety gate, not a failed clean start.
   A block never engages the v1.3 system-wide dispatch halt.
 
@@ -69,6 +71,7 @@ single-choice select merely to fit the existing renderer.
 5. Build the effective occupancy scope once per evaluation, then reuse the
    existing radar-preferred resolver for every member. Cache room resolutions
    within the evaluation so reciprocal edges do not duplicate state reads.
+   Apply the same gate to an occurrence's first stage and every resumed stage.
 6. Include blocker kind (`local`, `adjacent`, or `bedroom_transit`), adjacent
    room names, missing references, and confidence in room status and schedule
    preview projections. Add stable room-owned entity roles so only the selected
@@ -94,6 +97,9 @@ single-choice select merely to fit the existing renderer.
   migration/restart.
 - Test interactions with desired windows, unresolved occupancy, Party Mode,
   observe-only mode, and the stricter bedroom-transit aggregate.
+- Test adjacency becoming occupied between ordered vacuum/mop stages: the
+  running stage is not stopped, the remaining stage does not start, and it
+  resumes only through a fresh safe-window evaluation.
 - Test target/entry validation, the per-room native multi-area dialog, room-card
   ownership, missing-reference Repair lifecycle/translation placeholders, and
   dashboard-copy equality.
@@ -105,6 +111,7 @@ single-choice select merely to fit the existing renderer.
   discovered Home Assistant rooms and a native multiple-area selector.
 - A link behaves symmetrically and survives restart without duplicate edges.
 - Occupancy in any direct neighbor prevents a new clean in the target room.
+- Each separately dispatched stage counts as a new clean for adjacency safety.
 - Missing references and unavailable observations are visible and never
   silently treated as known vacant.
 - Existing safety gates remain independent and mandatory.

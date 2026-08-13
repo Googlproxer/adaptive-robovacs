@@ -1,177 +1,254 @@
-# Plan: Per-room fan speed and adapter-applied cleaning profiles
+# Plan: Robot defaults and per-room cleaning profiles
 
 ## Goal
 
-Allow each room to request a fan/suction speed and the other supported
-room-cleaning behaviors. Resolve one complete profile for the selected robot
-and apply it before dispatch so settings from one room cannot leak into the
-next job.
+Let every robot define its default cleaning behavior and let each room inherit
+or override that behavior. Resolve one complete, capability-compatible profile
+for the chosen robot and reapply it before every stage so settings from one
+room or stage cannot leak into the next.
 
-## Product decision
+## Confirmed product model
 
 **Power level** means the vacuum's advertised fan speed. Vacuum cards own robot
-defaults. Room cards own optional exact-value overrides for fan speed, cleaning
-mode, mop mode, mop intensity, and the already implemented pass-count setting.
-Maintenance or administrative controls such as child lock, do-not-disturb, or
-dust-bin actions are not room profile fields.
+defaults. Room cards own optional overrides.
+
+The profile fields are:
+
+- cleaning program: **Vacuum only**, **Mop only**, **Vacuum then mop**, or
+  **Mop then vacuum**;
+- fan speed;
+- cleaning mode;
+- mop mode;
+- mop intensity; and
+- pass count.
+
+The cleaning program replaces the separate vacuum/mop cadence decision. Each
+room has one schedule and one cadence; its effective program defines the ordered
+stages attempted at every occurrence. A room offers **Robot default** for every
+overridable field. Maintenance or administrative controls such as child lock,
+do-not-disturb, or dust-bin actions are not room profile fields.
 
 ## v1.3.2 baseline and gap
 
 The adapter capability snapshot already publishes per-robot raw fan-speed,
 cleaning-mode, mop-mode, mop-intensity, operation, and pass options. Vacuum
-cards already expose robot-owned defaults, and room cards already expose
-**Robot default / 1 pass / 2 passes**. Runtime profile application currently
-reads only robot settings and directly calls common Home Assistant services;
-there are no room overrides, no whole-profile compatibility filter, and no
-guarantee that a **Robot default** room resets a value changed for the preceding
-room.
+cards already expose robot-owned defaults, and room cards expose **Robot
+default / 1 pass / 2 passes**. Runtime profile application currently reads only
+robot settings and directly calls common Home Assistant services; there are no
+room overrides, ordered programs, whole-profile compatibility filter, or
+guarantee that an inherited room resets a value changed for the preceding room.
 
 Both inspected robots advertise fan speed but with different option sets.
-Their other options also differ. Every option therefore remains an exact raw
-Home Assistant value associated with the robots that advertise it; there is no
-hard-coded common list or semantic translation.
+Their other options also differ. Every vendor-provided option remains an exact
+raw Home Assistant value associated with the robots that advertise it; there
+is no hard-coded common list or semantic translation.
+
+## Ownership and resolution
+
+- Every robot stores explicit defaults for its supported profile fields,
+  including one cleaning program. An unset supported field is visibly **Not
+  configured**; the UI must not display the first advertised option as though
+  it were saved.
+- Every room stores nullable overrides. Null means **Robot default** and is
+  resolved only after candidate assignment identifies a robot.
+- Program options are normalized scheduler semantics rather than raw vendor
+  strings. Expand them to `[vacuum]`, `[mop]`, `[vacuum, mop]`, or
+  `[mop, vacuum]`. An ordered program always remains separate stages; a native
+  simultaneous operation is not semantically equivalent.
+- Before a room may save or use an exact-value override, at least one eligible
+  robot must advertise that value. Before inheritance may be used, the chosen
+  robot must have an explicit default for that supported field so a later job
+  can restore it instead of inheriting the previous room's state.
+- Resolve every field for every dispatched stage and reapply the relevant
+  values in stable order. Do not apply only values that differ from the
+  scheduler's last estimate.
+- Assignment filters to robots that support the full program and resolved
+  profile before battery/readiness ranking. Never partially translate or
+  silently substitute an unsupported value. Transient no-water readiness is
+  not profile incompatibility; it skips only the mop stage under plan 3.
+- The robot chosen for an occurrence supplies all inherited defaults and remains
+  the sequence's robot. It is not reserved between stages, but a later stage is
+  not reassigned to a robot with different defaults. Removal or capability
+  regression becomes a visible compatibility wait/Repair.
 
 ## Adapter profile contract
 
-This plan consumes the adapter schema evolution from the water-aware mopping
-plan. If implemented independently, it must introduce the same versioned
-extension rather than adding vendor branches to runtime orchestration.
+This plan consumes the adapter schema evolution from the water-aware cleaning
+program plan. If implemented independently, it must introduce the same
+versioned extension rather than adding vendor branches to orchestration.
 
 - Keep normalized option sets in `AdapterCapabilities` and add typed
-  `RequestedCleaningProfile` and `ResolvedCleaningProfile` values.
-- Add adapter methods to validate a resolved profile without side effects and
-  to apply it without starting a clean. The generic adapter implements standard
-  Home Assistant fan-speed and discovered select actions. A vendor adapter may
-  override or extend application while preserving the same normalized result.
-- Keep dispatch separate: profile application performs no area clean or native
-  segment command, and dispatch receives the resolved profile in its request.
+  `RequestedCleaningProfile`, `ResolvedCleaningProfile`, `CleaningProgram`,
+  and `CleaningStage` values.
+- Add adapter methods to validate a resolved stage profile without side effects
+  and to apply it without starting a clean. The generic adapter implements
+  standard Home Assistant fan-speed and discovered select actions. A vendor
+  adapter may override or extend application while preserving the same
+  normalized result.
+- Keep application and dispatch separate. Applying a profile performs no area
+  clean or native segment command; dispatch receives the current resolved stage
+  and the occurrence fingerprint.
 - Adapters return stable result codes and never expose native targets or raw
-  exceptions. Roborock continues to use native repeat-2 dispatch only when two
-  passes are requested; shared runtime does not also toggle a pass select for a
-  native request.
-- Record the adapter ID/schema and requested/resolved profile in the active-job
-  checkpoint. After restart, observed robot state remains authoritative and no
-  profile or command is replayed automatically.
+  exceptions. Roborock may use native repeat-2 dispatch for a stage requesting
+  two passes, but shared runtime must not also toggle a pass control. It may not
+  collapse ordered vacuum/mop stages into `vac_and_mop`.
+- Record adapter ID/schema, requested/resolved profile, program, stage index,
+  and pass count in the occurrence/active-stage checkpoint. After restart,
+  observed robot state remains authoritative and no profile or command is
+  replayed automatically.
 
-## Defaults and leakage prevention
+## Defaults, migration, and leakage prevention
 
-- Preserve every existing v1.3 robot mode/mop/fan setting and entity/unique ID
-  as that robot's default. Migrate new room override fields to null (**Robot
-  default**) so upgrades do not alter behavior.
-- An unset robot field is visibly **Not configured**; the UI must not display
-  the first advertised option as though it were saved.
-- Before a room may save or use an explicit override for a field, an eligible
-  robot must advertise the value and have an explicit robot default for that
-  field. This guarantees that a later **Robot default** job can restore a known
-  value instead of inheriting the prior room's override.
-- Resolve all applicable fields for every dispatch and reapply them in a stable
-  order, including defaults. Do not apply only the fields that differ from the
-  scheduler's last estimate.
-- If eligible robots differ, assignment filters to robots supporting the entire
-  resolved profile before battery/readiness ranking. Never partially apply,
-  translate, or silently substitute an unsupported value.
+- Preserve existing v1.3 robot fan/mode/mop defaults and stable entity/unique
+  IDs. New room overrides migrate to null (**Robot default**) and existing room
+  pass values remain unchanged.
+- Coordinate the robot cleaning-program and single-cadence migration with plan
+  3. Do not ship a temporary state in which a room has one program but two
+  independently authoritative cadences.
+- The legacy robot `mopping_enabled` setting is replaced rather than retained
+  as a second source of truth. **Vacuum only** is the safe default; an explicit
+  legacy mop intent is reconciled to **Vacuum then mop** only where the water
+  adapter confirms scheduler mopping support.
+- Reapply a complete applicable profile before each stage. Vacuum stages do not
+  apply mop-only fields. Mop stages apply the resolved mop settings. Shared
+  fields such as fan speed and cleaning mode follow adapter-declared relevance;
+  skipped water stages perform no profile service calls.
+- One room pass count applies to every dispatched stage in the effective
+  program. Separate vacuum-pass and mop-pass settings are deferred.
+- If eligible robots differ, room option lists show the live union for editing,
+  while assignment still enforces the complete exact profile. Presentation may
+  show supporting robot names but persistence stores raw values and registry
+  identities only.
 
-## Mopping and pass interaction
+## Mopping, carpet, and sequence interaction
 
-- Room mop-mode/intensity overrides appear only when a floor has an adapter
-  that supports scheduler mopping under the authoritative water contract.
-- Mop work remains subject to live water readiness and carpet exclusion during
-  evaluation and final pre-dispatch checks.
-- Pass count remains the existing room-owned setting and participates in the
-  same compatibility/profile fingerprint; do not create a second pass entity.
-- A capability regression or saved value that no eligible robot can apply is a
-  normal fail-closed configuration block. Show it on the room card and create a
-  translated, deduplicated Repair that auto-clears when the profile is edited or
-  compatibility returns. It does not engage the global dispatch halt because no
-  clean was attempted.
+- Cleaning-program and mop-mode/intensity controls appear only when a floor has
+  an adapter that supports scheduler mopping under the authoritative water
+  contract. **Mop only** and both ordered programs are incompatible with a
+  vacuum-only robot.
+- Carpet is a stronger room exclusion for mop stages. A carpeted room may use
+  **Vacuum only**; a saved program containing mop is an actionable
+  configuration incompatibility, not a transient water skip.
+- Water readiness is checked when an occurrence starts and again immediately
+  before a mop-stage checkpoint. No water marks that mop stage skipped for the
+  occurrence and leaves vacuum stages eligible regardless of ordering.
+- Completed stages remain completed. Occupancy, adjacency, transit, battery, or
+  window changes between stages persist the remaining sequence and return it
+  through normal candidate evaluation.
+- Profile/program/capability changes during a pending occurrence invalidate its
+  unresolved fingerprint safely. Never apply a newly edited profile to only
+  the remaining half of an old occurrence; close or re-plan it through an
+  explicit deterministic state transition and require any bedroom approval
+  again.
 
 ## Failure behavior
 
-Profile service calls are not atomic. Apply the full resolved profile before
-the adapter dispatch and checkpoint the phase. If any call raises, times out, or
-returns an error:
+Profile service calls are not atomic. Apply the complete current-stage profile
+before adapter dispatch and checkpoint the phase. If any call raises, times
+out, or returns an error:
 
-- do not send the clean command or advance cadence;
-- log safe robot, room, adapter, profile-field, and requested-value context;
+- do not send that stage's clean command or advance the occurrence cadence;
+- do not start any later stage;
+- log safe robot, room, adapter, stage, profile-field, and requested-value
+  context;
 - retain no native target or raw exception in Store/entities/Repairs;
 - engage the existing durable system-wide scheduler halt with
   `profile_apply_failed`; and
 - use the scheduler-failure Repair/global recheck flow to validate current
   entities/options without issuing a test clean before explicit resume.
 
-The next successful dispatch after resume reapplies the complete profile, so a
-partially changed robot is not trusted.
+The next attempt after resume reapplies the complete pending-stage profile. It
+never trusts a partially changed robot and never replays a completed stage.
+Water absence is handled before profile application as a normal skip and never
+enters this failure path.
 
 ## Dashboard experience
 
-- Vacuum cards retain the existing robot defaults and add clear configured,
-  current-observation, and compatibility status where needed.
-- Each room card gains room-owned profile selects. Choices are **Robot default**
-  plus the exact live union for eligible robots on that floor, with supporting
-  robot names as presentation-only compatibility detail.
-- A room card explains missing defaults, incompatible saved values, water
-  gating, and which fields are inherited. It never repeats the room name on
-  every row and never displays another room's controls.
+- Every vacuum card shows the robot cleaning-program default plus configured,
+  current-observation, and compatibility status for its other defaults.
+- Every room card shows one cleaning cadence and gains **Robot default** profile
+  selects. Program choices are capability-filtered normalized labels; vendor
+  fields use the exact live union for eligible robots on that floor.
+- Room status shows the resolved robot, effective program, ordered/current
+  stage, inherited fields, water-skipped stage, and compatibility reasons. It
+  does not retain separate vacuum/mop due rows, repeat the room name on every
+  row, or display another room's controls.
 - Dynamic capability/friendly-name changes update option membership and labels
   through the existing discovery signal. Both JavaScript copies remain
   byte-identical.
 
 ## Implementation plan
 
-1. Add typed requested/resolved room profiles and pure default-resolution and
-   whole-profile compatibility helpers in `models.py`.
-2. Extend `RoomSettings` with nullable fan-speed, cleaning-mode, mop-mode, and
-   mop-intensity overrides. Bump from the Store schema current at implementation
-   time; preserve current robot defaults and existing room pass values.
-3. Extend the versioned adapter contract with profile validation/application.
-   Implement the standard Home Assistant path in the generic adapter and make
-   Roborock delegate unless a vendor-specific override is required.
-4. Refactor candidate/assignment construction to resolve a complete profile per
-   robot, discard incompatible robots before ranking, and carry the chosen
-   typed profile into preview and dispatch.
-5. Refactor runtime profile application into the adapter boundary. Apply
-   cleaning mode, fan speed, mop mode/intensity, and non-native pass controls in
-   deterministic order; repeat the capability/water checks immediately before
-   checkpoint and application.
-6. Reuse the existing system fault latch for application errors. Add a separate
-   auto-clearing compatibility Repair for saved profiles that cannot reach the
-   application phase.
-7. Add stable room-owned controls/status roles to the selected room card and
-   improve existing vacuum-default status without replacing public entity IDs
-   or unique IDs.
-8. Store requested/resolved profiles and adapter version in previews and active
-   checkpoints. Keep robot observations authoritative during recovery.
-9. Document exact-value compatibility, required defaults, water gating, pass
-   handling, and Repair/resume behavior.
+1. Add typed requested/resolved profiles, cleaning programs/stages, and pure
+   default-resolution and whole-program compatibility helpers in `models.py`.
+2. Extend robot settings with an explicit program default and `RoomSettings`
+   with nullable program, fan-speed, cleaning-mode, mop-mode, and mop-intensity
+   overrides. Coordinate the Store migration with plan 3's single cadence and
+   occurrence state.
+3. Extend the versioned adapter contract with stage-profile validation and
+   application. Implement standard Home Assistant actions in the generic
+   adapter and make Roborock delegate unless a vendor-specific override is
+   required.
+4. Refactor candidate/assignment construction to resolve one whole program and
+   complete profile per robot, discard incompatible robots before ranking, and
+   carry the chosen typed fingerprint through preview, occurrence creation, and
+   every stage.
+5. Refactor runtime profile application into the adapter boundary. Apply only
+   the current stage's relevant cleaning mode, fan speed, mop mode/intensity,
+   and non-native pass controls in deterministic order; repeat capability and
+   water preflight before checkpoint/application.
+6. Reuse the system fault latch for actual application errors. Add separate
+   auto-clearing compatibility Repairs for missing defaults, saved unsupported
+   programs/values, carpet/mop conflicts, or capability regression.
+7. Add stable robot-default and room-override controls/status roles to the
+   selected cards without replacing unaffected public entity IDs or unique IDs.
+   Remove/migrate only the superseded dual-cadence and mopping-enable surfaces.
+8. Store program, requested/resolved profile, adapter version, stage index, and
+   terminal stage outcomes in previews and occurrence/active-stage checkpoints.
+   Keep robot observations authoritative during recovery.
+9. Document normalized program semantics, exact-value compatibility, required
+   defaults, one cadence, water skipping, pass handling, and Repair/resume
+   behavior.
 
 ## Validation
 
+- Test all robot-default and room-override program combinations, including
+  exact ordered expansion and rejection when a robot cannot support the whole
+  program.
 - Test standard generic fan-speed/select calls and vendor delegation without a
   clean command during profile application.
 - Test consecutive rooms with different speeds followed by a **Robot default**
-  room; every job receives an explicit resolved value.
-- Test missing robot defaults, heterogeneous robots, exact raw values, and
-  whole-profile compatibility filtering.
-- Test that mop fields never make a robot without authoritative water telemetry
-  mop-capable and two passes are unavailable without adapter support.
-- Test compatibility Repairs auto-clear, while an actual profile-application
-  failure aborts dispatch and durably halts all scheduler work until explicit
-  successful recheck/resume.
-- Test Store migration, active checkpoint/restart behavior, dynamic room/vacuum
-  card membership, stable unique IDs, translation placeholders, and dashboard
-  copy equality.
+  room; every stage receives an explicit resolved applicable value.
+- Test missing robot defaults, heterogeneous robots, exact raw values,
+  whole-profile filtering, carpet conflicts, capability regression, and
+  capability-aware controls.
+- Test one/two passes across one- and two-stage programs, Roborock native
+  repeat-2 behavior, and prevention of ordered-stage collapse into a combined
+  native operation.
+- Test no water in both stage orders: mop is skipped, vacuum remains eligible,
+  skipped mop profile calls are not made, and the occurrence advances only
+  under plan 3's terminal-outcome rules.
+- Test profile edits, occupancy waits, restart, and robot capability changes
+  between stages without leakage or replay.
+- Test compatibility Repairs auto-clear, while an actual stage-profile
+  application failure aborts the occurrence and durably halts all scheduler
+  work until explicit successful recheck/resume.
+- Test Store/entity migration, dynamic room/vacuum card membership, stable
+  unique IDs, translation placeholders, and dashboard-copy equality.
 - Run the complete repository tests and compile every integration Python
   module.
 
 ## Acceptance criteria
 
-- Two rooms can reliably request different fan speeds on the same robot, and a
-  following inherited room restores the configured robot default.
-- Room cards show only capability-compatible cleaning behaviors and derive raw
-  options from live adapter snapshots.
+- A robot owns one explicit cleaning-program/profile default and every room can
+  inherit or override it without creating a second cadence.
+- Two rooms can reliably request different profiles on the same robot, and a
+  following inherited room restores the complete robot default.
+- Ordered programs remain ordered physical stages, and every remaining stage
+  re-enters normal safety evaluation.
 - An incompatible profile blocks before dispatch and is actionable without
-  creating a false global failure.
-- Any failure while applying a selected profile prevents the clean and uses the
-  existing durable system-wide halt/Repair workflow.
-- Future vendors can validate and apply profiles through the adapter contract
-  without scheduler changes.
+  creating a false global failure; transient no-water skips only mopping.
+- Any failure while applying an attempted stage profile prevents that and all
+  later cleans and uses the existing durable system-wide halt/Repair workflow.
+- Future vendors can validate and apply the same normalized profiles/stages
+  through the adapter contract without scheduler changes.

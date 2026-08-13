@@ -20,8 +20,8 @@ Initial timing policy:
 - **Skip** defers the room until its next daily desired-window start;
 - timeout does not change cadence and suppresses another prompt for 24 hours;
   and
-- a new request is required if the operation, pass count, room profile, or
-  tentative adapter-resolved profile changes.
+- a new request is required if the cleaning program, ordered stages, pass
+  count, room profile, or tentative adapter-resolved profile changes.
 
 ## v1.3.2 baseline and gap
 
@@ -80,20 +80,32 @@ only as a compatibility hint. Re-resolve and validate it on every send.
 ## Confirmation behavior
 
 - When an assigned bedroom becomes an otherwise safe candidate, select a
-  tentative compatible robot/profile, persist one request, then send **Clean
-  now** and **Skip** actions. Do not reserve the robot, create an active job, or
-  advance cadence.
-- The request fingerprint contains the operation, pass count, requested room
-  profile, tentative resolved profile, adapter ID/schema, and relevant room
-  configuration version. It contains no native map/segment targets.
+  tentative compatible robot, cleaning program, ordered stages, and profile;
+  persist one request; then send **Clean now** and **Skip** actions. Do not
+  reserve the robot, create an active stage, or advance cadence.
+- The request fingerprint contains the cleaning program, ordered stage kinds,
+  pass count, requested room profile, tentative resolved profile, adapter
+  ID/schema, and relevant room configuration version. It contains no native
+  map/segment targets.
 - **Clean now** records a 30-minute authorization and schedules a new
   evaluation. Assignment is rebuilt. Dispatch may use only a robot whose
   freshly resolved profile matches the approved fingerprint; otherwise the
   request is invalidated and a new confirmation is required.
-- Every normal gate is rechecked: scheduler halt, Party Mode, observe-only,
-  daily window, local/adjacent/bedroom-transit occupancy, robot readiness,
-  authoritative water readiness, profile compatibility, pass support, and
-  current Home Assistant area mapping/preflight.
+- Every normal gate is rechecked before the first stage and every later stage:
+  scheduler halt, Party Mode, observe-only, daily window,
+  local/adjacent/bedroom-transit occupancy, robot readiness, authoritative
+  water readiness for mop, profile compatibility, pass support, and current
+  Home Assistant area mapping/preflight.
+- One approval authorizes the immutable scheduled occurrence, not arbitrary
+  future room work. A later stage may proceed without another prompt while the
+  same approval remains valid. If occupancy or another gate defers the sequence
+  beyond the 30-minute authorization or into a later safe window after expiry,
+  send a new confirmation for the remaining-stage fingerprint. Completed
+  stages are never replayed.
+- A water-unavailable mop stage is skipped under plan 3 and does not require a
+  replacement approval. Any configured vacuum stage may still proceed. The
+  all-user skipped-mop notification is separate from this bedroom's assigned
+  recipient confirmation and carries no approval authority.
 - **Skip**, expiry, invalid response, and delivery failure never count as a
   clean. They follow the defer/throttle policy and leave cadence due.
 - Dry runs and schedule previews never send. No new prompt is sent while Party
@@ -121,7 +133,8 @@ Add one bounded record per bedroom containing:
 
 - request status and timestamps;
 - bedroom area reference and an assignment-version reference;
-- operation/pass/requested-profile/resolved-profile fingerprint;
+- cleaning-program/ordered-stage/pass/requested-profile/resolved-profile
+  fingerprint and, for a continuation, completed/pending stage indexes;
 - tentative adapter ID/schema, without native targets;
 - approval expiry and next-prompt time;
 - last safe outcome; and
@@ -141,16 +154,18 @@ never reserved in this record.
 - Repair translations use `issues.<key>.fix_flow` and receive assignment-safe
   placeholders. The fix flow refreshes discovery and directs the user to the
   bedroom card; it does not send a notification or clean.
-- After an approval, any profile-application, adapter-dispatch, or
+- After an approval, any stage profile-application, adapter-dispatch, or
   start-confirmation failure is an actual failed scheduler clean and therefore
-  uses the existing durable system-wide halt and scheduler-failure Repair.
+  uses the existing durable system-wide halt and scheduler-failure Repair. No
+  remaining stage or unrelated clean may start until explicit successful
+  resume.
 - Dismissing a bedroom-assignment/delivery Repair does not authorize a clean.
 
 ## Implementation plan
 
-1. Add pure decisions in `models.py` for prompt eligibility, request/profile
-   fingerprints, action matching, approval validity, user/device validation,
-   skip deferral, timeout, throttling, and invalidation.
+1. Add pure decisions in `models.py` for prompt eligibility, whole-occurrence
+   and remaining-stage fingerprints, action matching, approval validity,
+   user/device validation, skip deferral, timeout, throttling, and invalidation.
 2. Extend typed Store state with bedroom assignments and bounded confirmation
    records. Bump from the schema current at implementation time. Existing
    enabled bedrooms migrate to unassigned/blocked and send nothing until the
@@ -167,20 +182,24 @@ never reserved in this record.
 6. Listen for `mobile_app_notification_action` and apply random action,
    user/device, status, expiry, and assignment-version validation. Never
    dispatch from the event handler.
-7. Insert prompt creation after ordinary candidate gates and tentative profile
-   resolution but before active-job creation. Suppress side effects in dry run,
-   Party Mode, observe-only, and scheduler-halted states.
-8. On approval, rebuild candidate/assignment/profile data and require the
-   approved fingerprint plus every current safety/preflight check immediately
-   before the existing dispatch path.
+7. Insert initial prompt creation after ordinary candidate gates and tentative
+   program/profile resolution but before occurrence/active-stage creation. Add
+   the same authorization check before a deferred remaining stage and suppress
+   side effects in dry run, Party Mode, observe-only, and scheduler-halted
+   states.
+8. On approval, rebuild candidate/assignment/program/profile data and require
+   the approved whole-occurrence or remaining-stage fingerprint plus every
+   current safety/preflight check immediately before the dispatch path.
 9. Implement local assignment/delivery Repairs and diagnostics separately from
    the global scheduler-failure latch.
 10. Add bedroom-card assignment status, pending/approved state, prompt/expiry
     times, and approve/skip controls. Keep both JavaScript copies identical and
     do not prefix every row with the bedroom name.
-11. Close requests deterministically on dispatch, disablement, exclusion,
-    assignment/profile change, skip, expiry, completion, and recovery. Prune
-    terminal records and action tokens.
+11. Consume action tokens on approval/skip and retain only the bounded
+    authorization metadata needed by an in-progress occurrence. Close requests
+    deterministically on disablement, exclusion, assignment/program/profile
+    change, skip, expiry, occurrence completion, and recovery. Prune terminal
+    records and action tokens.
 12. Document assignment, privacy, action semantics, timing, and the fact that
     approval never overrides a scheduler safety rule.
 
@@ -199,6 +218,10 @@ never reserved in this record.
   missing registry references, and redacted diagnostics.
 - Test 30-minute approval, next-window skip, 24-hour reprompt boundaries, and
   request pruning.
+- Test both ordered cleaning programs: a second stage within the valid approval
+  needs no duplicate prompt; occupancy blocks it; continuation after approval
+  expiry requires a new remaining-stage confirmation; completed stages never
+  replay; and a skipped no-water mop does not invalidate an approved vacuum.
 - Test that assignment/delivery failures are room-local but a real post-approval
   clean-start failure engages the existing global halt/Repair.
 - Test room-card target ownership, native selector dialog, translated Repair
@@ -209,8 +232,10 @@ never reserved in this record.
 
 ## Acceptance criteria
 
-- Every scheduler-owned bedroom clean has one matching unexpired approval sent
-  to the bedroom's currently resolved assigned phone.
+- Every scheduler-owned bedroom occurrence has a matching unexpired approval
+  sent to the bedroom's currently resolved assigned phone, and no separately
+  dispatched stage starts after that authorization expires without a fresh
+  remaining-stage confirmation.
 - An unassigned, stale, or undeliverable bedroom fails closed with actionable
   room-card and Repairs guidance while unrelated rooms remain schedulable.
 - Approval cannot bypass scheduler halt, windows, local/adjacent/transit
