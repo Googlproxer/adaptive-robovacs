@@ -18,10 +18,12 @@ const ROOM_ROLES = new Map([
   ["room_schedule", 0],
   ["room_last_cleaned", 1],
   ["room_occupancy", 2],
-  ["room_pass_count_control", 3],
-  ["room_window_start_control", 4],
-  ["room_window_end_control", 5],
-  ["room_control", 6],
+  ["room_cleaning_program_control", 3],
+  ["room_pass_count_control", 4],
+  ["room_mop_pass_count_control", 5],
+  ["room_window_start_control", 6],
+  ["room_window_end_control", 7],
+  ["room_control", 8],
 ]);
 
 const COMMON_FORM_SCHEMA = [

@@ -13,8 +13,8 @@ The available card types are:
 | Card | Instances | Contents |
 | --- | --- | --- |
 | `custom:adaptive-robovacs-global` | One | Scheduler status, Repairs halt/resume, Party Mode, observe-only mode, cleaning windows, forecast confidence, and schedule preview. |
-| `custom:adaptive-robovacs-vacuum` | One per vacuum | Status/activity, adapter capabilities, safe failure diagnostics, and every robot-owned setting and control. |
-| `custom:adaptive-robovacs-room` | One per room | Schedule, last-cleaned and occupancy status, pass count, failure diagnostics, inherited/overridden daily window controls, plus every other room-owned setting and control. |
+| `custom:adaptive-robovacs-vacuum` | One per vacuum | Status/activity, water readiness, cleaning program, independent vacuum/mop pass defaults, adapter capabilities, safe failure diagnostics, and robot-owned controls. |
+| `custom:adaptive-robovacs-room` | One per room | Single-cadence schedule, last-cleaned and occupancy status, program override, independent vacuum/mop pass overrides, occurrence/water-confirmation diagnostics, and room-owned controls. |
 
 All three cards are available in Home Assistant's card picker and have visual
 editors. The integration entry is optional when only one Adaptive RoboVacs
@@ -35,10 +35,9 @@ and block window-bound scheduling until one bound changes.
 The room schedule entity reports the configured bounds, effective bounds,
 inheritance flags, validity, and next usable start as attributes.
 
-Each room also has a **Cleaning passes** selector:
+Each room has **Vacuum passes** and **Mop passes** selectors:
 
-- **Robot default** preserves the vacuum card's existing **Double pass**
-  default.
+- **Robot default** preserves the matching vacuum-card pass default.
 - **1 pass** explicitly requests one portable pass.
 - **2 passes** requires a compatible adapter and never silently downgrades or
   emulates the request with a second dispatch.
@@ -46,6 +45,23 @@ Each room also has a **Cleaning passes** selector:
 Compatible Roborock vacuums perform two passes with one native cross-hatched
 segment command. Other vendors keep the portable Home Assistant path until a
 vendor adapter advertises enhanced support.
+
+The vacuum **Cleaning program** defines its default operation order. A room can
+inherit it or choose Vacuum only, Mop only, Vacuum then mop, or Mop then vacuum.
+The room schedule row exposes the persisted occurrence/current stage, last
+terminal stage outcome, water-confirmation deadline/status, and the Roborock
+water-readiness reason through its attributes.
+
+## Migrating from 1.3
+
+Version 1.4 replaces the two vacuum/mop cadences with one room cleaning cadence.
+The previous vacuum cadence value becomes that cadence; the most recent vacuum
+or mop completion becomes the initial cadence anchor. The old **Mop cadence**
+entity is retired. Existing room **Cleaning passes** becomes **Vacuum passes**
+with the same stable entity ID; Mop passes starts at the one-pass robot default.
+The robot **Mopping enabled** switch is replaced by **Cleaning program**:
+disabled migrates to Vacuum only, while enabled migrates to Vacuum then mop for
+a robot whose adapter verifies mopping.
 
 If a scheduler-selected clean fails to start, the global status changes to
 **Scheduler halted**, and the matching vacuum and room status rows show the

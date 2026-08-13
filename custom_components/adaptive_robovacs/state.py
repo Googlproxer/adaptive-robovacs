@@ -22,7 +22,6 @@ from .const import (
     DEFAULT_HALL_END,
     DEFAULT_HALL_START,
     DEFAULT_MINIMUM_BATTERY,
-    DEFAULT_MOP_INTERVAL,
     DEFAULT_UNRESOLVED_END,
     DEFAULT_UNRESOLVED_START,
     DEFAULT_BEDROOM_INTERVAL,
@@ -32,7 +31,7 @@ from .const import (
 from .models import is_valid_daily_time
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DAILY_WINDOW_VERSION = 1
 
 
@@ -156,20 +155,51 @@ class GlobalSettings:
 @dataclass(slots=True)
 class RoomSettings:
     enabled: bool
-    vacuum_interval: float = DEFAULT_COMMON_INTERVAL
-    mop_interval: float = DEFAULT_MOP_INTERVAL
+    cleaning_interval: float = DEFAULT_COMMON_INTERVAL
     expected_minutes: float = DEFAULT_EXPECTED_MINUTES
     carpet: bool = False
     ignore_desired_window: bool = False
     desired_window_start: str | None = None
     desired_window_end: str | None = None
-    pass_count: int | None = None
+    cleaning_program: str | None = None
+    vacuum_pass_count: int | None = None
+    mop_pass_count: int | None = None
+
+    @property
+    def vacuum_interval(self) -> float:
+        """Compatibility alias for the surviving cadence entity."""
+
+        return self.cleaning_interval
+
+    @vacuum_interval.setter
+    def vacuum_interval(self, value: float) -> None:
+        self.cleaning_interval = value
+
+    @property
+    def mop_interval(self) -> float:
+        """Compatibility read while consumers migrate to one cadence."""
+
+        return self.cleaning_interval
+
+    @mop_interval.setter
+    def mop_interval(self, value: float) -> None:
+        self.cleaning_interval = value
+
+    @property
+    def pass_count(self) -> int | None:
+        """Compatibility alias for the vacuum-pass override."""
+
+        return self.vacuum_pass_count
+
+    @pass_count.setter
+    def pass_count(self, value: int | None) -> None:
+        self.vacuum_pass_count = value
 
     @classmethod
     def defaults(cls, is_bedroom: bool) -> RoomSettings:
         return cls(
             enabled=not is_bedroom,
-            vacuum_interval=DEFAULT_BEDROOM_INTERVAL if is_bedroom else DEFAULT_COMMON_INTERVAL,
+            cleaning_interval=DEFAULT_BEDROOM_INTERVAL if is_bedroom else DEFAULT_COMMON_INTERVAL,
         )
 
     @classmethod
@@ -187,8 +217,10 @@ class RoomSettings:
         raw_end = value.get("desired_window_end", window.get("end"))
         return cls(
             enabled=bool(value.get("enabled", default.enabled)),
-            vacuum_interval=_number(value.get("vacuum_interval"), default.vacuum_interval),
-            mop_interval=_number(value.get("mop_interval"), default.mop_interval),
+            cleaning_interval=_number(
+                value.get("cleaning_interval", value.get("vacuum_interval")),
+                default.cleaning_interval,
+            ),
             expected_minutes=_number(value.get("expected_minutes"), default.expected_minutes),
             carpet=bool(value.get("carpet", default.carpet)),
             ignore_desired_window=bool(
@@ -200,7 +232,16 @@ class RoomSettings:
             desired_window_end=_optional_daily_time(
                 raw_end, "room daily-window end"
             ),
-            pass_count=_optional_pass_count(value.get("pass_count")),
+            cleaning_program=(
+                str(program)
+                if (program := value.get("cleaning_program"))
+                in {"vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"}
+                else None
+            ),
+            vacuum_pass_count=_optional_pass_count(
+                value.get("vacuum_pass_count", value.get("pass_count"))
+            ),
+            mop_pass_count=_optional_pass_count(value.get("mop_pass_count")),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -208,8 +249,7 @@ class RoomSettings:
 
         return {
             "enabled": self.enabled,
-            "vacuum_interval": self.vacuum_interval,
-            "mop_interval": self.mop_interval,
+            "cleaning_interval": self.cleaning_interval,
             "expected_minutes": self.expected_minutes,
             "carpet": self.carpet,
             "ignore_desired_window": self.ignore_desired_window,
@@ -218,7 +258,10 @@ class RoomSettings:
                 "start": self.desired_window_start,
                 "end": self.desired_window_end,
             },
-            "pass_count": self.pass_count,
+            "cleaning_program": self.cleaning_program,
+            "vacuum_pass_count": self.vacuum_pass_count,
+            "mop_pass_count": self.mop_pass_count,
+            "pass_count": self.vacuum_pass_count,
         }
 
     def to_runtime(self) -> dict[str, object]:
@@ -226,14 +269,19 @@ class RoomSettings:
 
         return {
             "enabled": self.enabled,
-            "vacuum_interval": self.vacuum_interval,
-            "mop_interval": self.mop_interval,
+            "cleaning_interval": self.cleaning_interval,
+            # Compatibility aliases retain the surviving entity IDs during v5.
+            "vacuum_interval": self.cleaning_interval,
+            "mop_interval": self.cleaning_interval,
             "expected_minutes": self.expected_minutes,
             "carpet": self.carpet,
             "ignore_desired_window": self.ignore_desired_window,
             "desired_window_start": self.desired_window_start,
             "desired_window_end": self.desired_window_end,
-            "pass_count": self.pass_count,
+            "cleaning_program": self.cleaning_program,
+            "vacuum_pass_count": self.vacuum_pass_count,
+            "mop_pass_count": self.mop_pass_count,
+            "pass_count": self.vacuum_pass_count,
         }
 
 
@@ -241,8 +289,9 @@ class RoomSettings:
 class RobotSettings:
     enabled: bool = True
     minimum_battery: float = DEFAULT_MINIMUM_BATTERY
-    mopping_enabled: bool = False
+    cleaning_program: str = "vacuum_only"
     double_pass: bool = False
+    mop_double_pass: bool = False
     mode: str | None = None
     mop_mode: str | None = None
     mop_intensity: str | None = None
@@ -250,20 +299,39 @@ class RobotSettings:
 
     @classmethod
     def defaults(cls, supports_mopping: bool) -> RobotSettings:
-        return cls(mopping_enabled=supports_mopping)
+        return cls(
+            cleaning_program=("vacuum_then_mop" if supports_mopping else "vacuum_only")
+        )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object], default: RobotSettings) -> RobotSettings:
+        raw_program = value.get("cleaning_program")
+        program = (
+            str(raw_program)
+            if raw_program
+            in {"vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"}
+            else (
+                "vacuum_then_mop"
+                if bool(value.get("mopping_enabled", default.cleaning_program != "vacuum_only"))
+                else "vacuum_only"
+            )
+        )
         return cls(
             enabled=bool(value.get("enabled", default.enabled)),
             minimum_battery=_number(value.get("minimum_battery"), default.minimum_battery),
-            mopping_enabled=bool(value.get("mopping_enabled", default.mopping_enabled)),
+            cleaning_program=program,
             double_pass=bool(value.get("double_pass", default.double_pass)),
+            mop_double_pass=bool(value.get("mop_double_pass", default.mop_double_pass)),
             mode=_string(value.get("mode")),
             mop_mode=_string(value.get("mop_mode")),
             mop_intensity=_string(value.get("mop_intensity")),
             fan_speed=_string(value.get("fan_speed")),
         )
+
+    def to_runtime(self) -> dict[str, object]:
+        value = asdict(self)
+        value["mopping_enabled"] = self.cleaning_program != "vacuum_only"
+        return value
 
 
 @dataclass(slots=True)
@@ -323,6 +391,7 @@ class DurationSample:
 
 @dataclass(slots=True)
 class RoomHistory:
+    cleaning_completed_at: datetime | None = None
     vacuum_completed_at: datetime | None = None
     mop_completed_at: datetime | None = None
     deferrals: dict[str, datetime] = field(default_factory=dict)
@@ -335,6 +404,9 @@ class RoomHistory:
     map_status: str = "unknown"
     map_error: str | None = None
     duration_samples: list[DurationSample] = field(default_factory=list)
+    last_stage_outcome: str | None = None
+    last_stage_reason: str | None = None
+    last_stage_at: datetime | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> RoomHistory:
@@ -356,9 +428,27 @@ class RoomHistory:
             if isinstance(item, Mapping)
             and (sample := DurationSample.from_mapping(item)) is not None
         ]
+        vacuum_completed = _timestamp(value.get("vacuum_completed_at", value.get("vacuum")))
+        mop_completed = _timestamp(value.get("mop_completed_at", value.get("mop")))
+        cleaning_completed = _timestamp(
+            value.get("cleaning_completed_at", value.get("cleaning"))
+        )
+        if cleaning_completed is None:
+            cleaning_completed = max(
+                (item for item in (vacuum_completed, mop_completed) if item),
+                default=None,
+            )
+        if "cleaning" not in deferrals:
+            legacy_deferral = max(
+                (item for key, item in deferrals.items() if key in {"vacuum", "mop"}),
+                default=None,
+            )
+            if legacy_deferral:
+                deferrals["cleaning"] = legacy_deferral
         return cls(
-            vacuum_completed_at=_timestamp(value.get("vacuum_completed_at", value.get("vacuum"))),
-            mop_completed_at=_timestamp(value.get("mop_completed_at", value.get("mop"))),
+            cleaning_completed_at=cleaning_completed,
+            vacuum_completed_at=vacuum_completed,
+            mop_completed_at=mop_completed,
             deferrals=deferrals,
             occupancy=str(value.get("occupancy", "unresolved")),
             occupancy_source=str(value.get("occupancy_source", value.get("source", "unavailable"))),
@@ -369,10 +459,14 @@ class RoomHistory:
             map_status=str(value.get("map_status", "unknown")),
             map_error=_string(value.get("map_error")),
             duration_samples=duration_samples,
+            last_stage_outcome=_string(value.get("last_stage_outcome")),
+            last_stage_reason=_string(value.get("last_stage_reason")),
+            last_stage_at=_timestamp(value.get("last_stage_at")),
         )
 
     def to_store(self) -> dict[str, object]:
         return {
+            "cleaning_completed_at": _iso(self.cleaning_completed_at),
             "vacuum_completed_at": _iso(self.vacuum_completed_at),
             "mop_completed_at": _iso(self.mop_completed_at),
             "deferrals": {key: _iso(value) for key, value in self.deferrals.items()},
@@ -385,6 +479,9 @@ class RoomHistory:
             "map_status": self.map_status,
             "map_error": self.map_error,
             "duration_samples": [sample.to_store() for sample in self.duration_samples],
+            "last_stage_outcome": self.last_stage_outcome,
+            "last_stage_reason": self.last_stage_reason,
+            "last_stage_at": _iso(self.last_stage_at),
         }
 
 
@@ -418,6 +515,8 @@ class ActiveJob:
     cancelling_at: datetime | None = None
     adapter_id: str = "generic"
     adapter_schema_version: int = 1
+    occurrence_id: str | None = None
+    stage_index: int | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> ActiveJob | None:
@@ -463,6 +562,12 @@ class ActiveJob:
             adapter_schema_version=max(
                 1, _integer(value.get("adapter_schema_version"), 1)
             ),
+            occurrence_id=_string(value.get("occurrence_id")),
+            stage_index=(
+                max(0, _integer(value.get("stage_index"), 0))
+                if value.get("stage_index") is not None
+                else None
+            ),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -495,7 +600,138 @@ class ActiveJob:
             "cancelling_at": _iso(self.cancelling_at),
             "adapter_id": self.adapter_id,
             "adapter_schema_version": self.adapter_schema_version,
+            "occurrence_id": self.occurrence_id,
+            "stage_index": self.stage_index,
         }
+
+
+@dataclass(slots=True)
+class CleaningStage:
+    operation: str
+    passes: int
+    status: str = "pending"
+    reason: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> CleaningStage | None:
+        operation = _string(value.get("operation"))
+        if operation not in {"vacuum", "mop"}:
+            return None
+        status = str(value.get("status", "pending"))
+        if status not in {
+            "pending", "running", "completed", "skipped_no_water",
+            "skipped_unconfirmed_water", "skipped_no_mop",
+        }:
+            status = "pending"
+        return cls(operation, max(1, _integer(value.get("passes"), 1)), status,
+                   _string(value.get("reason")), _timestamp(value.get("started_at")),
+                   _timestamp(value.get("completed_at")))
+
+    def to_store(self) -> dict[str, object]:
+        return {"operation": self.operation, "passes": self.passes,
+                "status": self.status, "reason": self.reason,
+                "started_at": _iso(self.started_at), "completed_at": _iso(self.completed_at)}
+
+
+@dataclass(slots=True)
+class CleaningOccurrence:
+    occurrence_id: str
+    room_id: str
+    robot_registry_id: str
+    robot_entity_id: str
+    program: str
+    stages: list[CleaningStage]
+    scheduled_at: datetime
+    created_at: datetime
+    adapter_id: str
+    adapter_schema_version: int
+    current_stage: int = 0
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> CleaningOccurrence | None:
+        stages = [stage for item in value.get("stages", []) if isinstance(item, Mapping)
+                  and (stage := CleaningStage.from_mapping(item)) is not None]
+        required = [_string(value.get(key)) for key in
+                    ("occurrence_id", "room_id", "robot_registry_id", "robot_entity_id", "program")]
+        scheduled = _timestamp(value.get("scheduled_at"))
+        created = _timestamp(value.get("created_at"))
+        if not all((*required, scheduled, created, stages)):
+            return None
+        current = min(max(0, _integer(value.get("current_stage"), 0)), len(stages))
+        return cls(*required, stages, scheduled, created,
+                   str(value.get("adapter_id", "generic")),
+                   max(1, _integer(value.get("adapter_schema_version"), 1)), current)
+
+    def to_store(self) -> dict[str, object]:
+        return {"occurrence_id": self.occurrence_id, "room_id": self.room_id,
+                "robot_registry_id": self.robot_registry_id,
+                "robot_entity_id": self.robot_entity_id, "program": self.program,
+                "stages": [stage.to_store() for stage in self.stages],
+                "scheduled_at": _iso(self.scheduled_at), "created_at": _iso(self.created_at),
+                "adapter_id": self.adapter_id,
+                "adapter_schema_version": self.adapter_schema_version,
+                "current_stage": self.current_stage}
+
+
+@dataclass(slots=True)
+class WaterConfirmation:
+    request_id: str
+    occurrence_id: str
+    room_id: str
+    robot_registry_id: str
+    stage_index: int
+    confirm_hash: str
+    cancel_hash: str
+    tag: str
+    sent_at: datetime
+    expires_at: datetime
+    status: str = "pending"
+    responded_at: datetime | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> WaterConfirmation | None:
+        required = [_string(value.get(key)) for key in
+                    ("request_id", "occurrence_id", "room_id", "robot_registry_id",
+                     "confirm_hash", "cancel_hash", "tag")]
+        sent = _timestamp(value.get("sent_at"))
+        expires = _timestamp(value.get("expires_at"))
+        if not all((*required, sent, expires)):
+            return None
+        status = str(value.get("status", "pending"))
+        if status not in {"pending", "confirmed", "cancelled", "expired"}:
+            status = "pending"
+        return cls(required[0], required[1], required[2], required[3],
+                   max(0, _integer(value.get("stage_index"), 0)), required[4],
+                   required[5], required[6], sent, expires, status,
+                   _timestamp(value.get("responded_at")))
+
+    def to_store(self) -> dict[str, object]:
+        return {"request_id": self.request_id, "occurrence_id": self.occurrence_id,
+                "room_id": self.room_id, "robot_registry_id": self.robot_registry_id,
+                "stage_index": self.stage_index, "confirm_hash": self.confirm_hash,
+                "cancel_hash": self.cancel_hash, "tag": self.tag,
+                "sent_at": _iso(self.sent_at), "expires_at": _iso(self.expires_at),
+                "status": self.status, "responded_at": _iso(self.responded_at)}
+
+
+@dataclass(slots=True)
+class WaterNotificationEpisode:
+    room_id: str
+    reason: str
+    first_sent_at: datetime
+    last_sent_at: datetime
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> WaterNotificationEpisode | None:
+        room_id, reason = _string(value.get("room_id")), _string(value.get("reason"))
+        first, last = _timestamp(value.get("first_sent_at")), _timestamp(value.get("last_sent_at"))
+        return cls(room_id, reason, first, last) if all((room_id, reason, first, last)) else None
+
+    def to_store(self) -> dict[str, object]:
+        return {"room_id": self.room_id, "reason": self.reason,
+                "first_sent_at": _iso(self.first_sent_at), "last_sent_at": _iso(self.last_sent_at)}
 
 
 @dataclass(slots=True)
@@ -621,6 +857,9 @@ class SchedulerState:
     audit: AuditState = field(default_factory=AuditState)
     evaluation: EvaluationState = field(default_factory=EvaluationState)
     scheduler_fault: SchedulerFault | None = None
+    occurrences: dict[str, CleaningOccurrence] = field(default_factory=dict)
+    water_confirmations: dict[str, WaterConfirmation] = field(default_factory=dict)
+    water_notification_episodes: dict[str, WaterNotificationEpisode] = field(default_factory=dict)
 
     @classmethod
     def create(cls, entry_data: Mapping[str, object]) -> SchedulerState:
@@ -630,7 +869,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v4 or convert older shapes, returning whether a save is required."""
+        """Load v5 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -638,7 +877,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3}:
+        if schema_version in {2, 3, 4}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -658,6 +897,9 @@ class SchedulerState:
             for area_id, value in _mapping_or_empty(data.get("rooms")).items()
             if isinstance(area_id, str) and isinstance(value, Mapping)
         }
+        raw_occurrences = _mapping_or_empty(data.get("occurrences"))
+        raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
+        raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
         return cls(
             global_settings=global_settings,
             room_settings={
@@ -693,6 +935,24 @@ class SchedulerState:
                 if isinstance((value := data.get("scheduler_fault")), Mapping)
                 else None
             ),
+            occurrences={
+                area_id: occurrence
+                for area_id, value in raw_occurrences.items()
+                if isinstance(area_id, str) and isinstance(value, Mapping)
+                and (occurrence := CleaningOccurrence.from_mapping(value)) is not None
+            },
+            water_confirmations={
+                occurrence_id: confirmation
+                for occurrence_id, value in raw_confirmations.items()
+                if isinstance(occurrence_id, str) and isinstance(value, Mapping)
+                and (confirmation := WaterConfirmation.from_mapping(value)) is not None
+            },
+            water_notification_episodes={
+                area_id: episode
+                for area_id, value in raw_episodes.items()
+                if isinstance(area_id, str) and isinstance(value, Mapping)
+                and (episode := WaterNotificationEpisode.from_mapping(value)) is not None
+            },
         )
 
     @classmethod
@@ -708,6 +968,9 @@ class SchedulerState:
         raw_holds = _mapping(data.get("robot_holds"), "robot_holds")
         raw_audit = _mapping(data.get("audit"), "audit")
         raw_evaluation = _mapping(data.get("evaluation"), "evaluation")
+        raw_occurrences = _mapping_or_empty(data.get("occurrences"))
+        raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
+        raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
         return cls(
             global_settings=GlobalSettings.from_mapping(raw_global, defaults),
             room_settings={
@@ -744,6 +1007,24 @@ class SchedulerState:
                 if isinstance((value := data.get("scheduler_fault")), Mapping)
                 else None
             ),
+            occurrences={
+                area_id: occurrence
+                for area_id, value in raw_occurrences.items()
+                if isinstance(area_id, str) and isinstance(value, Mapping)
+                and (occurrence := CleaningOccurrence.from_mapping(value)) is not None
+            },
+            water_confirmations={
+                occurrence_id: confirmation
+                for occurrence_id, value in raw_confirmations.items()
+                if isinstance(occurrence_id, str) and isinstance(value, Mapping)
+                and (confirmation := WaterConfirmation.from_mapping(value)) is not None
+            },
+            water_notification_episodes={
+                area_id: episode
+                for area_id, value in raw_episodes.items()
+                if isinstance(area_id, str) and isinstance(value, Mapping)
+                and (episode := WaterNotificationEpisode.from_mapping(value)) is not None
+            },
         )
 
     def ensure_room(self, area_id: str, is_bedroom: bool) -> tuple[RoomSettings, RoomHistory]:
@@ -782,13 +1063,25 @@ class SchedulerState:
             "scheduler_fault": (
                 self.scheduler_fault.to_store() if self.scheduler_fault else None
             ),
+            "occurrences": {
+                area_id: occurrence.to_store()
+                for area_id, occurrence in self.occurrences.items()
+            },
+            "water_confirmations": {
+                occurrence_id: confirmation.to_store()
+                for occurrence_id, confirmation in self.water_confirmations.items()
+            },
+            "water_notification_episodes": {
+                area_id: episode.to_store()
+                for area_id, episode in self.water_notification_episodes.items()
+            },
         }
 
     def to_runtime_data(self) -> dict[str, Any]:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v4 codec, and platform entities use
+        persistent I/O stays on the typed v5 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 
@@ -807,12 +1100,13 @@ class SchedulerState:
                     for area_id, settings in self.room_settings.items()
                 },
                 "robots": {
-                    entity_id: asdict(settings)
+                    entity_id: settings.to_runtime()
                     for entity_id, settings in self.robot_settings.items()
                 },
             },
             "rooms": {
                 area_id: {
+                    "cleaning": _iso(history.cleaning_completed_at),
                     "vacuum": _iso(history.vacuum_completed_at),
                     "mop": _iso(history.mop_completed_at),
                     "defer": {
@@ -828,6 +1122,9 @@ class SchedulerState:
                     "map_status": history.map_status,
                     "map_error": history.map_error,
                     "duration_samples": [sample.to_store() for sample in history.duration_samples],
+                    "last_stage_outcome": history.last_stage_outcome,
+                    "last_stage_reason": history.last_stage_reason,
+                    "last_stage_at": _iso(history.last_stage_at),
                 }
                 for area_id, history in self.room_history.items()
             },
@@ -845,6 +1142,18 @@ class SchedulerState:
             "scheduler_fault": (
                 self.scheduler_fault.to_store() if self.scheduler_fault else None
             ),
+            "occurrences": {
+                area_id: occurrence.to_store()
+                for area_id, occurrence in self.occurrences.items()
+            },
+            "water_confirmations": {
+                occurrence_id: confirmation.to_store()
+                for occurrence_id, confirmation in self.water_confirmations.items()
+            },
+            "water_notification_episodes": {
+                area_id: episode.to_store()
+                for area_id, episode in self.water_notification_episodes.items()
+            },
         }
 
 

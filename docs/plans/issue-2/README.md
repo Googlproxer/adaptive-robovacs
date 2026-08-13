@@ -7,8 +7,8 @@ validated, released, installed through HACS, and verified in Home Assistant.
 
 ## Baseline
 
-Plans 1 and 2 are implemented. The remaining plans target the architecture
-deployed in integration version 1.3.2:
+Plans 1 through 3 are implemented. The remaining plans target the architecture
+deployed in integration version 1.4.0:
 
 - v1.1 introduced one global card, one card per vacuum, and one card per room;
 - v1.2 introduced independently inherited per-room daily windows;
@@ -16,8 +16,11 @@ deployed in integration version 1.3.2:
   two-pass dispatch, room pass controls, system-wide dispatch-failure halt, and
   Home Assistant Repairs integration;
 - v1.3.1 made adapter capability/profile discovery dynamically add controls;
-  and
-- v1.3.2 corrected the Repair translation and placeholder contract.
+- v1.3.2 corrected the Repair translation and placeholder contract; and
+- v1.4.0 introduced water-aware ordered cleaning occurrences, one cadence per
+  room, robot cleaning-program defaults with room overrides, independent
+  vacuum/mop pass settings, authoritative Roborock water checks, and explicit
+  one-hour water confirmation for mop-capable robots without telemetry.
 
 Pull request [#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3)
 introduced the typed Store codec and separated runtime service calls, job
@@ -30,7 +33,7 @@ refactored shape:
 - entity-facing data in `projections.py`; and
 - orchestration in `coordinator.py`.
 
-The current durable scheduler payload is Store schema v4. Each remaining plan
+The current durable scheduler payload is Store schema v5. Each remaining plan
 must migrate from the schema present when it is implemented rather than assume
 that it will receive a particular future schema number.
 
@@ -40,7 +43,7 @@ that it will receive a particular future schema number.
 | --- | --- | --- |
 | Per-room cleaning windows | One repeating daily interval; weekday/weekend schedules are deferred | [Implemented in v1.2.0](01-per-room-cleaning-windows.md) |
 | Multipass support | Implemented for v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs; corrected through v1.3.2 | [Implemented plan](02-room-multipass.md) |
-| Mopping when water is available | Telemetry-backed robots use live readiness; verified mop-capable robots without water telemetry require explicit one-hour all-user confirmation | [Water-aware ordered cleaning programs](03-water-aware-mopping.md) |
+| Mopping when water is available | Implemented in v1.4.0: telemetry-backed live readiness, ordered stages, one cadence, and explicit one-hour all-user confirmation when water telemetry is absent | [Implemented plan](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
 | Power level settings per room | Robot-owned program/profile defaults with per-room overrides for program, fan speed, modes, intensity, and independent vacuum/mop passes | [Robot defaults and per-room cleaning profiles](05-room-power-levels.md) |
 | Confirm with message before bedrooms | Assign one user and phone to each bedroom and send an actionable notification for each run | [Bedroom confirmation](06-bedroom-confirmation.md) |
@@ -139,21 +142,15 @@ Every implementation must retain these repository contracts:
 
 ## Recommended implementation order
 
-Plans 1 and 2 and the shared refactor are complete. For the remaining work:
+Plans 1 through 3 and the shared refactor are complete. For the remaining work:
 
 1. Implement symmetric room adjacency as an independent occupancy gate and
    per-room-card editor.
-2. Implement authoritative Roborock water readiness, a user-attested fallback
-   for verified mop-capable robots without telemetry, one room cadence, durable
-   ordered cleaning occurrences, and all-user mop notifications. The generic
-   adapter may use standard Home Assistant mopping only through the attested
-   path; it cannot infer water readiness from mop controls.
-3. Implement robot cleaning-program/profile defaults and per-room overrides on
-   the same normalized adapter and Store migration. Plans 3 and 5 should ship
-   together because program ownership, cadence replacement, independent
-   vacuum/mop pass resolution, profile resolution, and ordered-stage
-   checkpoints share one data model.
-4. Add durable bedroom assignments and confirmation after adjacency, water,
+2. Complete plan 5's remaining per-room fan-speed, cleaning-mode, mop-mode,
+   and mop-intensity overrides. Version 1.4.0 already supplies the shared
+   cleaning-program ownership, cadence, independent pass resolution, adapter
+   readiness, and ordered-stage checkpoint model.
+3. Add durable bedroom assignments and confirmation after adjacency, water,
    and profile gates are stable. Approval authorizes a fresh evaluation; it
    never bypasses a safety gate or reserves a robot.
 

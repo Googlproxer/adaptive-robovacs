@@ -64,6 +64,7 @@ class JobLifecycle:
                 deferred = manual_deferral(completed_at, next_due)
                 if deferred:
                     detail.setdefault("defer", {})[operation] = _iso(deferred)
+                    detail.setdefault("defer", {})["cleaning"] = _iso(deferred)
                     changed.append(f"{area_id}:{operation}")
         return changed
 
@@ -89,6 +90,13 @@ class JobLifecycle:
             {"robot": robot_id, "rooms": area_ids, "at": _iso(cancelled_at), "reason": reason}
         )
         coordinator.data["recovery_events"] = coordinator.data["recovery_events"][-20:]
+        if active.get("source") == "scheduler" and active.get("occurrence_id"):
+            occurrence = coordinator.data.get("occurrences", {}).get(active.get("room"))
+            stage_index = active.get("stage_index")
+            if occurrence and isinstance(stage_index, int) and stage_index < len(occurrence.get("stages", [])):
+                stage = occurrence["stages"][stage_index]
+                stage["status"] = "pending"
+                stage["started_at"] = None
         coordinator.data["active"][robot_id] = None
         coordinator._cancel_recovery_timer(robot_id)
         cancel_confirmation = getattr(
@@ -126,10 +134,40 @@ class JobLifecycle:
             )
         else:
             detail = coordinator._room_data(active["room"])
-            if operation in {"vacuum", "vac_and_mop"}:
+            if operation == "vacuum":
                 detail["vacuum"] = _iso(completion)
-            if operation in {"mop", "vac_and_mop"}:
+            if operation == "mop":
                 detail["mop"] = _iso(completion)
+            occurrence = coordinator.data.get("occurrences", {}).get(active["room"])
+            occurrence_id = active.get("occurrence_id")
+            stage_index = active.get("stage_index")
+            if (
+                occurrence
+                and occurrence.get("occurrence_id") == occurrence_id
+                and isinstance(stage_index, int)
+                and stage_index < len(occurrence.get("stages", []))
+            ):
+                stage = occurrence["stages"][stage_index]
+                stage["status"] = "completed"
+                stage["reason"] = confidence
+                stage["completed_at"] = _iso(completion)
+                occurrence["current_stage"] = stage_index + 1
+                detail["last_stage_outcome"] = "completed"
+                detail["last_stage_reason"] = confidence
+                detail["last_stage_at"] = _iso(completion)
+                if occurrence["current_stage"] >= len(occurrence["stages"]):
+                    detail["cleaning"] = _iso(completion)
+                    coordinator.data["occurrences"].pop(active["room"], None)
+                    coordinator.data.get("water_confirmations", {}).pop(
+                        str(occurrence_id), None
+                    )
+                    if operation == "mop":
+                        coordinator.data.get("water_notification_episodes", {}).pop(
+                            active["room"], None
+                        )
+            else:
+                # A schema-one scheduler checkpoint completes one whole occurrence.
+                detail["cleaning"] = _iso(completion)
         measured = active.get("measured_minutes")
         if (
             active.get("source") == "scheduler"
@@ -178,14 +216,11 @@ class JobLifecycle:
             and candidate.supports_area_clean
             and coordinator._robot_settings(candidate).get("enabled", True)
         ]
-        mop_eligible = any(coordinator._mop_ready(candidate) for candidate in floor_robots)
         due_times: dict[str, datetime] = {}
         for room in coordinator.discovery.rooms.values():
             if room.floor_id != robot.floor_id or not coordinator._room_settings(room).get("enabled", True):
                 continue
-            due_times[f"{room.area_id}:vacuum"] = coordinator._room_due(room, "vacuum", cancelled_at)
-            if mop_eligible and not coordinator._room_settings(room).get("carpet", False):
-                due_times[f"{room.area_id}:mop"] = coordinator._room_due(room, "mop", cancelled_at)
+            due_times[f"{room.area_id}:cleaning"] = coordinator._room_due(room, "cleaning", cancelled_at)
         rebased = rebase_due_times(due_times, cancelled_at + timedelta(hours=24))
         for key, deferred_until in rebased.items():
             area_id, operation = key.rsplit(":", maxsplit=1)

@@ -43,6 +43,34 @@
           "recheck_failed": "No compatible two-pass vacuum currently serves this room. Restore compatibility or change the room's Cleaning passes control."
         }
       }
+    },
+    "notification_delivery_failed": {
+      "title": "Adaptive RoboVacs cannot reach a mobile app",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Recheck mobile notification targets",
+            "description": "Adaptive RoboVacs could not deliver a required water notification to any registered Home Assistant Companion app. Register or reconnect at least one Companion app, then submit to recheck. Mopping that required confirmation was safely cancelled; vacuuming remains available."
+          }
+        },
+        "error": {
+          "recheck_failed": "No Companion app notification target is currently available."
+        }
+      }
+    },
+    "cleaning_program_incompatible": {
+      "title": "Room cleaning program is unavailable",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Recheck room cleaning compatibility",
+            "description": "{room} is configured with a cleaning program or pass count that no vacuum on its floor can currently execute. Restore a compatible vacuum or update the room/robot controls, then submit to recheck without starting a clean."
+          }
+        },
+        "error": {
+          "recheck_failed": "No compatible vacuum can currently execute this room's complete cleaning program."
+        }
+      }
     }
   }
 }

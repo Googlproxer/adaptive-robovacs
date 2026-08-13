@@ -16,6 +16,14 @@ TIME_OPTIONS = tuple(
 )
 USE_GLOBAL_OPTION = "Use global"
 PASS_OPTIONS = ("Robot default", "1 pass", "2 passes")
+PROGRAM_OPTIONS = ("Vacuum only", "Mop only", "Vacuum then mop", "Mop then vacuum")
+PROGRAM_VALUES = {
+    "Vacuum only": "vacuum_only",
+    "Mop only": "mop_only",
+    "Vacuum then mop": "vacuum_then_mop",
+    "Mop then vacuum": "mop_then_vacuum",
+}
+PROGRAM_LABELS = {value: label for label, value in PROGRAM_VALUES.items()}
 
 
 class _TimeSelect(AdaptiveEntity, SelectEntity):
@@ -64,25 +72,73 @@ class _RoomTimeSelect(AdaptiveEntity, SelectEntity):
 class _RoomPassSelect(AdaptiveEntity, SelectEntity):
     _attr_options = PASS_OPTIONS
 
-    def __init__(self, coordinator, area_id: str, name: str) -> None:
+    def __init__(self, coordinator, area_id: str, operation: str, name: str) -> None:
+        key = "vacuum_pass_count" if operation == "vacuum" else "mop_pass_count"
+        unique_key = "pass_count" if operation == "vacuum" else "mop_pass_count"
         super().__init__(
             coordinator,
-            f"room_{area_id}_pass_count",
+            f"room_{area_id}_{unique_key}",
             name,
-            "room_pass_count_control",
+            "room_pass_count_control" if operation == "vacuum" else "room_mop_pass_count_control",
             area_id=area_id,
         )
         self.area_id = area_id
+        self.key = key
 
     @property
     def current_option(self) -> str:
-        value = self.coordinator.get_room_setting(self.area_id, "pass_count")
+        value = self.coordinator.get_room_setting(self.area_id, self.key)
         return "Robot default" if value is None else f"{value} pass" + ("es" if value == 2 else "")
 
     async def async_select_option(self, option: str) -> None:
         value = {"Robot default": None, "1 pass": 1, "2 passes": 2}[option]
         await self.coordinator.async_set_room_setting(
-            self.area_id, "pass_count", value
+            self.area_id, self.key, value
+        )
+
+
+class _RobotProgramSelect(AdaptiveEntity, SelectEntity):
+    def __init__(self, coordinator, robot_entity_id: str, supports_mopping: bool) -> None:
+        super().__init__(coordinator, f"robot_{robot_entity_id}_cleaning_program",
+                         "cleaning program", "robot_control",
+                         robot_entity_id=robot_entity_id,
+                         robot_name_suffix="cleaning program")
+        self.robot_entity_id = robot_entity_id
+        self._attr_options = PROGRAM_OPTIONS if supports_mopping else ("Vacuum only",)
+
+    @property
+    def current_option(self) -> str:
+        value = self.coordinator.robot_state(self.robot_entity_id)["settings"].get("cleaning_program")
+        label = PROGRAM_LABELS.get(value, "Vacuum only")
+        return label if label in self.options else self.options[0]
+
+    async def async_select_option(self, option: str) -> None:
+        await self.coordinator.async_set_robot_setting(
+            self.robot_entity_id, "cleaning_program", PROGRAM_VALUES[option]
+        )
+
+
+class _RoomProgramSelect(AdaptiveEntity, SelectEntity):
+    def __init__(self, coordinator, area_id: str, name: str, supports_mopping: bool) -> None:
+        super().__init__(coordinator, f"room_{area_id}_cleaning_program", name,
+                         "room_cleaning_program_control", area_id=area_id)
+        self.area_id = area_id
+        self._attr_options = (
+            ("Robot default", *PROGRAM_OPTIONS)
+            if supports_mopping
+            else ("Robot default", "Vacuum only")
+        )
+
+    @property
+    def current_option(self) -> str:
+        value = self.coordinator.get_room_setting(self.area_id, "cleaning_program")
+        label = PROGRAM_LABELS.get(value, "Robot default")
+        return label if label in self.options else self.options[0]
+
+    async def async_select_option(self, option: str) -> None:
+        await self.coordinator.async_set_room_setting(
+            self.area_id, "cleaning_program",
+            None if option == "Robot default" else PROGRAM_VALUES[option],
         )
 
 
@@ -118,6 +174,13 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
     ]
     for robot in coordinator.discovery.robots.values():
         profile = robot.profile
+        entities.append(
+            _RobotProgramSelect(
+                coordinator,
+                robot.entity_id,
+                "mop" in robot.adapter_capabilities.supported_operations,
+            )
+        )
         if robot.adapter_capabilities.fan_speed_options:
             entities.append(
                 _RobotSelect(
@@ -135,6 +198,11 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
         if profile.mop_intensity_select_entity_id and profile.mop_intensity_options:
             entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_intensity", profile.mop_intensity_options, "mop intensity"))
     for room in coordinator.discovery.rooms.values():
+        supports_mopping = any(
+            robot.floor_id == room.floor_id
+            and "mop" in robot.adapter_capabilities.supported_operations
+            for robot in coordinator.discovery.robots.values()
+        )
         entities.extend(
             [
                 _RoomTimeSelect(
@@ -152,10 +220,23 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
                 _RoomPassSelect(
                     coordinator,
                     room.area_id,
-                    f"{room.name} cleaning passes",
+                    "vacuum",
+                    f"{room.name} vacuum passes",
+                ),
+                _RoomProgramSelect(
+                    coordinator,
+                    room.area_id,
+                    f"{room.name} cleaning program",
+                    supports_mopping,
                 ),
             ]
         )
+        if supports_mopping:
+            entities.append(
+                _RoomPassSelect(
+                    coordinator, room.area_id, "mop", f"{room.name} mop passes"
+                )
+            )
     return entities
 
 

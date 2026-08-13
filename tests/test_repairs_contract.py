@@ -16,7 +16,12 @@ class RepairsContractTests(unittest.TestCase):
         )
         self.assertEqual(strings, translations)
         self.assertNotIn("repairs", translations)
-        for key in ("scheduler_halted", "two_pass_no_longer_supported"):
+        for key in (
+            "scheduler_halted",
+            "two_pass_no_longer_supported",
+            "notification_delivery_failed",
+            "cleaning_program_incompatible",
+        ):
             self.assertIn(key, translations["issues"])
             issue = translations["issues"][key]
             self.assertIn("fix_flow", issue)

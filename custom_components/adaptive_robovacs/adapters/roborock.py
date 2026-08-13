@@ -8,8 +8,13 @@ from typing import Any
 
 from homeassistant.helpers import entity_registry as er
 
-from ..models import AdapterCapabilities, AdapterDispatchRequest, AdapterDispatchResult
-from .base import AdapterMatchContext, VacuumAdapter
+from ..models import (
+    AdapterCapabilities,
+    AdapterDispatchRequest,
+    AdapterDispatchResult,
+    WaterReadiness,
+)
+from .base import AdapterEntityEvidence, AdapterMatchContext, VacuumAdapter
 from .generic import GenericVacuumAdapter
 
 
@@ -27,6 +32,77 @@ class RoborockMappingError(ValueError):
         super().__init__(summary)
         self.code = code
         self.summary = summary
+
+
+WATER_ENTITY_KEYS = {
+    # Entity-description key: entity-registry translation key. Home Assistant
+    # persists the latter, while accepting the former keeps adapter fixtures
+    # explicit about the upstream Roborock data field.
+    "water_box_carriage_status": "mop_attached",
+    "water_box_status": "water_box_attached",
+    "water_shortage": "water_shortage",
+}
+
+
+def resolve_roborock_water_readiness(
+    entities: Sequence[AdapterEntityEvidence], supports_mopping: bool
+) -> tuple[WaterReadiness, tuple[str, ...]]:
+    """Resolve the authoritative same-device Roborock water sensor trio."""
+
+    if not supports_mopping:
+        return WaterReadiness.unsupported(), ()
+    matches = {
+        key: tuple(
+            evidence
+            for evidence in entities
+            if evidence.domain == "binary_sensor"
+            and evidence.platform == "roborock"
+            and evidence.translation_key in {key, WATER_ENTITY_KEYS[key]}
+        )
+        for key in WATER_ENTITY_KEYS
+    }
+    watched = tuple(
+        dict.fromkeys(
+            evidence.entity_id
+            for values in matches.values()
+            for evidence in values
+        )
+    )
+    if any(len(matches[key]) != 1 for key in WATER_ENTITY_KEYS):
+        return (
+            WaterReadiness(
+                "confirmation_required",
+                "water_telemetry_incomplete",
+                ready=False,
+                authoritative=False,
+            ),
+            watched,
+        )
+    states = {key: matches[key][0].state for key in WATER_ENTITY_KEYS}
+    if any(state in {None, "unknown", "unavailable"} for state in states.values()):
+        return (
+            WaterReadiness(
+                "sensor_blocked",
+                "water_telemetry_unavailable",
+                ready=False,
+                authoritative=True,
+            ),
+            watched,
+        )
+    ready = (
+        states["water_box_carriage_status"] == "on"
+        and states["water_box_status"] == "on"
+        and states["water_shortage"] == "off"
+    )
+    return (
+        WaterReadiness(
+            "sensor_ready" if ready else "sensor_blocked",
+            "water_ready" if ready else "water_unavailable",
+            ready=ready,
+            authoritative=True,
+        ),
+        watched,
+    )
 
 
 def _segment_parts(value: object) -> tuple[str | None, int] | None:
@@ -142,7 +218,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
     """Enhance compatible Roborock vacuums with native cross-hatching."""
 
     adapter_id = "roborock"
-    schema_version = 1
+    schema_version = 2
     priority = 100
     platforms = frozenset({"roborock"})
 
@@ -158,6 +234,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
         if context.supports_area_clean and context.supports_send_command:
             pass_counts.add(2)
             native_pass_counts.add(2)
+        water, watched = resolve_roborock_water_readiness(
+            context.entities, context.profile.supports_mopping
+        )
         return AdapterCapabilities(
             adapter_id=self.adapter_id,
             schema_version=self.schema_version,
@@ -169,7 +248,16 @@ class RoborockVacuumAdapter(VacuumAdapter):
             mode_options=generic.mode_options,
             mop_mode_options=generic.mop_mode_options,
             mop_intensity_options=generic.mop_intensity_options,
-            water_readiness=generic.water_readiness,
+            water_readiness=water,
+            vacuum_pass_counts=frozenset(pass_counts),
+            mop_pass_counts=(
+                frozenset(pass_counts)
+                if "mop" in generic.supported_operations
+                else frozenset()
+            ),
+            native_vacuum_pass_counts=frozenset(native_pass_counts),
+            native_mop_pass_counts=frozenset(native_pass_counts),
+            watched_entity_ids=watched,
         )
 
     @staticmethod
@@ -185,8 +273,6 @@ class RoborockVacuumAdapter(VacuumAdapter):
         context: AdapterMatchContext,
         request: AdapterDispatchRequest,
     ) -> AdapterDispatchResult:
-        if request.passes != 2:
-            return await self._generic.async_preflight(hass, context, request)
         capabilities = await self.async_capabilities(hass, context)
         if not capabilities.supports(request.operation, request.passes):
             return AdapterDispatchResult(
@@ -194,12 +280,26 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 "two_pass_no_longer_supported",
                 "This vacuum no longer supports native two-pass room cleaning.",
             )
-        try:
-            resolve_roborock_area_mapping(
-                self._vacuum_options(hass, request.robot_entity_id), request.area_ids
-            )
-        except RoborockMappingError as err:
-            return AdapterDispatchResult("mapping_error", err.code, err.summary)
+        if request.operation == "mop":
+            water = capabilities.water_readiness
+            ignore_water = bool(request.cleaning_profile.get("ignore_water_readiness"))
+            if water.status == "sensor_blocked" and not ignore_water:
+                return AdapterDispatchResult("blocked", water.reason, "Water is not ready.")
+            if water.status == "confirmation_required" and not ignore_water and not bool(
+                request.cleaning_profile.get("water_confirmed")
+            ):
+                return AdapterDispatchResult(
+                    "blocked",
+                    "water_confirmation_required",
+                    "Water confirmation is required before mopping.",
+                )
+        if request.passes == 2:
+            try:
+                resolve_roborock_area_mapping(
+                    self._vacuum_options(hass, request.robot_entity_id), request.area_ids
+                )
+            except RoborockMappingError as err:
+                return AdapterDispatchResult("mapping_error", err.code, err.summary)
         return AdapterDispatchResult("ready", "ready", "Ready")
 
     async def async_dispatch(
@@ -208,11 +308,22 @@ class RoborockVacuumAdapter(VacuumAdapter):
         context: AdapterMatchContext,
         request: AdapterDispatchRequest,
     ) -> AdapterDispatchResult:
-        if request.passes != 2:
-            return await self._generic.async_dispatch(hass, context, request)
         preflight = await self.async_preflight(hass, context, request)
         if not preflight.ready:
             return preflight
+        if request.passes != 2:
+            await hass.services.async_call(
+                "vacuum",
+                "clean_area",
+                {
+                    "entity_id": request.robot_entity_id,
+                    "cleaning_area_id": list(request.area_ids),
+                },
+                blocking=True,
+            )
+            return AdapterDispatchResult(
+                "accepted", "accepted", "Cleaning request accepted"
+            )
         resolved = resolve_roborock_area_mapping(
             self._vacuum_options(hass, request.robot_entity_id), request.area_ids
         )

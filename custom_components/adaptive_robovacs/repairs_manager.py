@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
+from .models import effective_cleaning_program, expand_cleaning_program, stage_pass_count
 
 if TYPE_CHECKING:
     from .coordinator import AdaptiveRoboVacCoordinator
@@ -46,6 +47,38 @@ def two_pass_issue_id(entry_id: str, area_id: str) -> str:
     """Return a stable capability issue ID using registry identities only."""
 
     return f"two_pass_no_longer_supported_{entry_id}_{area_id}"
+
+
+def notification_delivery_issue_id(entry_id: str) -> str:
+    """Return the stable issue ID for unreachable Companion targets."""
+
+    return f"notification_delivery_failed_{entry_id}"
+
+
+def cleaning_program_issue_id(entry_id: str, area_id: str) -> str:
+    return f"cleaning_program_incompatible_{entry_id}_{area_id}"
+
+
+def async_set_notification_delivery_issue(
+    coordinator: AdaptiveRoboVacCoordinator, active: bool
+) -> None:
+    """Create or clear the actionable all-user delivery Repair."""
+
+    issue_id = notification_delivery_issue_id(coordinator.entry.entry_id)
+    if not active:
+        ir.async_delete_issue(coordinator.hass, DOMAIN, issue_id)
+        return
+    ir.async_create_issue(
+        coordinator.hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=True,
+        is_persistent=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="notification_delivery_failed",
+        translation_placeholders={},
+        data={"entry_id": coordinator.entry.entry_id},
+    )
 
 
 def async_create_scheduler_halted_issue(
@@ -121,4 +154,78 @@ def async_sync_two_pass_issues(coordinator: AdaptiveRoboVacCoordinator) -> None:
                 "area_id": area_id,
                 "issue_type": "two_pass_no_longer_supported",
             },
+        )
+
+
+def async_sync_cleaning_program_issues(
+    coordinator: AdaptiveRoboVacCoordinator,
+) -> None:
+    """Sync Repairs for saved room programs no adapter can execute."""
+
+    for area_id, settings in coordinator.data["settings"]["rooms"].items():
+        issue_id = cleaning_program_issue_id(coordinator.entry.entry_id, area_id)
+        room = coordinator.discovery.rooms.get(area_id)
+        occurrence = coordinator.data.get("occurrences", {}).get(area_id)
+        compatible = False
+        if room and settings.get("enabled", True):
+            for robot in coordinator.discovery.robots.values():
+                if robot.floor_id != room.floor_id or not robot.supports_area_clean:
+                    continue
+                if occurrence and occurrence.get("robot_registry_id") != robot.registry_id:
+                    continue
+                robot_settings = coordinator._robot_settings(robot)
+                if not robot_settings.get("enabled", True):
+                    continue
+                if occurrence:
+                    stage_index = int(occurrence.get("current_stage", 0))
+                    stages = occurrence.get("stages", [])
+                    if stage_index >= len(stages):
+                        continue
+                    stage = stages[stage_index]
+                    if robot.adapter_capabilities.supports(
+                        str(stage.get("operation")), int(stage.get("passes", 1))
+                    ):
+                        compatible = True
+                        break
+                    continue
+                program = effective_cleaning_program(
+                    settings.get("cleaning_program"),
+                    str(robot_settings.get("cleaning_program", "vacuum_only")),
+                )
+                operations = expand_cleaning_program(program or "")
+                if settings.get("carpet"):
+                    operations = tuple(
+                        operation for operation in operations if operation != "mop"
+                    )
+                if not operations:
+                    continue
+                if all(
+                    (
+                        passes := stage_pass_count(
+                            operation,
+                            settings.get("vacuum_pass_count"),
+                            settings.get("mop_pass_count"),
+                            bool(robot_settings.get("double_pass")),
+                            bool(robot_settings.get("mop_double_pass")),
+                            robot.adapter_capabilities,
+                        )
+                    ) is not None
+                    and robot.adapter_capabilities.supports(operation, passes)
+                    for operation in operations
+                ):
+                    compatible = True
+                    break
+        if room is None or not settings.get("enabled", True) or compatible:
+            ir.async_delete_issue(coordinator.hass, DOMAIN, issue_id)
+            continue
+        ir.async_create_issue(
+            coordinator.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=True,
+            is_persistent=True,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="cleaning_program_incompatible",
+            translation_placeholders={"room": room.name},
+            data={"entry_id": coordinator.entry.entry_id, "area_id": area_id},
         )

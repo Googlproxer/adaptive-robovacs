@@ -43,15 +43,7 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         if desired_window.valid
         else next_window_start(local_now, desired_window.start)
     )
-    vacuum_due = coordinator._room_due(room, "vacuum", now)
-    mop_due = None if settings.get("carpet", False) else coordinator._room_due(room, "mop", now)
-    capable = [
-        robot
-        for robot in coordinator.discovery.robots.values()
-        if robot.floor_id == room.floor_id and robot.supports_area_clean
-    ]
-    can_mop = any(coordinator._mop_ready(robot) for robot in capable)
-    next_due = min(vacuum_due, mop_due) if mop_due and can_mop else vacuum_due
+    next_due = coordinator._room_due(room, "cleaning", now)
     candidate, reason = coordinator._room_candidate(room, now)
     active_robot_id, active = next(
         (
@@ -71,16 +63,39 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
     duration_minutes, duration_sample_count = coordinator._effective_duration(
         room, duration_operation, duration_passes, active_robot_id
     )
-    last_cleaned = max(
-        filter(
-            None,
-            [
-                _as_datetime(detail.get("vacuum")),
-                _as_datetime(detail.get("mop")),
-            ],
-        ),
-        default=None,
+    last_cleaned = _as_datetime(detail.get("cleaning"))
+    occurrence = coordinator.data.get("occurrences", {}).get(area_id)
+    confirmation = (
+        coordinator.data.get("water_confirmations", {}).get(str(occurrence.get("occurrence_id")))
+        if occurrence else None
     )
+    occurrence_view = (
+        {
+            "program": occurrence.get("program"),
+            "current_stage": occurrence.get("current_stage"),
+            "scheduled_at": occurrence.get("scheduled_at"),
+            "created_at": occurrence.get("created_at"),
+            "stages": [
+                {
+                    key: stage.get(key)
+                    for key in (
+                        "operation", "passes", "status", "reason",
+                        "started_at", "completed_at",
+                    )
+                }
+                for stage in occurrence.get("stages", [])
+            ],
+        }
+        if occurrence else None
+    )
+    confirmation_view = (
+        {
+            key: confirmation.get(key)
+            for key in ("status", "sent_at", "expires_at", "responded_at")
+        }
+        if confirmation else None
+    )
+    episode = coordinator.data.get("water_notification_episodes", {}).get(area_id)
     return {
         "name": room.name,
         "area_id": room.area_id,
@@ -91,7 +106,7 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "fallbacks": room.fallback_entity_ids,
         "enabled": settings["enabled"],
         "vacuum_interval": settings["vacuum_interval"],
-        "mop_interval": settings["mop_interval"],
+        "cleaning_interval": settings["cleaning_interval"],
         "expected_minutes": settings["expected_minutes"],
         "carpet": settings["carpet"],
         "ignore_desired_window": settings["ignore_desired_window"],
@@ -103,14 +118,17 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "desired_window_end_inherited": desired_window.end_inherited,
         "desired_window_valid": desired_window.valid,
         "pass_count": settings.get("pass_count"),
+        "vacuum_pass_count": settings.get("vacuum_pass_count"),
+        "mop_pass_count": settings.get("mop_pass_count"),
+        "cleaning_program": settings.get("cleaning_program"),
         "occupancy": detail["occupancy"],
         "occupancy_source": detail["source"],
         "unavailable_radars": detail["unavailable_radars"],
         "last_cleaned": last_cleaned,
         "last_vacuum": _as_datetime(detail.get("vacuum")),
         "last_mop": _as_datetime(detail.get("mop")),
-        "vacuum_due": vacuum_due,
-        "mop_due": mop_due,
+        "vacuum_due": next_due,
+        "mop_due": None,
         "next_due": next_due,
         "desired_window_start": desired_window_start,
         "desired_window_next_start": desired_window_start,
@@ -124,6 +142,18 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "block_reason": reason,
         "map_status": detail.get("map_status", "unknown"),
         "map_error": detail.get("map_error"),
+        "occurrence": occurrence_view,
+        "water_confirmation": confirmation_view,
+        "last_stage_outcome": detail.get("last_stage_outcome"),
+        "last_stage_reason": detail.get("last_stage_reason"),
+        "last_stage_at": _as_datetime(detail.get("last_stage_at")),
+        "water_notification_episode": (
+            {
+                key: episode.get(key)
+                for key in ("reason", "first_sent_at", "last_sent_at")
+            }
+            if episode else None
+        ),
         "failure": (
             coordinator.scheduler_fault_view()
             if coordinator.fault_affects_room(room)
@@ -168,9 +198,17 @@ def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict
             "native_area_pass_counts": sorted(
                 robot.adapter_capabilities.native_area_pass_counts
             ),
+            "vacuum_pass_counts": sorted(robot.adapter_capabilities.vacuum_pass_counts),
+            "mop_pass_counts": sorted(robot.adapter_capabilities.mop_pass_counts),
             "supported_operations": sorted(
                 robot.adapter_capabilities.supported_operations
             ),
+            "water_readiness": {
+                "status": robot.adapter_capabilities.water_readiness.status,
+                "reason": robot.adapter_capabilities.water_readiness.reason,
+                "ready": robot.adapter_capabilities.water_readiness.ready,
+                "authoritative": robot.adapter_capabilities.water_readiness.authoritative,
+            },
         },
         "adapter_diagnostic": robot.adapter_diagnostic,
         "failure": (

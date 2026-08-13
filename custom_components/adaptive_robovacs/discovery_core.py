@@ -12,7 +12,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import label_registry as lr
 
-from .adapters.base import AdapterMatchContext
+from .adapters.base import AdapterEntityEvidence, AdapterMatchContext
 from .adapters.registry import async_resolve_adapter
 from .const import (
     LABEL_BEDROOM,
@@ -40,9 +40,14 @@ class RobotProfile:
 
     @property
     def supports_mopping(self) -> bool:
-        """Return whether the device exposes a mopping control."""
+        """Return whether a mode control can select both physical operations."""
 
-        return bool(self.mode_select_entity_id or self.mop_mode_select_entity_id)
+        normalized = {_normalised_label(option) for option in self.mode_options}
+        return bool(
+            self.mode_select_entity_id
+            and normalized.intersection({"vacuum", "vacuum-only"})
+            and normalized.intersection({"mop", "mop-only"})
+        )
 
     @property
     def supports_double_pass(self) -> bool:
@@ -69,6 +74,7 @@ class DiscoveredRobot:
     adapter_schema_version: int
     adapter_capabilities: AdapterCapabilities
     adapter_diagnostic: str | None = None
+    adapter_entities: tuple[AdapterEntityEvidence, ...] = ()
 
 
 @dataclass(slots=True)
@@ -158,6 +164,35 @@ def _state_options(hass: HomeAssistant, entity_id: str) -> tuple[str, ...]:
     return tuple(str(option) for option in options)
 
 
+def _adapter_evidence(
+    hass: HomeAssistant, entries: list[er.RegistryEntry]
+) -> tuple[AdapterEntityEvidence, ...]:
+    """Build transient, redaction-safe evidence for a vendor adapter."""
+
+    evidence: list[AdapterEntityEvidence] = []
+    for entry in entries:
+        state = hass.states.get(entry.entity_id)
+        attributes = state.attributes if state else {}
+        evidence.append(
+            AdapterEntityEvidence(
+                entity_id=entry.entity_id,
+                domain=entry.entity_id.split(".", 1)[0],
+                platform=str(entry.platform),
+                translation_key=(
+                    getattr(entry, "translation_key", None)
+                    or attributes.get("translation_key")
+                    or attributes.get("entity_description_key")
+                ),
+                device_class=(
+                    attributes.get("device_class")
+                    or getattr(entry, "original_device_class", None)
+                ),
+                state=state.state if state else None,
+            )
+        )
+    return tuple(evidence)
+
+
 def _find_profile(
     hass: HomeAssistant,
     entries: list[er.RegistryEntry],
@@ -212,6 +247,13 @@ def _find_profile(
             profile.mop_intensity_select_entity_id = entry.entity_id
             profile.mop_intensity_options = options
             continue
+        if not profile.mode_select_entity_id and (
+            "vacuum" in normalised_options
+            and any(option in {"mop", "mop-only"} for option in normalised_options)
+        ):
+            profile.mode_select_entity_id = entry.entity_id
+            profile.mode_options = options
+            continue
         if not profile.mop_mode_select_entity_id and any(
             "mop" in option or "deep" in option for option in normalised_options
         ):
@@ -257,6 +299,9 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
             supported_features & int(VacuumEntityFeature.SEND_COMMAND)
         )
         platform = str(entry.platform)
+        adapter_entities = _adapter_evidence(
+            hass, entries_by_device.get(entry.device_id, [])
+        )
         context = AdapterMatchContext(
             entity_id=entry.entity_id,
             platform=platform,
@@ -269,6 +314,8 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
                     state.attributes.get("fan_speed_list", []) if state else []
                 )
             ),
+            device_id=entry.device_id,
+            entities=adapter_entities,
         )
         adapter, capabilities, adapter_diagnostic = await async_resolve_adapter(
             hass, context
@@ -290,6 +337,7 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
             adapter_schema_version=adapter.schema_version,
             adapter_capabilities=capabilities,
             adapter_diagnostic=adapter_diagnostic,
+            adapter_entities=adapter_entities,
         )
 
     occupancy_by_area: dict[str, tuple[list[str], list[str]]] = {}

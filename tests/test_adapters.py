@@ -113,6 +113,51 @@ class RoborockMappingTests(unittest.TestCase):
         )
 
 
+class RoborockWaterTests(unittest.TestCase):
+    @staticmethod
+    def evidence(key: str, state: str):
+        return base.AdapterEntityEvidence(
+            entity_id=f"binary_sensor.{key}", domain="binary_sensor",
+            platform="roborock", translation_key=key, device_class=None, state=state,
+        )
+
+    def test_complete_sensor_trio_is_authoritative(self) -> None:
+        readiness, watched = roborock.resolve_roborock_water_readiness(
+            (self.evidence("water_box_carriage_status", "on"),
+             self.evidence("water_box_status", "on"),
+             self.evidence("water_shortage", "off")), True)
+        self.assertEqual(readiness.status, "sensor_ready")
+        self.assertTrue(readiness.ready)
+        self.assertTrue(readiness.authoritative)
+        self.assertEqual(len(watched), 3)
+
+    def test_home_assistant_translation_keys_match_the_sensor_trio(self) -> None:
+        readiness, _ = roborock.resolve_roborock_water_readiness(
+            (self.evidence("mop_attached", "on"),
+             self.evidence("water_box_attached", "on"),
+             self.evidence("water_shortage", "off")), True)
+        self.assertEqual(readiness.status, "sensor_ready")
+
+    def test_missing_or_duplicate_sensor_requires_confirmation(self) -> None:
+        missing, _ = roborock.resolve_roborock_water_readiness(
+            (self.evidence("water_box_status", "on"),), True)
+        duplicate, _ = roborock.resolve_roborock_water_readiness(
+            (self.evidence("water_box_carriage_status", "on"),
+             self.evidence("water_box_status", "on"),
+             self.evidence("water_box_status", "on"),
+             self.evidence("water_shortage", "off")), True)
+        self.assertEqual(missing.status, "confirmation_required")
+        self.assertEqual(duplicate.status, "confirmation_required")
+
+    def test_unavailable_or_empty_authoritative_sensor_blocks_only_mopping(self) -> None:
+        for states in (("on", "on", "unavailable"), ("on", "on", "on")):
+            readiness, _ = roborock.resolve_roborock_water_readiness(
+                tuple(self.evidence(key, state)
+                      for key, state in zip(roborock.WATER_ENTITY_KEYS, states)), True)
+            self.assertEqual(readiness.status, "sensor_blocked")
+            self.assertFalse(readiness.ready)
+
+
 class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _context(platform: str, *, send_command: bool):

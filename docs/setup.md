@@ -35,11 +35,11 @@ cleaning. It rereads the selected vacuum's current area mapping immediately
 before dispatch, accepts numeric or unambiguous single-map compound segments,
 and fails closed on missing, stale, malformed, or multi-map evidence.
 
-Each room's **Cleaning passes** selector supports **Robot default**, **1 pass**,
-and **2 passes**. Robot default preserves the vacuum card's existing
-**Double pass** default. An explicit two-pass room is eligible only for a
-vacuum advertising native two-pass capability. The scheduler never emulates
-two passes with two commands and never silently downgrades the room.
+Each room has separate **Vacuum passes** and **Mop passes** selectors supporting
+**Robot default**, **1 pass**, and **2 passes**. Robot default uses the matching
+vacuum-card default. An explicit two-pass stage is eligible only for a vacuum
+advertising that operation-specific capability. The scheduler never silently
+downgrades the request.
 
 ## Occupancy rules
 
@@ -67,10 +67,35 @@ in that unresolved exception: they retain their separate daytime-only and
 every-bedroom-clear rules. Party Mode and observe-only mode remain
 non-dispatching regardless of any room window setting.
 
-Enable a room's **Carpet (no mopping)** switch to make that room vacuum-only.
-Its stored mopping cadence and history are retained so turning the switch back
-off restores the prior mop schedule; carpeted rooms never receive a mop-only or
-vacuum-and-mop dispatch while the switch is on.
+Each vacuum has a default **Cleaning program** and each room can inherit it or
+override it with **Vacuum only**, **Mop only**, **Vacuum then mop**, or **Mop
+then vacuum**. A room has one cleaning cadence; two-stage programs use two
+separate physical starts and repeat every safety check before stage two.
+Enable **Carpet (no mopping)** to block any program containing a mop stage.
+
+## Water-aware mopping
+
+The Roborock adapter uses same-device registry metadata for Mop attached, Water
+box attached, and Water shortage. It never depends on local entity IDs. The
+three signals must be attached, attached, and no-shortage when the mop stage is
+actually eligible. If water is unavailable, the mop stage is skipped for that
+occurrence, vacuuming remains eligible, and mopping is reconsidered at the next
+room cadence.
+
+A verified mop-capable robot without authoritative water telemetry requires a
+fresh mobile confirmation. Adaptive RoboVacs sends exactly **Confirm water**
+and **Cancel mopping** to every registered Companion app and waits up to one
+hour. Only an explicit Confirm action permits mopping; Cancel, Android swipe
+dismissal, timeout, or total delivery failure safely cancels the mop stage.
+The request auto-clears at expiry. Android users can customize or disable the
+**Adaptive RoboVacs - Mop confirmation** and **Adaptive RoboVacs - Mop skipped**
+notification channels. iOS receives the same ordinary notifications but has no
+equivalent per-channel opt-out.
+
+If no Companion target can be reached, Settings > System > Repairs shows an
+actionable notification-delivery issue. This does not halt vacuuming. A profile,
+clean command, or start-confirmation failure after an actual stage attempt is
+different: it uses the existing system-wide scheduler halt.
 
 ## v1.3.0 troubleshooting
 

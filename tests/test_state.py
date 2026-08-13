@@ -21,6 +21,8 @@ SPEC.loader.exec_module(state_module)
 
 SCHEMA_VERSION = state_module.SCHEMA_VERSION
 ActiveJob = state_module.ActiveJob
+CleaningOccurrence = state_module.CleaningOccurrence
+CleaningStage = state_module.CleaningStage
 RoomHistory = state_module.RoomHistory
 SchedulerState = state_module.SchedulerState
 SchedulerFault = state_module.SchedulerFault
@@ -100,6 +102,10 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertTrue(migrated)
         self.assertTrue(state.global_settings.party_mode)
         self.assertEqual(state.room_settings["kitchen"].vacuum_interval, 72)
+        self.assertEqual(
+            state.room_history["kitchen"].cleaning_completed_at,
+            datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
+        )
         self.assertEqual(state.robot_settings["vacuum.alpha"].minimum_battery, 85)
         self.assertEqual(state.room_history["kitchen"].duration_samples[0].minutes, 26.5)
         self.assertEqual(state.active_jobs["vacuum.alpha"].phase, "paused")
@@ -111,7 +117,7 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertNotIn("active", stored)
         self.assertEqual(stored["active_jobs"]["vacuum.alpha"]["room"], "kitchen")
 
-    def test_v4_round_trip_preserves_window_pass_fault_and_job_adapter(self) -> None:
+    def test_v5_round_trip_preserves_occurrence_window_pass_fault_and_job_adapter(self) -> None:
         state = SchedulerState.create(ENTRY_DATA)
         study_settings, _ = state.ensure_room("study", is_bedroom=False)
         study_settings.desired_window_start = "10:15"
@@ -141,6 +147,19 @@ class SchedulerStateTests(unittest.TestCase):
             native_command_may_have_started=True,
             outcome_uncertain=True,
         )
+        state.occurrences["study"] = CleaningOccurrence(
+            occurrence_id="occurrence-1",
+            room_id="study",
+            robot_registry_id="registry-robot",
+            robot_entity_id="vacuum.beta",
+            program="vacuum_then_mop",
+            stages=[CleaningStage("vacuum", 2, "completed"), CleaningStage("mop", 1)],
+            scheduled_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
+            created_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
+            adapter_id="roborock",
+            adapter_schema_version=2,
+            current_stage=1,
+        )
 
         restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
 
@@ -157,6 +176,8 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertEqual(restored.active_jobs["vacuum.beta"].adapter_id, "roborock")
         self.assertEqual(restored.room_settings["study"].pass_count, 2)
         self.assertEqual(restored.scheduler_fault.robot_registry_id, "registry-robot")
+        self.assertEqual(restored.occurrences["study"].current_stage, 1)
+        self.assertEqual(restored.occurrences["study"].stages[0].status, "completed")
 
         runtime_restored, runtime_migrated = SchedulerState.from_store(
             restored.to_runtime_data(), ENTRY_DATA
@@ -185,20 +206,13 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertTrue(migrated)
         self.assertIsNone(restored.room_settings["study"].desired_window_start)
         self.assertIsNone(restored.room_settings["study"].desired_window_end)
-        self.assertEqual(
-            restored.to_runtime_data()["settings"]["rooms"]["study"],
-            {
-                "enabled": True,
-                "vacuum_interval": 84,
-                "mop_interval": 168,
-                "expected_minutes": 30,
-                "carpet": False,
-                "ignore_desired_window": False,
-                "desired_window_start": None,
-                "desired_window_end": None,
-                "pass_count": None,
-            },
-        )
+        runtime = restored.to_runtime_data()["settings"]["rooms"]["study"]
+        self.assertEqual(runtime["cleaning_interval"], 84)
+        self.assertEqual(runtime["vacuum_interval"], 84)
+        self.assertEqual(runtime["mop_interval"], 84)
+        self.assertIsNone(runtime["cleaning_program"])
+        self.assertIsNone(runtime["vacuum_pass_count"])
+        self.assertIsNone(runtime["mop_pass_count"])
 
     def test_v3_payload_migrates_room_passes_to_robot_default(self) -> None:
         state = SchedulerState.create(ENTRY_DATA)
@@ -212,6 +226,27 @@ class SchedulerStateTests(unittest.TestCase):
 
         self.assertTrue(migrated)
         self.assertIsNone(restored.room_settings["study"].pass_count)
+
+    def test_v4_dual_cadence_and_mopping_enable_migrate_to_one_program(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.ensure_room("study", is_bedroom=False)
+        state.ensure_robot("vacuum.alpha", supports_mopping=False)
+        payload = state.to_store()
+        payload["schema_version"] = 4
+        payload["room_settings"]["study"].pop("cleaning_interval")
+        payload["room_settings"]["study"]["vacuum_interval"] = 72
+        payload["room_settings"]["study"]["mop_interval"] = 144
+        payload["robot_settings"]["vacuum.alpha"].pop("cleaning_program")
+        payload["robot_settings"]["vacuum.alpha"]["mopping_enabled"] = True
+
+        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertTrue(migrated)
+        self.assertEqual(restored.room_settings["study"].cleaning_interval, 72)
+        self.assertEqual(
+            restored.robot_settings["vacuum.alpha"].cleaning_program,
+            "vacuum_then_mop",
+        )
 
     def test_invalid_samples_are_dropped_without_invalidating_a_v1_migration(self) -> None:
         state, migrated = SchedulerState.from_store(

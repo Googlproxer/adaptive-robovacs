@@ -12,6 +12,9 @@ from homeassistant.helpers import issue_registry as ir
 from .const import DOMAIN
 from .repairs_manager import scheduler_halted_issue_id
 from .repairs_manager import two_pass_issue_id
+from .repairs_manager import notification_delivery_issue_id
+from .repairs_manager import cleaning_program_issue_id
+from .repairs_manager import async_set_notification_delivery_issue
 
 
 def _description_placeholders(flow: RepairsFlow) -> dict[str, str] | None:
@@ -82,6 +85,47 @@ class TwoPassCompatibilityRepairFlow(RepairsFlow):
         )
 
 
+class NotificationDeliveryRepairFlow(RepairsFlow):
+    """Recheck whether at least one Companion notification target exists."""
+
+    def __init__(self, coordinator) -> None:
+        self._coordinator = coordinator
+
+    async def async_step_init(self, user_input=None) -> data_entry_flow.FlowResult:
+        return await self.async_step_confirm(user_input)
+
+    async def async_step_confirm(self, user_input=None) -> data_entry_flow.FlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if self._coordinator.has_notification_targets():
+                async_set_notification_delivery_issue(self._coordinator, False)
+                return self.async_create_entry(title="", data={})
+            errors["base"] = "recheck_failed"
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            errors=errors,
+            description_placeholders=_description_placeholders(self),
+        )
+
+
+class CleaningProgramCompatibilityRepairFlow(TwoPassCompatibilityRepairFlow):
+    """Recheck a room's complete ordered program without dispatching."""
+
+    async def async_step_confirm(self, user_input=None) -> data_entry_flow.FlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if await self._coordinator.async_recheck_cleaning_program_compatibility(
+                self._area_id
+            ):
+                return self.async_create_entry(title="", data={})
+            errors["base"] = "recheck_failed"
+        return self.async_show_form(
+            step_id="confirm", data_schema=vol.Schema({}), errors=errors,
+            description_placeholders=_description_placeholders(self),
+        )
+
+
 async def async_create_fix_flow(
     hass: HomeAssistant,
     issue_id: str,
@@ -95,7 +139,11 @@ async def async_create_fix_flow(
         raise ValueError("The Adaptive RoboVacs repair is no longer available")
     if issue_id == scheduler_halted_issue_id(entry_id):
         return SchedulerHaltedRepairFlow(coordinator)
+    if issue_id == notification_delivery_issue_id(entry_id):
+        return NotificationDeliveryRepairFlow(coordinator)
     area_id = str((data or {}).get("area_id", ""))
+    if issue_id == cleaning_program_issue_id(entry_id, area_id):
+        return CleaningProgramCompatibilityRepairFlow(coordinator, area_id)
     if issue_id == two_pass_issue_id(entry_id, area_id):
         return TwoPassCompatibilityRepairFlow(coordinator, area_id)
     raise ValueError("The Adaptive RoboVacs repair is no longer available")

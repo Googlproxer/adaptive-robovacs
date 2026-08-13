@@ -21,7 +21,8 @@ automatically on supported versions.
   binary sensors in the same area as a fallback.
 - Supports party mode, manual-clean deferrals, learned vacancy forecasts,
   restart recovery, multi-robot ready-first allocation, room pass overrides,
-  carpet-aware vacuum-only rooms, and capability-driven mopping controls.
+  carpet-aware vacuum-only rooms, ordered vacuum/mop programs, independent
+  vacuum/mop pass counts, and water-aware mopping.
 - Provides target-scoped Lovelace cards for global settings, each vacuum, and
   each room, with generated status and control rows.
 
@@ -66,6 +67,15 @@ use the Repair flow or the dashboard's confirmed **Recheck and resume** action.
 The recheck never sends a test clean, and the failed room remains due after
 scheduling is explicitly resumed.
 
+Each room now has one cadence and one ordered program: vacuum only, mop only,
+vacuum then mop, or mop then vacuum. Every stage is a separate physical start
+and repeats the normal occupancy and time-window checks. Roborock water
+telemetry is checked only when a mop stage is ready to start. Empty or
+unavailable water skips that mop stage without blocking a configured vacuum
+stage or engaging the system-failure latch. Mop-capable robots without water
+telemetry require an explicit one-hour **Confirm water** mobile action; cancel,
+dismissal, timeout, or an unreachable notification safely skips only mopping.
+
 Native map and segment identifiers are read transiently from the selected
 vacuum entity's current Home Assistant area mapping. They are never copied to
 Adaptive RoboVacs storage, status entities, Repairs, or logs. See the
@@ -78,8 +88,8 @@ expected duration can never resume work after a fault. Resume with the robot's
 physical controls and the scheduler continues only after it observes
 `cleaning`. Cancel with the physical dock control and the scheduler observes
 `returning` followed by `docked`; it records no clean credit or
-duration sample, then rebases enabled vacuum and eligible mop schedules on that
-floor 24 hours into the future while retaining their relative spacing. A clean
+duration sample, then rebases enabled room-cleaning schedules on that floor 24
+hours into the future while retaining their relative spacing. A clean
 already observed as complete before a later fault remains held until the robot
 is observed at the dock, including when it is placed there manually. On
 restart, a held docked job is treated as a completion only if Home Assistant

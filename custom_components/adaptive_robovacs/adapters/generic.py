@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..models import AdapterCapabilities, AdapterDispatchRequest, AdapterDispatchResult
+from ..models import (
+    AdapterCapabilities,
+    AdapterDispatchRequest,
+    AdapterDispatchResult,
+    WaterReadiness,
+)
 from .base import AdapterMatchContext, VacuumAdapter
 
 
@@ -12,7 +17,7 @@ class GenericVacuumAdapter(VacuumAdapter):
     """Fallback adapter using only standard Home Assistant actions."""
 
     adapter_id = "generic"
-    schema_version = 1
+    schema_version = 2
     priority = -1000
 
     async def async_capabilities(
@@ -23,8 +28,10 @@ class GenericVacuumAdapter(VacuumAdapter):
         if context.profile.supports_double_pass:
             passes.add(2)
         operations = {"vacuum"}
+        water = WaterReadiness.unsupported()
         if context.profile.supports_mopping:
-            operations.update({"mop", "vac_and_mop"})
+            operations.add("mop")
+            water = WaterReadiness.confirmation_required()
         return AdapterCapabilities(
             adapter_id=self.adapter_id,
             schema_version=self.schema_version,
@@ -35,6 +42,11 @@ class GenericVacuumAdapter(VacuumAdapter):
             mode_options=context.profile.mode_options,
             mop_mode_options=context.profile.mop_mode_options,
             mop_intensity_options=context.profile.mop_intensity_options,
+            water_readiness=water,
+            vacuum_pass_counts=frozenset(passes),
+            # A generic shared repeat control only proves portable vacuum repeat.
+            # Vendors must explicitly advertise mop repeat semantics.
+            mop_pass_counts=(frozenset({1}) if "mop" in operations else frozenset()),
         )
 
     async def async_preflight(
@@ -51,6 +63,17 @@ class GenericVacuumAdapter(VacuumAdapter):
                 "unsupported",
                 "adapter_request_unsupported",
                 "The selected vacuum no longer supports this cleaning request.",
+            )
+        if (
+            request.operation == "mop"
+            and capabilities.water_readiness.status == "confirmation_required"
+            and not bool(request.cleaning_profile.get("water_confirmed"))
+            and not bool(request.cleaning_profile.get("ignore_water_readiness"))
+        ):
+            return AdapterDispatchResult(
+                "blocked",
+                "water_confirmation_required",
+                "Water confirmation is required before mopping.",
             )
         return AdapterDispatchResult("ready", "ready", "Ready")
 

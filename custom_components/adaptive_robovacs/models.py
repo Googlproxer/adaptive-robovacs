@@ -106,6 +106,24 @@ class SchedulePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class WaterReadiness:
+    """Vendor-neutral decision for starting one mop stage."""
+
+    status: str
+    reason: str
+    ready: bool = False
+    authoritative: bool = False
+
+    @classmethod
+    def unsupported(cls) -> "WaterReadiness":
+        return cls("unsupported", "mopping_unsupported")
+
+    @classmethod
+    def confirmation_required(cls) -> "WaterReadiness":
+        return cls("confirmation_required", "water_confirmation_required")
+
+
+@dataclass(frozen=True, slots=True)
 class AdapterCapabilities:
     """Vendor-neutral capabilities advertised by one vacuum adapter."""
 
@@ -119,12 +137,53 @@ class AdapterCapabilities:
     mode_options: tuple[str, ...] = ()
     mop_mode_options: tuple[str, ...] = ()
     mop_intensity_options: tuple[str, ...] = ()
-    water_readiness: str = "unknown"
+    water_readiness: WaterReadiness | str = WaterReadiness.unsupported()
+    vacuum_pass_counts: frozenset[int] = frozenset()
+    mop_pass_counts: frozenset[int] = frozenset()
+    native_vacuum_pass_counts: frozenset[int] = frozenset()
+    native_mop_pass_counts: frozenset[int] = frozenset()
+    watched_entity_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Normalize schema-one adapter snapshots during a rolling upgrade."""
+
+        water = self.water_readiness
+        if isinstance(water, str):
+            normalized = (
+                WaterReadiness.confirmation_required()
+                if water in {"unknown", "confirmation_required"}
+                else WaterReadiness.unsupported()
+            )
+            object.__setattr__(self, "water_readiness", normalized)
+        if not self.vacuum_pass_counts:
+            object.__setattr__(self, "vacuum_pass_counts", self.supported_pass_counts)
+        if not self.mop_pass_counts and "mop" in self.supported_operations:
+            object.__setattr__(self, "mop_pass_counts", self.supported_pass_counts)
+        if not self.native_vacuum_pass_counts:
+            object.__setattr__(
+                self, "native_vacuum_pass_counts", self.native_area_pass_counts
+            )
+        if not self.native_mop_pass_counts and "mop" in self.supported_operations:
+            object.__setattr__(
+                self, "native_mop_pass_counts", self.native_area_pass_counts
+            )
 
     def supports(self, operation: str, passes: int) -> bool:
         """Return whether the normalized request can be attempted."""
 
-        return operation in self.supported_operations and passes in self.supported_pass_counts
+        pass_counts = (
+            self.mop_pass_counts if operation == "mop" else self.vacuum_pass_counts
+        )
+        return operation in self.supported_operations and passes in pass_counts
+
+    def native_pass_counts_for(self, operation: str) -> frozenset[int]:
+        """Return pass counts handled by a vendor-native command."""
+
+        return (
+            self.native_mop_pass_counts
+            if operation == "mop"
+            else self.native_vacuum_pass_counts
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +214,60 @@ class AdapterDispatchResult:
     @property
     def ready(self) -> bool:
         return self.status in {"ready", "accepted"}
+
+    @property
+    def blocked(self) -> bool:
+        return self.status == "blocked"
+
+
+CLEANING_PROGRAMS = (
+    "vacuum_only",
+    "mop_only",
+    "vacuum_then_mop",
+    "mop_then_vacuum",
+)
+
+
+def expand_cleaning_program(program: str) -> tuple[str, ...]:
+    """Expand a public cleaning program into ordered physical starts."""
+
+    return {
+        "vacuum_only": ("vacuum",),
+        "mop_only": ("mop",),
+        "vacuum_then_mop": ("vacuum", "mop"),
+        "mop_then_vacuum": ("mop", "vacuum"),
+    }.get(program, ())
+
+
+def effective_cleaning_program(
+    room_program: str | None, robot_program: str
+) -> str | None:
+    """Resolve a room override while rejecting malformed stored values."""
+
+    program = room_program or robot_program
+    return program if program in CLEANING_PROGRAMS else None
+
+
+def stage_pass_count(
+    operation: str,
+    room_vacuum_passes: int | None,
+    room_mop_passes: int | None,
+    robot_vacuum_double_pass: bool,
+    robot_mop_double_pass: bool,
+    capabilities: AdapterCapabilities,
+) -> int | None:
+    """Resolve an operation-specific pass count without silent downgrade."""
+
+    room_value = room_mop_passes if operation == "mop" else room_vacuum_passes
+    default_double = (
+        robot_mop_double_pass if operation == "mop" else robot_vacuum_double_pass
+    )
+    supported = (
+        capabilities.mop_pass_counts
+        if operation == "mop"
+        else capabilities.vacuum_pass_counts
+    )
+    return resolve_pass_count(room_value, default_double, supported)
 
 
 def resolve_pass_count(

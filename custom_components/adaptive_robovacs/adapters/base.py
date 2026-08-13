@@ -10,6 +10,18 @@ from ..models import AdapterCapabilities, AdapterDispatchRequest, AdapterDispatc
 
 
 @dataclass(frozen=True, slots=True)
+class AdapterEntityEvidence:
+    """Transient same-device registry/state evidence supplied to an adapter."""
+
+    entity_id: str
+    domain: str
+    platform: str
+    translation_key: str | None
+    device_class: str | None
+    state: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AdapterMatchContext:
     """Stable registry and feature evidence available during discovery."""
 
@@ -19,6 +31,8 @@ class AdapterMatchContext:
     supports_send_command: bool
     profile: Any
     fan_speed_options: tuple[str, ...] = ()
+    device_id: str | None = None
+    entities: tuple[AdapterEntityEvidence, ...] = ()
 
 
 class VacuumAdapter(ABC):

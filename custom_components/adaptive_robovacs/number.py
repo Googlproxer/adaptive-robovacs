@@ -87,15 +87,12 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
     for room in coordinator.discovery.rooms.values():
         entities.extend(
             [
-                _RoomNumber(coordinator, room.area_id, "vacuum_interval", f"{room.name} vacuum cadence"),
+                # Keep the established unique ID while the control becomes the
+                # room's single cleaning cadence in schema 5.
+                _RoomNumber(coordinator, room.area_id, "vacuum_interval", f"{room.name} cleaning cadence"),
                 _RoomNumber(coordinator, room.area_id, "expected_minutes", f"{room.name} expected duration"),
             ]
         )
-        if any(
-            robot.floor_id == room.floor_id and robot.profile.supports_mopping
-            for robot in coordinator.discovery.robots.values()
-        ):
-            entities.append(_RoomNumber(coordinator, room.area_id, "mop_interval", f"{room.name} mop cadence"))
     return entities
 
 

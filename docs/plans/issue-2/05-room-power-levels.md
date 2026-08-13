@@ -29,15 +29,20 @@ stages attempted at every occurrence. A room offers **Robot default** for every
 overridable field. Maintenance or administrative controls such as child lock,
 do-not-disturb, or dust-bin actions are not room profile fields.
 
-## v1.3.2 baseline and gap
+## v1.4.0 baseline and remaining gap
 
-The adapter capability snapshot already publishes per-robot raw fan-speed,
-cleaning-mode, mop-mode, mop-intensity, operation, and pass options. Vacuum
-cards already expose robot-owned defaults, and room cards expose **Robot
-default / 1 pass / 2 passes**. Runtime profile application currently reads only
-robot settings and directly calls common Home Assistant services; there are no
-room overrides, ordered programs, whole-profile compatibility filter, or
-guarantee that an inherited room resets a value changed for the preceding room.
+Version 1.4.0 implements the shared foundations originally coordinated with
+plan 3: one cadence, ordered cleaning programs, robot program defaults, room
+program overrides, independent vacuum/mop pass defaults and overrides,
+operation-specific adapter capabilities, durable stages, water readiness, and
+program compatibility Repairs.
+
+The remaining work is the broader cleaning profile: nullable per-room fan-speed,
+cleaning-mode, mop-mode, and mop-intensity overrides; typed whole-profile
+resolution; adapter-owned validation/application; and guaranteed reset of every
+applicable value before each stage. Runtime profile application still reads
+those fields from robot settings, so two rooms cannot yet request distinct raw
+vendor profile values safely.
 
 Both inspected robots advertise fan speed but with different option sets.
 Their other options also differ. Every vendor-provided option remains an exact
@@ -78,9 +83,9 @@ is no hard-coded common list or semantic translation.
 
 ## Adapter profile contract
 
-This plan consumes the adapter schema evolution from the water-aware cleaning
-program plan. If implemented independently, it must introduce the same
-versioned extension rather than adding vendor branches to orchestration.
+This plan builds on the adapter schema and ordered-stage evolution delivered by
+the water-aware cleaning-program release. It must extend that contract rather
+than adding vendor branches to orchestration.
 
 - Keep normalized option sets in `AdapterCapabilities`; replace a single global
   pass set with supported pass counts per normalized operation. Add typed
@@ -210,11 +215,10 @@ enters this failure path.
 1. Add typed requested/resolved profiles, cleaning programs/stages,
    operation-specific pass capabilities, and pure default-resolution and
    whole-program compatibility helpers in `models.py`.
-2. Extend robot settings with an explicit program default and separate vacuum
-   and mop pass defaults. Extend `RoomSettings` with nullable program,
-   fan-speed, cleaning-mode, mop-mode, mop-intensity, vacuum-pass, and mop-pass
-   overrides. Coordinate the Store migration with plan 3's single cadence and
-   occurrence state.
+2. Preserve the v1.4 robot program/pass defaults and room program/pass
+   overrides. Extend `RoomSettings` only with nullable fan-speed,
+   cleaning-mode, mop-mode, and mop-intensity overrides, using a new Store
+   migration without altering v1.4 occurrence semantics.
 3. Extend the versioned adapter contract with stage-profile validation and
    application. Implement standard Home Assistant actions in the generic
    adapter and make Roborock delegate unless a vendor-specific override is

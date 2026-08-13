@@ -1,5 +1,13 @@
 # Plan: Water-aware ordered cleaning programs
 
+## Implementation status
+
+Implemented in Adaptive RoboVacs v1.4.0. The release includes the Store schema
+v5 migration, ordered per-room cleaning occurrences, robot defaults and room
+overrides for cleaning programs, independent vacuum/mop pass controls,
+authoritative Roborock water readiness, the one-hour explicit confirmation
+fallback, all-target notifications, and translated Repairs diagnostics.
+
 ## Goal
 
 Replace independently scheduled vacuum and mop work with one room-cleaning

@@ -84,13 +84,13 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
     ]
     for robot in coordinator.discovery.robots.values():
         entities.append(_RobotSwitch(coordinator, robot.entity_id, "enabled", "enabled"))
-        if robot.profile.supports_mopping:
+        if 2 in robot.adapter_capabilities.vacuum_pass_counts:
             entities.append(
-                _RobotSwitch(coordinator, robot.entity_id, "mopping_enabled", "mopping enabled")
+                _RobotSwitch(coordinator, robot.entity_id, "double_pass", "double vacuum pass")
             )
-        if 2 in robot.adapter_capabilities.supported_pass_counts:
+        if 2 in robot.adapter_capabilities.mop_pass_counts:
             entities.append(
-                _RobotSwitch(coordinator, robot.entity_id, "double_pass", "double pass")
+                _RobotSwitch(coordinator, robot.entity_id, "mop_double_pass", "double mop pass")
             )
     for room in coordinator.discovery.rooms.values():
         entities.extend(

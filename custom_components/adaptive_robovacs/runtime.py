@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta
 import logging
 from typing import TYPE_CHECKING, Any
@@ -24,14 +25,27 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_CALL_TIMEOUT_SECONDS = 30
 
 
+def _stage_mode_option(options: tuple[str, ...], operation: str) -> str | None:
+    """Select an explicit single-operation mode without using a combined mode."""
+
+    wanted = {"vacuum", "vacuum_only"} if operation == "vacuum" else {"mop", "mop_only"}
+    return next((option for option in options if slugify(option) in wanted), None)
+
+
 class HomeAssistantRuntime:
     """Perform native service calls without owning scheduler decisions or state."""
 
     def __init__(self, coordinator: AdaptiveRoboVacCoordinator) -> None:
         self._coordinator = coordinator
 
-    @staticmethod
-    def _adapter_context(robot: DiscoveredRobot) -> AdapterMatchContext:
+    def _adapter_context(self, robot: DiscoveredRobot) -> AdapterMatchContext:
+        entities = tuple(
+            replace(
+                evidence,
+                state=(state.state if (state := self._coordinator.hass.states.get(evidence.entity_id)) else None),
+            )
+            for evidence in robot.adapter_entities
+        )
         return AdapterMatchContext(
             entity_id=robot.entity_id,
             platform=robot.platform,
@@ -39,6 +53,8 @@ class HomeAssistantRuntime:
             supports_send_command=robot.supports_send_command,
             profile=robot.profile,
             fan_speed_options=robot.adapter_capabilities.fan_speed_options,
+            device_id=robot.device_id,
+            entities=entities,
         )
 
     async def async_apply_profile(
@@ -49,11 +65,22 @@ class HomeAssistantRuntime:
         coordinator = self._coordinator
         profile = robot.profile
         settings = coordinator._robot_settings(robot)
-        selections = (
-            (profile.mode_select_entity_id, settings.get("mode")),
-            (profile.mop_mode_select_entity_id, settings.get("mop_mode")),
-            (profile.mop_intensity_select_entity_id, settings.get("mop_intensity")),
-        )
+        stage_mode = _stage_mode_option(profile.mode_options, operation)
+        selections = [(profile.mode_select_entity_id, stage_mode)]
+        if operation == "mop":
+            stage_mop_mode = _stage_mode_option(profile.mop_mode_options, operation)
+            selections.extend(
+                (
+                    (
+                        profile.mop_mode_select_entity_id,
+                        stage_mop_mode or settings.get("mop_mode"),
+                    ),
+                    (
+                        profile.mop_intensity_select_entity_id,
+                        settings.get("mop_intensity"),
+                    ),
+                )
+            )
         for entity_id, option in selections:
             if entity_id and option:
                 await coordinator.hass.services.async_call(
@@ -69,7 +96,7 @@ class HomeAssistantRuntime:
             )
         if (
             profile.passes_select_entity_id
-            and passes not in robot.adapter_capabilities.native_area_pass_counts
+            and passes not in robot.adapter_capabilities.native_pass_counts_for(operation)
         ):
             wanted_slugs = (
                 {"two_pass", "double_pass"}
@@ -96,6 +123,10 @@ class HomeAssistantRuntime:
         self, robot: DiscoveredRobot, candidate: dict[str, Any]
     ) -> AdapterDispatchRequest:
         settings = dict(self._coordinator._robot_settings(robot))
+        settings["water_confirmed"] = bool(candidate.get("water_confirmed", False))
+        settings["ignore_water_readiness"] = bool(
+            candidate.get("ignore_water_readiness", False)
+        )
         return AdapterDispatchRequest(
             robot_entity_id=robot.entity_id,
             area_ids=(candidate["room"].area_id,),
@@ -121,16 +152,25 @@ class HomeAssistantRuntime:
     ) -> bool:
         """Validate configured profile controls without calling a service."""
 
-        del operation
         settings = self._coordinator._robot_settings(robot)
-        selections = (
-            (robot.profile.mode_select_entity_id, settings.get("mode")),
-            (robot.profile.mop_mode_select_entity_id, settings.get("mop_mode")),
-            (
-                robot.profile.mop_intensity_select_entity_id,
-                settings.get("mop_intensity"),
-            ),
-        )
+        stage_mode = _stage_mode_option(robot.profile.mode_options, operation)
+        selections = [(robot.profile.mode_select_entity_id, stage_mode)]
+        if operation == "mop":
+            stage_mop_mode = _stage_mode_option(
+                robot.profile.mop_mode_options, operation
+            )
+            selections.extend(
+                (
+                    (
+                        robot.profile.mop_mode_select_entity_id,
+                        stage_mop_mode or settings.get("mop_mode"),
+                    ),
+                    (
+                        robot.profile.mop_intensity_select_entity_id,
+                        settings.get("mop_intensity"),
+                    ),
+                )
+            )
         for entity_id, option in selections:
             if not entity_id or not option:
                 continue
@@ -143,7 +183,7 @@ class HomeAssistantRuntime:
                 return False
         if (
             robot.profile.passes_select_entity_id
-            and passes not in robot.adapter_capabilities.native_area_pass_counts
+            and passes not in robot.adapter_capabilities.native_pass_counts_for(operation)
         ):
             state = self._coordinator.hass.states.get(
                 robot.profile.passes_select_entity_id
@@ -181,9 +221,9 @@ class HomeAssistantRuntime:
             "passes": candidate["passes"],
             "adapter_id": robot.adapter_id,
             "adapter_schema_version": robot.adapter_schema_version,
+            "occurrence_id": candidate.get("occurrence_id"),
+            "stage_index": candidate.get("stage_index"),
         }
-        coordinator.data["active"][robot.entity_id] = active
-        await coordinator._async_save()
 
         adapter = adapter_for_id(robot.adapter_id)
         context = self._adapter_context(robot)
@@ -208,6 +248,11 @@ class HomeAssistantRuntime:
                 outcome_uncertain=False,
             )
             return False, fault_summary("adapter_preflight_failed")
+        if preflight.blocked and candidate.get("operation") == "mop":
+            await coordinator._async_handle_mop_preflight_blocked(
+                robot, candidate, preflight.code, now
+            )
+            return True, f"skipped mopping {room.name}: water unavailable"
         if not preflight.ready:
             await coordinator._async_latch_scheduler_fault(
                 robot,
@@ -241,8 +286,13 @@ class HomeAssistantRuntime:
             )
             return False, fault_summary("profile_apply_failed")
 
+        coordinator.data["active"][robot.entity_id] = active
+        await coordinator._async_save()
+
         native_attempt = int(candidate["passes"]) in (
-            robot.adapter_capabilities.native_area_pass_counts
+            robot.adapter_capabilities.native_pass_counts_for(
+                str(candidate["operation"])
+            )
         )
         try:
             async with asyncio.timeout(SERVICE_CALL_TIMEOUT_SECONDS):
@@ -280,6 +330,11 @@ class HomeAssistantRuntime:
             return False, fault_summary(result.code)
         active["phase"] = "accepted"
         active["accepted_at"] = dt_util.utcnow().isoformat()
+        occurrence = coordinator.data.get("occurrences", {}).get(room.area_id)
+        stage_index = int(candidate.get("stage_index", 0))
+        if occurrence and stage_index < len(occurrence.get("stages", [])):
+            occurrence["stages"][stage_index]["status"] = "running"
+            occurrence["stages"][stage_index]["started_at"] = active["accepted_at"]
         coordinator._room_data(room.area_id)["map_status"] = "mapped"
         coordinator._room_data(room.area_id)["map_error"] = None
         await coordinator._async_save()

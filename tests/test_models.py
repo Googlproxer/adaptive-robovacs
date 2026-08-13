@@ -57,6 +57,33 @@ class CadenceTests(unittest.TestCase):
         self.assertEqual(models.resolve_pass_count(2, False, {1, 2}), 2)
         self.assertIsNone(models.resolve_pass_count(2, True, {1}))
 
+    def test_cleaning_programs_expand_into_ordered_physical_stages(self) -> None:
+        self.assertEqual(models.expand_cleaning_program("vacuum_only"), ("vacuum",))
+        self.assertEqual(models.expand_cleaning_program("mop_only"), ("mop",))
+        self.assertEqual(
+            models.expand_cleaning_program("vacuum_then_mop"), ("vacuum", "mop")
+        )
+        self.assertEqual(
+            models.expand_cleaning_program("mop_then_vacuum"), ("mop", "vacuum")
+        )
+
+    def test_vacuum_and_mop_passes_resolve_independently(self) -> None:
+        capabilities = models.AdapterCapabilities(
+            adapter_id="test",
+            schema_version=2,
+            portable_area_clean=True,
+            supported_pass_counts=frozenset({1, 2}),
+            supported_operations=frozenset({"vacuum", "mop"}),
+            vacuum_pass_counts=frozenset({1, 2}),
+            mop_pass_counts=frozenset({1, 2}),
+        )
+        self.assertEqual(
+            models.stage_pass_count("vacuum", None, None, True, False, capabilities), 2
+        )
+        self.assertEqual(
+            models.stage_pass_count("mop", None, None, True, False, capabilities), 1
+        )
+
     def test_due_at_honours_later_manual_deferral(self) -> None:
         result = models.due_at(
             self.now - timedelta(hours=100),
