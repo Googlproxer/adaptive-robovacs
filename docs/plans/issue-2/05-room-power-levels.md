@@ -29,9 +29,9 @@ stages attempted at every occurrence. A room offers **Robot default** for every
 overridable field. Maintenance or administrative controls such as child lock,
 do-not-disturb, or dust-bin actions are not room profile fields.
 
-## v1.4.0 baseline and remaining gap
+## v1.4.1 baseline and remaining gap
 
-Version 1.4.0 implements the shared foundations originally coordinated with
+The v1.4 release line implements the shared foundations originally coordinated with
 plan 3: one cadence, ordered cleaning programs, robot program defaults, room
 program overrides, independent vacuum/mop pass defaults and overrides,
 operation-specific adapter capabilities, durable stages, water readiness, and

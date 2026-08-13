@@ -98,13 +98,21 @@ class _RoomPassSelect(AdaptiveEntity, SelectEntity):
 
 
 class _RobotProgramSelect(AdaptiveEntity, SelectEntity):
-    def __init__(self, coordinator, robot_entity_id: str, supports_mopping: bool) -> None:
+    def __init__(self, coordinator, robot_entity_id: str) -> None:
         super().__init__(coordinator, f"robot_{robot_entity_id}_cleaning_program",
                          "cleaning program", "robot_control",
                          robot_entity_id=robot_entity_id,
                          robot_name_suffix="cleaning program")
         self.robot_entity_id = robot_entity_id
-        self._attr_options = PROGRAM_OPTIONS if supports_mopping else ("Vacuum only",)
+
+    @property
+    def options(self) -> tuple[str, ...]:
+        robot = self.coordinator.discovery.robots[self.robot_entity_id]
+        return (
+            PROGRAM_OPTIONS
+            if "mop" in robot.adapter_capabilities.supported_operations
+            else ("Vacuum only",)
+        )
 
     @property
     def current_option(self) -> str:
@@ -119,11 +127,20 @@ class _RobotProgramSelect(AdaptiveEntity, SelectEntity):
 
 
 class _RoomProgramSelect(AdaptiveEntity, SelectEntity):
-    def __init__(self, coordinator, area_id: str, name: str, supports_mopping: bool) -> None:
+    def __init__(self, coordinator, area_id: str, name: str) -> None:
         super().__init__(coordinator, f"room_{area_id}_cleaning_program", name,
                          "room_cleaning_program_control", area_id=area_id)
         self.area_id = area_id
-        self._attr_options = (
+
+    @property
+    def options(self) -> tuple[str, ...]:
+        room = self.coordinator.discovery.rooms[self.area_id]
+        supports_mopping = any(
+            robot.floor_id == room.floor_id
+            and "mop" in robot.adapter_capabilities.supported_operations
+            for robot in self.coordinator.discovery.robots.values()
+        )
+        return (
             ("Robot default", *PROGRAM_OPTIONS)
             if supports_mopping
             else ("Robot default", "Vacuum only")
@@ -178,7 +195,6 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
             _RobotProgramSelect(
                 coordinator,
                 robot.entity_id,
-                "mop" in robot.adapter_capabilities.supported_operations,
             )
         )
         if robot.adapter_capabilities.fan_speed_options:
@@ -227,7 +243,6 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
                     coordinator,
                     room.area_id,
                     f"{room.name} cleaning program",
-                    supports_mopping,
                 ),
             ]
         )

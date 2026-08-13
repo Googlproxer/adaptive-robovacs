@@ -57,6 +57,22 @@ class WaterMoppingContractTests(unittest.TestCase):
         self.assertIn("self._robot_ready(robot)", section)
         self.assertIn("self._candidate_for_robot(fresh_candidate, robot)", section)
 
+    def test_program_options_and_capability_sources_refresh_dynamically(self) -> None:
+        selects = (PACKAGE / "select.py").read_text(encoding="utf-8")
+        coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+        self.assertIn("def options(self) -> tuple[str, ...]:", selects)
+        self.assertIn(
+            '"mop" in robot.adapter_capabilities.supported_operations', selects
+        )
+        for field in (
+            "mode_select_entity_id",
+            "mop_mode_select_entity_id",
+            "mop_intensity_select_entity_id",
+            "passes_select_entity_id",
+        ):
+            self.assertIn(f"robot.profile.{field}", coordinator)
+        self.assertIn('if evidence.domain == "select"', coordinator)
+
     def test_frontend_copies_are_identical_with_new_room_roles(self) -> None:
         served = (PACKAGE / "frontend" / "adaptive-robovacs-dashboard.js").read_bytes()
         standalone = (

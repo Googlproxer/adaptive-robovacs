@@ -499,6 +499,24 @@ class AdaptiveRoboVacCoordinator:
                 self._watch_entity_ids.add(robot.profile.battery_entity_id)
             if robot.profile.cleaning_time_entity_id:
                 self._watch_entity_ids.add(robot.profile.cleaning_time_entity_id)
+            self._watch_entity_ids.update(
+                entity_id
+                for entity_id in (
+                    robot.profile.mode_select_entity_id,
+                    robot.profile.mop_mode_select_entity_id,
+                    robot.profile.mop_intensity_select_entity_id,
+                    robot.profile.passes_select_entity_id,
+                )
+                if entity_id
+            )
+            # A vendor select may not expose its options until after this
+            # integration's first discovery pass. Watch every same-device
+            # select so an initially unclassified operation control is found.
+            self._watch_entity_ids.update(
+                evidence.entity_id
+                for evidence in robot.adapter_entities
+                if evidence.domain == "select"
+            )
             self._watch_entity_ids.update(robot.adapter_capabilities.watched_entity_ids)
 
         for area_id in tuple(self.data.get("water_notification_episodes", {})):

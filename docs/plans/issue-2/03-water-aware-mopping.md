@@ -2,7 +2,8 @@
 
 ## Implementation status
 
-Implemented in Adaptive RoboVacs v1.4.0. The release includes the Store schema
+Implemented in Adaptive RoboVacs v1.4.0 and corrected for late-loading vendor
+capabilities in v1.4.1. The release line includes the Store schema
 v5 migration, ordered per-room cleaning occurrences, robot defaults and room
 overrides for cleaning programs, independent vacuum/mop pass controls,
 authoritative Roborock water readiness, the one-hour explicit confirmation
