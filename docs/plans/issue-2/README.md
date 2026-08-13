@@ -20,12 +20,11 @@ deployed in integration version 1.4.4:
 - v1.4.0 introduced water-aware ordered cleaning occurrences, one cadence per
   room, robot cleaning-program defaults with room overrides, independent
   vacuum/mop pass settings, authoritative Roborock water checks, and explicit
-  one-hour water confirmation for mop-capable robots without telemetry; and
+  one-hour water confirmation for mop-capable robots without telemetry;
 - v1.4.1 made program controls and late-loading vendor capabilities refresh
-  dynamically; and
+  dynamically;
 - v1.4.2 added a bounded post-start discovery refresh for vendor entities whose
   initial state transition precedes Adaptive RoboVacs' watcher registration;
-  and
 - v1.4.3 made adapter mopping verification consume the transient same-device
   operation-selector options directly as well as the normalized profile; and
 - v1.4.4 migrated durable robot identity to registry IDs, made duration
@@ -46,6 +45,25 @@ refactored shape:
 The current durable scheduler payload is Store schema v6. Each remaining plan
 must migrate from the schema present when it is implemented rather than assume
 that it will receive a particular future schema number.
+
+The v1.4.4 review also establishes implementation contracts that apply to all
+remaining plans:
+
+- persist robot-owned configuration and fingerprints against the vacuum's
+  entity-registry ID; resolve its current entity ID only for live state reads
+  and Home Assistant service calls;
+- extend the typed `SchedulerState` codec with an explicit, idempotent migration
+  and strict current-schema validation; malformed or newer payloads must remain
+  in storage safe mode and must never be overwritten by a fresh schedule;
+- perform duration-dependent eligibility only after a compatible robot is
+  selected, using that robot's registry-keyed operation/pass history, then
+  repeat current safety checks before preparation and physical dispatch;
+- create delayed work and evaluation callbacks through config-entry-owned task
+  tracking, reject them once shutdown begins, and drain them before unload;
+- derive dashboard/entity state in `projections.py` and mutate job lifecycle
+  state through the existing typed coordinator/job boundaries; and
+- give every new Repair stable, enumerable issue data so config-entry removal
+  can delete it without reading unloaded runtime state.
 
 ## Plans
 
@@ -103,6 +121,14 @@ Every implementation must retain these repository contracts:
 - Persist scheduler-owned settings, pending work, and migrations through Home
   Assistant `Store`. Robot observations remain authoritative over saved
   estimates after a restart.
+- Keep durable vacuum references registry-ID based. Current vacuum entity IDs
+  are transient runtime aliases, while existing Adaptive RoboVacs unique IDs
+  retain their saved alias so an entity rename cannot duplicate controls or
+  detach history.
+- Extend the typed Store codec instead of editing serialized dictionaries in
+  feature code. Current-schema structural/type/bound violations activate
+  storage safe mode; compatibility coercion belongs only in explicit historical
+  migrations.
 - Put reusable scheduling decisions in `models.py` and cover them in
   `tests/test_models.py`. Add focused state, runtime, service, entity, and
   dashboard contract tests where the implementation boundary warrants them.
@@ -121,6 +147,9 @@ Every implementation must retain these repository contracts:
   ordered list of independently dispatched stages. Recheck all safety gates
   before every stage, persist remaining work across waits/restarts, and never
   replay a completed stage.
+- Calculate vacancy duration with the selected robot's stable identity and the
+  exact operation/pass count. A pooled room estimate may be shown before
+  assignment, but it must never be the final dispatch eligibility decision.
 - Resolve vacuum and mop pass counts independently from robot defaults and room
   overrides. Validate each count against the adapter's support for that exact
   operation rather than assuming vacuum repeat support implies mop repeat
@@ -145,6 +174,10 @@ Every implementation must retain these repository contracts:
   served English translation bundle. Repairs that represent recoverable
   configuration gaps must auto-clear when discovery/configuration recovers;
   the scheduler-failure Repair clears only after explicit successful resume.
+- Route every integration-owned timer, listener-triggered evaluation, and
+  notification/profile callback through the coordinator's shutdown gate. No
+  remaining feature may send a notification, apply a profile, or dispatch a
+  clean after config-entry unload begins.
 - Treat each shipped item as an integration release: bump `manifest.json`, run
   the complete validation suite, create the matching annotated semantic tag
   and GitHub Release, update through HACS, and restart Home Assistant only after
@@ -155,14 +188,18 @@ Every implementation must retain these repository contracts:
 Plans 1 through 3 and the shared refactor are complete. For the remaining work:
 
 1. Implement symmetric room adjacency as an independent occupancy gate and
-   per-room-card editor.
+   per-room-card editor using the typed Store/projection/shutdown boundaries
+   established by v1.4.4.
 2. Complete plan 5's remaining per-room fan-speed, cleaning-mode, mop-mode,
    and mop-intensity overrides. Version 1.4.0 already supplies the shared
    cleaning-program ownership, cadence, independent pass resolution, adapter
-   readiness, and ordered-stage checkpoint model.
+   readiness, and ordered-stage checkpoint model; v1.4.4 supplies stable robot
+   identity and robot-specific final forecasting.
 3. Add durable bedroom assignments and confirmation after adjacency, water,
-   and profile gates are stable. Approval authorizes a fresh evaluation; it
-   never bypasses a safety gate or reserves a robot.
+   and profile gates are stable. Reuse the water-confirmation transport and
+   config-entry-owned lifecycle infrastructure without sharing authorization.
+   Approval authorizes a fresh evaluation; it never bypasses a safety gate or
+   reserves a robot.
 
 The features may be released separately. Each release includes only the
 migrations and public controls needed by that release.

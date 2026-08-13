@@ -23,7 +23,7 @@ Initial timing policy:
 - a new request is required if the cleaning program, ordered stages, vacuum or
   mop pass count, room profile, or tentative adapter-resolved profile changes.
 
-## v1.3.2 baseline and gap
+## v1.4.4 baseline and gap
 
 Bedrooms default to disabled and, once enabled, currently dispatch like other
 rooms when their existing gates pass. Room cards are target-scoped and already
@@ -31,10 +31,22 @@ own room schedule, occupancy, pass, and failure rows. The scheduler now also
 has adapter capabilities, water/profile preflight, a durable system-wide
 dispatch-failure halt, and translated Home Assistant Repair fix flows.
 
-There is no bedroom assignment, pending approval state, notification listener,
-expiry/throttle, or room-card assignment dialog. New prompts must also respect
-the global scheduler halt: a halted scheduler may show existing confirmation
-status but must not send another prompt or start a bedroom clean.
+Plan 3 already provides registry-discovered Companion-app delivery, random
+request-bound actions, one-hour persisted water-confirmation state,
+action/cleared event listeners, timer restoration, all-target notification
+clearing, redacted public status, and shutdown-aware cleanup. There is still no
+bedroom assignment, assigned-recipient approval state, bedroom timing policy,
+or room-card assignment dialog. Bedroom confirmation should reuse the proven
+transport and action-validation infrastructure without sharing authority,
+tokens, recipients, or expiry with water confirmation.
+
+The review release also makes robot identity registry-stable, performs final
+vacancy forecasting only after compatible robot assignment, strictly decodes
+schema-v6 Store state, derives public state in `projections.py`, and gates/drains
+config-entry-owned work during unload. New prompts must respect those
+boundaries and the global scheduler halt: a halted, closing, or storage-safe
+scheduler may show existing safe confirmation status but must not send another
+prompt or start a bedroom clean.
 
 Home Assistant Companion actionable notifications return actions through the
 `mobile_app_notification_action` event. Each request needs unpredictable action
@@ -58,6 +70,12 @@ surface: a `notify` entity/action when available or the matching legacy
 and keeps deployment-specific targets out of source. Never persist credentials,
 push tokens, webhook secrets, or device names as authority.
 
+Any tentative robot reference stored with a request uses the vacuum's stable
+entity-registry ID. Its current entity ID is resolved only when rebuilding live
+candidate state; an entity rename must not invalidate or duplicate an otherwise
+valid request. The retained Adaptive RoboVacs entity alias is not a recipient or
+authorization identity.
+
 If a legacy installation has no registry-backed notify entity, persist the
 mobile-app config-entry/device identity as primary and a validated service name
 only as a compatibility hint. Re-resolve and validate it on every send.
@@ -80,9 +98,11 @@ only as a compatibility hint. Re-resolve and validate it on every send.
 ## Confirmation behavior
 
 - When an assigned bedroom becomes an otherwise safe candidate, select a
-  tentative compatible robot, cleaning program, ordered stages, and profile;
-  persist one request; then send **Clean now** and **Skip** actions. Do not
-  reserve the robot, create an active stage, or advance cadence.
+  tentative compatible robot, cleaning program, ordered stages, and fully
+  configured profile. Apply that robot's operation/pass-specific duration to
+  the final vacancy forecast before persisting one request and sending **Clean
+  now** and **Skip** actions. Do not reserve the robot, create an active stage,
+  or advance cadence.
 - The request fingerprint contains the cleaning program, ordered stage kinds,
   separate vacuum/mop pass counts, requested room profile, tentative resolved
   profile, adapter ID/schema, and relevant room configuration version. It
@@ -91,6 +111,12 @@ only as a compatibility hint. Re-resolve and validate it on every send.
   evaluation. Assignment is rebuilt. Dispatch may use only a robot whose
   freshly resolved profile matches the approved fingerprint; otherwise the
   request is invalidated and a new confirmation is required.
+- A renamed robot with the same registry identity remains the same tentative
+  robot. A different compatible robot may be selected only when its program,
+  complete requested/resolved profile, adapter contract, and pass fingerprint
+  are identical to what was approved; its own duration forecast and every live
+  gate are still rerun. Approval is never evidence that another robot fits the
+  current safe window.
 - Every normal gate is rechecked before the first stage and every later stage:
   scheduler halt, Party Mode, observe-only, daily window,
   local/adjacent/bedroom-transit occupancy, robot readiness, telemetry-backed
@@ -115,7 +141,8 @@ only as a compatibility hint. Re-resolve and validate it on every send.
 - **Skip**, expiry, invalid response, and delivery failure never count as a
   clean. They follow the defer/throttle policy and leave cadence due.
 - Dry runs and schedule previews never send. No new prompt is sent while Party
-  Mode, observe-only mode, or the global scheduler halt is active.
+  Mode, observe-only/storage-safe mode, config-entry shutdown, or the global
+  scheduler halt is active.
 - Dashboard approve/skip actions use the same backend validation and are a
   fallback response surface, not a separate authorization path.
 
@@ -142,7 +169,8 @@ Add one bounded record per bedroom containing:
 - cleaning-program/ordered-stage/vacuum-pass/mop-pass/requested-profile/
   resolved-profile fingerprint and, for a continuation, completed/pending
   stage indexes;
-- tentative adapter ID/schema, without native targets;
+- tentative stable robot registry ID and adapter ID/schema, without the current
+  robot entity ID or native targets;
 - approval expiry and next-prompt time;
 - last safe outcome; and
 - response user/device match results as booleans, not copied identifiers.
@@ -151,6 +179,13 @@ Persist the record before delivery so restart cannot duplicate a prompt. Keep
 random action IDs in Store only for the active request, redact them from
 diagnostics, and remove them when the request becomes terminal. The robot is
 never reserved in this record.
+
+Add the record through the typed Store codec with an explicit idempotent
+migration from the schema current at implementation time. Current-schema
+structural, token, timestamp, or bounded-value corruption enters storage safe
+mode without overwriting the saved payload. Recovery reconciles a request with
+the observed active/held job and ordered occurrence; it never replays a prompt,
+profile, or clean merely because Store says authorization was active.
 
 ## Failure and Repairs behavior
 
@@ -167,6 +202,13 @@ never reserved in this record.
   remaining stage or unrelated clean may start until explicit successful
   resume.
 - Dismissing a bedroom-assignment/delivery Repair does not authorize a clean.
+- Assignment/delivery Repair IDs include stable entry and area context and are
+  included in config-entry removal. Cleanup must work after unload without live
+  coordinator discovery or `entry.runtime_data`.
+- Notification delivery, action handling, expiry timers, and requested
+  evaluations are config-entry-owned work. They check the closing gate before
+  send/mutation, are cancelled or drained during unload, and cannot emit a
+  notification or evaluation after platform teardown begins.
 
 ## Implementation plan
 
@@ -174,41 +216,53 @@ never reserved in this record.
    and remaining-stage fingerprints, action matching, approval validity,
    user/device validation, skip deferral, timeout, throttling, and invalidation.
 2. Extend typed Store state with bedroom assignments and bounded confirmation
-   records. Bump from the schema current at implementation time. Existing
-   enabled bedrooms migrate to unassigned/blocked and send nothing until the
-   user configures them.
-3. Add a registry-driven mobile-app notification resolver supporting current
-   notify entities/actions and validated legacy services. Keep it outside
-   scheduling decisions and redact its transient transport details.
+   records, using stable area/user/mobile-app/notify registry identities and a
+   tentative robot registry ID. Bump from the schema current at implementation
+   time with strict current-schema validation and an idempotent migration.
+   Existing enabled bedrooms migrate to unassigned/blocked and send nothing
+   until the user configures them.
+3. Extract/reuse plan 3's registry-driven mobile-app resolver, delivery,
+   action-token, clear, and timer infrastructure for current notify
+   entities/actions and validated legacy services. Keep bedroom request state
+   and authority separate from water confirmation, keep transport details out
+   of scheduling decisions, and redact them from every projection/log.
 4. Add the assignment service and per-bedroom-card native-selector dialog.
    Validate only discovered areas labeled as bedrooms and preserve target/card
    ownership attributes.
 5. Add approve/skip services. Require authenticated dashboard callers to match
    the assigned user; handlers only mutate/save confirmation state and request
-   evaluation.
+   evaluation through config-entry-owned task tracking.
 6. Listen for `mobile_app_notification_action` and apply random action,
    user/device, status, expiry, and assignment-version validation. Never
    dispatch from the event handler.
 7. Insert initial prompt creation after ordinary candidate gates and tentative
-   program/profile resolution but before occurrence/active-stage creation. Add
-   the same authorization check before a deferred remaining stage and suppress
-   side effects in dry run, Party Mode, observe-only, and scheduler-halted
-   states.
+   program/profile resolution and the tentative robot's exact duration forecast,
+   but before occurrence/active-stage creation. Add the same authorization
+   check before a deferred remaining stage and suppress side effects in dry run,
+   Party Mode, observe-only/storage-safe, closing, and scheduler-halted states.
 8. On approval, rebuild candidate/assignment/program/profile data and require
-   the approved whole-occurrence or remaining-stage fingerprint plus every
-   current safety/preflight check immediately before the dispatch path.
+   the approved whole-occurrence or remaining-stage fingerprint. Resolve the
+   current entity from stable robot identity, recalculate duration for the
+   selected robot, and repeat every current safety/preflight check immediately
+   before the dispatch path.
 9. Implement local assignment/delivery Repairs and diagnostics separately from
-   the global scheduler-failure latch.
+   the global scheduler-failure latch. Make the issue family enumerable and
+   removable from entry ID/Store area data without live runtime state.
 10. Add bedroom-card assignment status, pending/approved state, prompt/expiry
-    times, and approve/skip controls. Keep both JavaScript copies identical and
-    do not prefix every row with the bedroom name.
+    times, and approve/skip controls from safe `projections.py` data. Keep both
+    JavaScript copies identical and do not prefix every row with the bedroom
+    name.
 11. Consume action tokens on approval/skip and retain only the bounded
     authorization metadata needed by an in-progress occurrence. Close requests
     deterministically on disablement, exclusion, assignment/program/profile
     change, skip, expiry, occurrence completion, and recovery. Prune terminal
-    records and action tokens.
-12. Document assignment, privacy, action semantics, timing, and the fact that
-    approval never overrides a scheduler safety rule.
+    records and action tokens. Reconcile reviewed held/offline job outcomes
+    without replaying completed stages or retaining authorization for cancelled
+    work.
+12. Route notification sends, timers, action-triggered evaluations, and cleanup
+    through the coordinator shutdown gate and config-entry task tracker. Test
+    and document assignment, privacy, action semantics, timing, shutdown, and
+    the fact that approval never overrides a scheduler safety rule.
 
 ## Validation
 
@@ -221,6 +275,12 @@ never reserved in this record.
 - Test matching approval, assigned-user/device validation, occupancy after
   approval, adapter/profile changes, forged/stale/duplicate actions, skip,
   timeout, send failure, and restart.
+- Test a vacuum entity rename with unchanged registry identity before and after
+  approval. The request remains attached once, public adaptive entities do not
+  duplicate, and any later live call uses the current entity ID.
+- Test fast and slow compatible robots with an otherwise identical approved
+  fingerprint: prompting and post-approval dispatch each use the tentative or
+  newly selected robot's own exact operation/pass duration and rerun all gates.
 - Test notify entity resolution, legacy compatibility, rename/reload behavior,
   missing registry references, and redacted diagnostics.
 - Test 30-minute approval, next-window skip, 24-hour reprompt boundaries, and
@@ -238,9 +298,18 @@ never reserved in this record.
   approval fingerprint, while unrelated live water-state changes do not.
 - Test that assignment/delivery failures are room-local but a real post-approval
   clean-start failure engages the existing global halt/Repair.
+- Test a held/offline bedroom stage recovering to complete or cancelled:
+  completed stages are not replayed, cancelled occurrences lose their approval,
+  and no recovery path sends a new prompt directly.
+- Test unload while a delivery is queued, while an action handler owns the
+  coordinator lock, and while an expiry callback is pending. No notification,
+  state mutation, evaluation, profile call, or clean may occur after closing
+  begins. Test entry removal clears assignment/delivery Repairs and Store data
+  without `runtime_data`.
 - Test room-card target ownership, native selector dialog, translated Repair
-  placeholders, dashboard-copy equality, and that non-bedrooms/manual cleans
-  never enter this path.
+  placeholders, strict current-schema rejection/storage safe mode,
+  dashboard-copy equality, and that non-bedrooms/manual cleans never enter this
+  path.
 - Run the complete repository tests and compile every integration Python
   module.
 
@@ -257,4 +326,9 @@ never reserved in this record.
   final area-mapping preflight.
 - Restart neither duplicates nor forgets a request, and no active action token
   appears in logs, public state, Repairs, or diagnostics.
+- Vacuum renames do not invalidate requests, while a replacement robot must
+  reproduce the approved behavior and independently fit the current safe
+  window.
+- Storage corruption and config-entry shutdown fail closed without overwriting
+  saved state, sending a late notification, or dispatching a clean.
 - Skip, timeout, mismatch, and delivery failure never advance clean history.
