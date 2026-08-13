@@ -20,8 +20,8 @@ Initial timing policy:
 - **Skip** defers the room until its next daily desired-window start;
 - timeout does not change cadence and suppresses another prompt for 24 hours;
   and
-- a new request is required if the cleaning program, ordered stages, pass
-  count, room profile, or tentative adapter-resolved profile changes.
+- a new request is required if the cleaning program, ordered stages, vacuum or
+  mop pass count, room profile, or tentative adapter-resolved profile changes.
 
 ## v1.3.2 baseline and gap
 
@@ -84,9 +84,9 @@ only as a compatibility hint. Re-resolve and validate it on every send.
   persist one request; then send **Clean now** and **Skip** actions. Do not
   reserve the robot, create an active stage, or advance cadence.
 - The request fingerprint contains the cleaning program, ordered stage kinds,
-  pass count, requested room profile, tentative resolved profile, adapter
-  ID/schema, and relevant room configuration version. It contains no native
-  map/segment targets.
+  separate vacuum/mop pass counts, requested room profile, tentative resolved
+  profile, adapter ID/schema, and relevant room configuration version. It
+  contains no native map/segment targets.
 - **Clean now** records a 30-minute authorization and schedules a new
   evaluation. Assignment is rebuilt. Dispatch may use only a robot whose
   freshly resolved profile matches the approved fingerprint; otherwise the
@@ -94,8 +94,9 @@ only as a compatibility hint. Re-resolve and validate it on every send.
 - Every normal gate is rechecked before the first stage and every later stage:
   scheduler halt, Party Mode, observe-only, daily window,
   local/adjacent/bedroom-transit occupancy, robot readiness, authoritative
-  water readiness for mop, profile compatibility, pass support, and current
-  Home Assistant area mapping/preflight.
+  water readiness when the current stage is mop, profile compatibility,
+  operation-specific pass support, and current Home Assistant area
+  mapping/preflight.
 - One approval authorizes the immutable scheduled occurrence, not arbitrary
   future room work. A later stage may proceed without another prompt while the
   same approval remains valid. If occupancy or another gate defers the sequence
@@ -133,8 +134,9 @@ Add one bounded record per bedroom containing:
 
 - request status and timestamps;
 - bedroom area reference and an assignment-version reference;
-- cleaning-program/ordered-stage/pass/requested-profile/resolved-profile
-  fingerprint and, for a continuation, completed/pending stage indexes;
+- cleaning-program/ordered-stage/vacuum-pass/mop-pass/requested-profile/
+  resolved-profile fingerprint and, for a continuation, completed/pending
+  stage indexes;
 - tentative adapter ID/schema, without native targets;
 - approval expiry and next-prompt time;
 - last safe outcome; and
@@ -221,7 +223,10 @@ never reserved in this record.
 - Test both ordered cleaning programs: a second stage within the valid approval
   needs no duplicate prompt; occupancy blocks it; continuation after approval
   expiry requires a new remaining-stage confirmation; completed stages never
-  replay; and a skipped no-water mop does not invalidate an approved vacuum.
+  replay; water becoming ready during vacuum permits the approved mop stage;
+  and a skipped no-water mop does not invalidate an approved vacuum.
+- Test that changing either vacuum or mop pass count invalidates the applicable
+  approval fingerprint, while unrelated live water-state changes do not.
 - Test that assignment/delivery failures are room-local but a real post-approval
   clean-start failure engages the existing global halt/Repair.
 - Test room-card target ownership, native selector dialog, translated Repair
@@ -239,8 +244,8 @@ never reserved in this record.
 - An unassigned, stale, or undeliverable bedroom fails closed with actionable
   room-card and Repairs guidance while unrelated rooms remain schedulable.
 - Approval cannot bypass scheduler halt, windows, local/adjacent/transit
-  occupancy, robot readiness, water, profile, passes, or final area-mapping
-  preflight.
+  occupancy, robot readiness, water, profile, operation-specific passes, or
+  final area-mapping preflight.
 - Restart neither duplicates nor forgets a request, and no active action token
   appears in logs, public state, Repairs, or diagnostics.
 - Skip, timeout, mismatch, and delivery failure never advance clean history.

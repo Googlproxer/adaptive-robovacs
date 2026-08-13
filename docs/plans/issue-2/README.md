@@ -42,7 +42,7 @@ that it will receive a particular future schema number.
 | Multipass support | Implemented for v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs; corrected through v1.3.2 | [Implemented plan](02-room-multipass.md) |
 | Mopping when water is available | One room cadence expands a robot default/per-room cleaning program; no water skips only that occurrence's mop stage and notifies all users | [Water-aware ordered cleaning programs](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
-| Power level settings per room | Robot-owned program/profile defaults with per-room overrides for program, fan speed, modes, intensity, and passes | [Robot defaults and per-room cleaning profiles](05-room-power-levels.md) |
+| Power level settings per room | Robot-owned program/profile defaults with per-room overrides for program, fan speed, modes, intensity, and independent vacuum/mop passes | [Robot defaults and per-room cleaning profiles](05-room-power-levels.md) |
 | Confirm with message before bedrooms | Assign one user and phone to each bedroom and send an actionable notification for each run | [Bedroom confirmation](06-bedroom-confirmation.md) |
 
 ## Live capability findings
@@ -106,6 +106,10 @@ Every implementation must retain these repository contracts:
   ordered list of independently dispatched stages. Recheck all safety gates
   before every stage, persist remaining work across waits/restarts, and never
   replay a completed stage.
+- Resolve vacuum and mop pass counts independently from robot defaults and room
+  overrides. Validate each count against the adapter's support for that exact
+  operation rather than assuming vacuum repeat support implies mop repeat
+  support.
 - Treat any scheduler-selected clean that fails or cannot be confirmed to start
   as a durable system-wide dispatch halt. Create an immediate Repairs error and
   start no further cleans on any robot until the user completes a successful
@@ -138,8 +142,9 @@ Plans 1 and 2 and the shared refactor are complete. For the remaining work:
    supplies an equivalent water contract.
 3. Implement robot cleaning-program/profile defaults and per-room overrides on
    the same normalized adapter and Store migration. Plans 3 and 5 should ship
-   together because program ownership, cadence replacement, profile resolution,
-   and ordered-stage checkpoints share one data model.
+   together because program ownership, cadence replacement, independent
+   vacuum/mop pass resolution, profile resolution, and ordered-stage
+   checkpoints share one data model.
 4. Add durable bedroom assignments and confirmation after adjacency, water,
    and profile gates are stable. Approval authorizes a fresh evaluation; it
    never bypasses a safety gate or reserves a robot.
@@ -162,16 +167,19 @@ migrations and public controls needed by that release.
    vendor adapter. Each room has one cadence and uses an effective cleaning
    program of vacuum only, mop only, vacuum then mop, or mop then vacuum. A
    no-water condition skips mopping for that occurrence, still permits
-   vacuuming, and retries mopping only at the next scheduled occurrence. A
+   vacuuming, and retries mopping only at the next scheduled occurrence. For
+   vacuum-then-mop, water is evaluated when mop becomes eligible, so water that
+   becomes available during vacuuming permits the mop stage. A
    robot with no supported water signal is vacuum-only even if generic Home
    Assistant controls advertise mop-related modes.
 4. Cross-room occupancy models undirected adjacency. If either adjacent room
    is occupied, a new clean cannot start in the other.
 5. Power means fan speed. Vacuum cards own robot defaults for cleaning program,
-   fan speed, cleaning/mop modes, mop intensity, and passes; room cards expose
-   **Robot default** plus capability-compatible overrides. Adapters own
-   capability normalization and stage profile application; the generic adapter
-   uses standard Home Assistant actions.
+   fan speed, cleaning/mop modes, mop intensity, vacuum passes, and mop passes;
+   room cards expose **Robot default** plus capability-compatible overrides.
+   Existing pass settings migrate as vacuum passes and new mop-pass settings
+   default to one. Adapters own capability normalization and stage profile
+   application; the generic adapter uses standard Home Assistant actions.
 6. Each bedroom is assigned a Home Assistant user and Companion-app phone. The
    durable assignment uses registry/config-entry identities and resolves the
    current notify target at send time. The assigned phone receives a per-run

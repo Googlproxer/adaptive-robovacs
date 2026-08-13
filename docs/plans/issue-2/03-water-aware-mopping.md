@@ -30,6 +30,10 @@ allowing any vacuum stage to proceed when water is unavailable.
   blocks a configured vacuum stage, never engages the system failure latch,
   and does not keep the occurrence due merely to retry mopping. Mopping is
   considered again at the room's next scheduled occurrence.
+- Water readiness is decided only when the mop stage is actually eligible to
+  start. For **Vacuum then mop**, unavailable water at the beginning does not
+  pre-skip the later mop: if water becomes ready while vacuuming, the fresh
+  mop-stage preflight allows mopping to run.
 - A failure while applying a stage profile, sending a stage clean command, or
   confirming that a stage started is a system failure. Persist the incomplete
   occurrence, cancel its remaining automatic work, and start no more cleans on
@@ -117,17 +121,21 @@ decisions.
 
 Persist one bounded occurrence record containing the area, chosen robot,
 resolved program/profile fingerprint, ordered stages, current stage, terminal
-stage outcomes, schedule time, adapter ID/schema, and safe timestamps. It
-contains no native area/segment targets or transient water entity IDs.
+stage outcomes and per-stage resolved pass counts, schedule time, adapter
+ID/schema, and safe timestamps. It contains no native area/segment targets or
+transient water entity IDs.
 
 1. Resolve a compatible robot and immutable ordered stages for the due room.
 2. Before the first stage, evaluate all global, time-window, occupancy,
    adjacency, bedroom-transit, battery, capability, approval, profile, and
    mapping gates.
-3. Before a mop stage, run the normalized water-readiness check. If water is
-   already unavailable when the occurrence starts, mark its mop stage skipped
-   immediately; do not wait through a vacuum stage hoping it recovers. If
-   water becomes unavailable later, the final mop preflight marks it skipped.
+3. Run normalized water readiness only when a mop stage reaches the front of
+   the sequence and every preceding stage is terminal. For **Mop only** or
+   **Mop then vacuum**, that is the initial evaluation. For **Vacuum then mop**,
+   defer the decision until vacuuming completes and the later stage passes a
+   fresh normal evaluation. Water that becomes ready during vacuuming therefore
+   permits the mop stage; water still unavailable at final mop preflight marks
+   only that stage skipped.
 4. Apply and dispatch only the current stage. Observe completion before making
    the next stage eligible. The same robot remains assigned to the occurrence,
    but is not reserved while the sequence waits.
@@ -162,6 +170,9 @@ time, and the same notification policy applies.
 - Removal, shortage, `unknown`, or `unavailable` from an otherwise supported
   observation is a normal no-water episode. Skip only the mop stage, record a
   safe reason, and continue/complete the occurrence as defined above.
+- Do not persist a no-water decision for a future stage. A preview may show its
+  current readiness, but only the final preflight when that mop stage is next
+  may create `skipped_no_water` or send the notification.
 - Water loss after a mop starts is observed and logged. The scheduler does not
   stop a running robot solely because a sensor changed; observed robot state
   remains authoritative.
@@ -209,9 +220,9 @@ time, and the same notification policy applies.
   reason text, effective robot cleaning-program default, and compatible mop
   profile controls.
 - The room card shows its inherited/overridden cleaning program, single
-  cadence, occurrence/stage progress, last terminal outcome, water-skip reason,
-  and next notification eligibility. Carpet remains an independent stronger
-  exclusion for mop stages.
+  cadence, separate effective vacuum/mop pass counts, occurrence/stage progress,
+  last terminal outcome, water-skip reason, and next notification eligibility.
+  Carpet remains an independent stronger exclusion for mop stages.
 - Do not retain separate mop-due/vacuum-due controls or status rows. Historical
   stage timestamps may remain clearly labeled diagnostics.
 - Capability changes use the existing dynamic discovery signal. Unsupported or
@@ -228,9 +239,10 @@ time, and the same notification policy applies.
    scheduler operation support.
 2. Implement Roborock discovery of the three stable same-device sensor keys and
    reject missing, duplicate, cross-device, or ambiguous matches safely.
-3. Add pure cleaning-program expansion, unified due calculation, stage
-   transition, water-skip, cadence-completion, safe-window, and notification
-   throttle decisions in `models.py`.
+3. Add pure cleaning-program expansion, stage-specific pass resolution,
+   unified due calculation, stage transition, just-in-time water-skip,
+   cadence-completion, safe-window, and notification throttle decisions in
+   `models.py`.
 4. Replace dual room cadence and single-operation Store state with the unified
    interval and bounded occurrence/notification-episode records. Implement the
    explicit migration above and preserve historical diagnostics.
@@ -259,10 +271,13 @@ time, and the same notification policy applies.
   evidence. The generic adapter and robots without the trio remain vacuum-only.
 - Test all four programs, robot defaults, room overrides, one cadence, program
   expansion, carpet exclusion, and capability compatibility.
-- Test **Vacuum then mop** and **Mop then vacuum**, including water unavailable
-  before the occurrence, water lost before the second stage, and water restored
-  only after that occurrence. Verify the vacuum stage still runs and mop waits
-  until the next scheduled occurrence rather than becoming separately due.
+- Test **Vacuum then mop** with water unavailable initially but restored during
+  vacuuming: the later fresh preflight must dispatch mop. Also test water still
+  unavailable after vacuum, water lost before mop, and water restored only
+  after that occurrence; only an actually skipped mop waits until the next
+  scheduled occurrence rather than becoming separately due.
+- Test **Mop then vacuum** with unavailable water: mop is skipped at its
+  just-in-time initial preflight and vacuum remains eligible.
 - Test **Mop only** with no water sends no clean command but advances the
   occurrence with `skipped_no_water`.
 - Test occupancy/adjacency/transit changes between stages, later same-window
@@ -276,8 +291,8 @@ time, and the same notification policy applies.
   24-hour reminders, recovery/reset, restart, partial delivery, total delivery
   failure, and redaction.
 - Test Store migration from dual cadence/history, public entity migration,
-  dynamic card membership, Repair translation placeholders, and dashboard-copy
-  equality.
+  independent vacuum/mop pass settings, dynamic card membership, Repair
+  translation placeholders, and dashboard-copy equality.
 - Run the complete repository tests and compile every integration Python
   module.
 
@@ -289,7 +304,8 @@ time, and the same notification policy applies.
   persists the remainder until a new safe window without replaying completed
   work.
 - A mop stage starts only with adapter-confirmed support and ready water/mop
-  telemetry at final preflight.
+  telemetry at its just-in-time final preflight. A preceding vacuum stage gives
+  water time to become ready; initial unavailability cannot pre-cancel the mop.
 - No-water conditions skip mopping for that occurrence, allow vacuuming, notify
   all resolvable users under the throttled channel policy, and retry mopping
   only at the next scheduled occurrence.

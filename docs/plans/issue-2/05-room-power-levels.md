@@ -19,8 +19,9 @@ The profile fields are:
 - fan speed;
 - cleaning mode;
 - mop mode;
-- mop intensity; and
-- pass count.
+- mop intensity;
+- vacuum pass count; and
+- mop pass count.
 
 The cleaning program replaces the separate vacuum/mop cadence decision. Each
 room has one schedule and one cadence; its effective program defines the ordered
@@ -55,6 +56,9 @@ is no hard-coded common list or semantic translation.
   strings. Expand them to `[vacuum]`, `[mop]`, `[vacuum, mop]`, or
   `[mop, vacuum]`. An ordered program always remains separate stages; a native
   simultaneous operation is not semantically equivalent.
+- Resolve vacuum and mop pass counts independently. Each stage carries only its
+  operation's resolved count, allowing one/two, two/one, or two/two without
+  changing the room's single cadence or ordered program.
 - Before a room may save or use an exact-value override, at least one eligible
   robot must advertise that value. Before inheritance may be used, the chosen
   robot must have an explicit default for that supported field so a later job
@@ -77,7 +81,8 @@ This plan consumes the adapter schema evolution from the water-aware cleaning
 program plan. If implemented independently, it must introduce the same
 versioned extension rather than adding vendor branches to orchestration.
 
-- Keep normalized option sets in `AdapterCapabilities` and add typed
+- Keep normalized option sets in `AdapterCapabilities`; replace a single global
+  pass set with supported pass counts per normalized operation. Add typed
   `RequestedCleaningProfile`, `ResolvedCleaningProfile`, `CleaningProgram`,
   and `CleaningStage` values.
 - Add adapter methods to validate a resolved stage profile without side effects
@@ -92,16 +97,22 @@ versioned extension rather than adding vendor branches to orchestration.
   exceptions. Roborock may use native repeat-2 dispatch for a stage requesting
   two passes, but shared runtime must not also toggle a pass control. It may not
   collapse ordered vacuum/mop stages into `vac_and_mop`.
-- Record adapter ID/schema, requested/resolved profile, program, stage index,
-  and pass count in the occurrence/active-stage checkpoint. After restart,
-  observed robot state remains authoritative and no profile or command is
-  replayed automatically.
+- Record adapter ID/schema, requested/resolved profile, program, both requested
+  and resolved pass defaults/overrides, stage index, and the current stage's
+  pass count in the occurrence/active-stage checkpoint. After restart, observed
+  robot state remains authoritative and no profile or command is replayed
+  automatically.
 
 ## Defaults, migration, and leakage prevention
 
 - Preserve existing v1.3 robot fan/mode/mop defaults and stable entity/unique
-  IDs. New room overrides migrate to null (**Robot default**) and existing room
-  pass values remain unchanged.
+  IDs. New room profile overrides migrate to null (**Robot default**).
+- Reinterpret the existing robot `double_pass` default and room `pass_count`
+  override as the vacuum-stage pass settings, preserving their entity/unique
+  IDs and effective behavior with clearer vacuum-specific labels. Add a new
+  robot mop-pass default initialized to one and a nullable room mop-pass
+  override initialized to **Robot default**. Upgrading therefore never
+  unexpectedly doubles mopping.
 - Coordinate the robot cleaning-program and single-cadence migration with plan
   3. Do not ship a temporary state in which a room has one program but two
   independently authoritative cadences.
@@ -113,8 +124,15 @@ versioned extension rather than adding vendor branches to orchestration.
   apply mop-only fields. Mop stages apply the resolved mop settings. Shared
   fields such as fan speed and cleaning mode follow adapter-declared relevance;
   skipped water stages perform no profile service calls.
-- One room pass count applies to every dispatched stage in the effective
-  program. Separate vacuum-pass and mop-pass settings are deferred.
+- Vacuum and mop pass choices are each **Robot default**, **1 pass**, or
+  **2-pass cross-hatch** on room cards. Vacuum cards expose independent robot
+  defaults. Hide a stage's control when the effective program cannot contain
+  that operation; retain its saved value so changing programs does not destroy
+  user configuration.
+- Adapter support is operation-specific. A robot advertising vacuum two-pass
+  but not mop two-pass can run double vacuum/single mop but is incompatible
+  with a double-mop request. Never infer mop repeat support solely from vacuum
+  repeat support.
 - If eligible robots differ, room option lists show the live union for editing,
   while assignment still enforces the complete exact profile. Presentation may
   show supporting robot names but persistence stores raw values and registry
@@ -129,9 +147,11 @@ versioned extension rather than adding vendor branches to orchestration.
 - Carpet is a stronger room exclusion for mop stages. A carpeted room may use
   **Vacuum only**; a saved program containing mop is an actionable
   configuration incompatibility, not a transient water skip.
-- Water readiness is checked when an occurrence starts and again immediately
-  before a mop-stage checkpoint. No water marks that mop stage skipped for the
-  occurrence and leaves vacuum stages eligible regardless of ordering.
+- Water readiness is checked when the mop stage is actually next and again in
+  its final adapter preflight. For **Vacuum then mop**, do not pre-skip mop from
+  the initial water state: water becoming ready during the vacuum stage allows
+  mop to run. Water still unavailable at the mop-stage preflight skips that
+  stage and leaves vacuum stages eligible regardless of ordering.
 - Completed stages remain completed. Occupancy, adjacency, transit, battery, or
   window changes between stages persist the remaining sequence and return it
   through normal candidate evaluation.
@@ -167,8 +187,9 @@ enters this failure path.
 - Every vacuum card shows the robot cleaning-program default plus configured,
   current-observation, and compatibility status for its other defaults.
 - Every room card shows one cleaning cadence and gains **Robot default** profile
-  selects. Program choices are capability-filtered normalized labels; vendor
-  fields use the exact live union for eligible robots on that floor.
+  selects. It presents vacuum passes and mop passes as distinct controls.
+  Program choices are capability-filtered normalized labels; vendor fields use
+  the exact live union for eligible robots on that floor.
 - Room status shows the resolved robot, effective program, ordered/current
   stage, inherited fields, water-skipped stage, and compatibility reasons. It
   does not retain separate vacuum/mop due rows, repeat the room name on every
@@ -179,10 +200,12 @@ enters this failure path.
 
 ## Implementation plan
 
-1. Add typed requested/resolved profiles, cleaning programs/stages, and pure
-   default-resolution and whole-program compatibility helpers in `models.py`.
-2. Extend robot settings with an explicit program default and `RoomSettings`
-   with nullable program, fan-speed, cleaning-mode, mop-mode, and mop-intensity
+1. Add typed requested/resolved profiles, cleaning programs/stages,
+   operation-specific pass capabilities, and pure default-resolution and
+   whole-program compatibility helpers in `models.py`.
+2. Extend robot settings with an explicit program default and separate vacuum
+   and mop pass defaults. Extend `RoomSettings` with nullable program,
+   fan-speed, cleaning-mode, mop-mode, mop-intensity, vacuum-pass, and mop-pass
    overrides. Coordinate the Store migration with plan 3's single cadence and
    occurrence state.
 3. Extend the versioned adapter contract with stage-profile validation and
@@ -195,17 +218,19 @@ enters this failure path.
    every stage.
 5. Refactor runtime profile application into the adapter boundary. Apply only
    the current stage's relevant cleaning mode, fan speed, mop mode/intensity,
-   and non-native pass controls in deterministic order; repeat capability and
-   water preflight before checkpoint/application.
+   and resolved operation-specific non-native pass controls in deterministic
+   order; repeat capability and just-in-time water preflight before
+   checkpoint/application.
 6. Reuse the system fault latch for actual application errors. Add separate
    auto-clearing compatibility Repairs for missing defaults, saved unsupported
    programs/values, carpet/mop conflicts, or capability regression.
 7. Add stable robot-default and room-override controls/status roles to the
    selected cards without replacing unaffected public entity IDs or unique IDs.
    Remove/migrate only the superseded dual-cadence and mopping-enable surfaces.
-8. Store program, requested/resolved profile, adapter version, stage index, and
-   terminal stage outcomes in previews and occurrence/active-stage checkpoints.
-   Keep robot observations authoritative during recovery.
+8. Store program, requested/resolved profile, both operation pass resolutions,
+   adapter version, stage index, and terminal stage outcomes in previews and
+   occurrence/active-stage checkpoints. Keep robot observations authoritative
+   during recovery.
 9. Document normalized program semantics, exact-value compatibility, required
    defaults, one cadence, water skipping, pass handling, and Repair/resume
    behavior.
@@ -222,12 +247,16 @@ enters this failure path.
 - Test missing robot defaults, heterogeneous robots, exact raw values,
   whole-profile filtering, carpet conflicts, capability regression, and
   capability-aware controls.
-- Test one/two passes across one- and two-stage programs, Roborock native
-  repeat-2 behavior, and prevention of ordered-stage collapse into a combined
-  native operation.
-- Test no water in both stage orders: mop is skipped, vacuum remains eligible,
-  skipped mop profile calls are not made, and the occurrence advances only
-  under plan 3's terminal-outcome rules.
+- Test every independent pass combination across one- and two-stage programs,
+  especially double vacuum/single mop and single vacuum/double mop. Test
+  operation-specific capability rejection, Roborock native repeat-2 behavior,
+  separate duration keys, and prevention of ordered-stage collapse into a
+  combined native operation.
+- Test no water in both stage orders: mop is skipped only when it becomes the
+  current stage, vacuum remains eligible, skipped mop profile calls are not
+  made, and the occurrence advances only under plan 3's terminal-outcome rules.
+  When water becomes ready during a preceding vacuum, the configured mop pass
+  count must run.
 - Test profile edits, occupancy waits, restart, and robot capability changes
   between stages without leakage or replay.
 - Test compatibility Repairs auto-clear, while an actual stage-profile
@@ -242,6 +271,8 @@ enters this failure path.
 
 - A robot owns one explicit cleaning-program/profile default and every room can
   inherit or override it without creating a second cadence.
+- Vacuum and mop pass counts resolve independently from robot defaults and room
+  overrides, and each is validated against operation-specific adapter support.
 - Two rooms can reliably request different profiles on the same robot, and a
   following inherited room restores the complete robot default.
 - Ordered programs remain ordered physical stages, and every remaining stage
