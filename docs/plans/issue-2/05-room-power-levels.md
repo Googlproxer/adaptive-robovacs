@@ -1,11 +1,13 @@
-# Plan: Robot defaults and per-room cleaning profiles
+# Plan: Robot defaults, per-room profiles, and manual room cleans
 
 ## Goal
 
 Let every robot define its default cleaning behavior and let each room inherit
 or override that behavior. Resolve one complete, capability-compatible profile
 for the chosen robot and reapply it before every stage so settings from one
-room or stage cannot leak into the next.
+room or stage cannot leak into the next. Add three room-card actions that use
+that same resolution and dispatch path to start an immediate configured clean,
+vacuum-only clean, or mop-only clean.
 
 ## Confirmed product model
 
@@ -28,6 +30,29 @@ room has one schedule and one cadence; its effective program defines the ordered
 stages attempted at every occurrence. A room offers **Robot default** for every
 overridable field. Maintenance or administrative controls such as child lock,
 do-not-disturb, or dust-bin actions are not room profile fields.
+
+## Combined issue #4 manual actions
+
+This plan also implements [issue #4, **Manual operation
+triggering**](https://github.com/Googlproxer/adaptive-robovacs/issues/4).
+Each discovered room card exposes exactly three actions:
+
+- **Manual clean**: run the room's current effective cleaning program and
+  complete resolved profile;
+- **Manual vacuum only**: override only the program to one vacuum stage while
+  retaining the room's current effective vacuum profile and pass count; and
+- **Manual mop only**: override only the program to one mop stage while
+  retaining the room's current effective mop profile and pass count.
+
+There is no separate hard-coded multipass manual action. In particular, the
+original issue's proposed **Vacuum (2 pass) + Mop (2 pass)** button is removed.
+The three actions do not force one or two passes: each operation uses the same
+robot-default/per-room pass resolution as scheduled work.
+
+The backend exposes one target service with `area_id` and a normalized mode of
+`configured`, `vacuum_only`, or `mop_only`; the three room-owned button entities
+call that service. Keeping one validated service makes the actions available to
+scripts and Developer Tools without duplicating dispatch logic.
 
 ## v1.4.4 baseline and remaining gap
 
@@ -65,6 +90,15 @@ profile fields and prefers same-device registry translation metadata when
 classifying cleaning/mop selectors. Plan 5 must preserve both behaviors: an
 unset value is not an implicit vendor default, and option-text heuristics remain
 a fallback rather than the primary capability contract.
+
+The integration currently observes external Home Assistant `vacuum.clean_area`
+calls as `manual_home_assistant` jobs and applies a narrow completion deferral.
+That observer is not a safe implementation for the new buttons: it sees the
+service call after another caller has already selected a robot and does not
+resolve/apply the room's Adaptive RoboVacs profile. The new room actions are
+integration-owned one-shot occurrences created before any profile or clean
+service call. Existing external manual-call observation remains unchanged and
+is not reclassified as a dashboard request.
 
 ## Ownership and resolution
 
@@ -106,6 +140,53 @@ a fallback rather than the primary capability contract.
   the sequence's robot. It is not reserved between stages, but a later stage is
   not reassigned to a robot with different defaults. Removal or capability
   regression becomes a visible compatibility wait/Repair.
+
+## Manual request semantics and safety
+
+- A room-card press is an authenticated request to start now. It bypasses the
+  room's cadence/due time and desired cleaning window, but it never changes the
+  saved cadence, program, profile, pass overrides, or robot defaults.
+- Manual authority is not a general safety bypass. Storage safe mode, config
+  entry shutdown, the durable scheduler halt, Party Mode, observe-only mode,
+  local occupancy, unresolved occupancy, bedroom-transit restrictions, robot
+  activity/readiness/battery, adapter compatibility, carpet exclusion, water
+  preflight/confirmation, and current Home Assistant area mapping remain
+  mandatory. After plan 4, adjacent-room occupancy automatically joins this
+  shared gate. After plan 6, bedroom authorization also remains mandatory.
+- Resolve the full candidate and selected robot under the coordinator lock at
+  press time. If the room is initially blocked, already has an active/pending
+  occurrence, or no robot can start safely, reject visibly and persist only a
+  bounded audit outcome. Do not create a latent request that starts later after
+  the user has forgotten the press.
+- Once the first stage of **Manual clean** starts, its ordered occurrence is
+  restart-safe like scheduled work. A later stage repeats all live gates; if it
+  becomes unsafe, preserve only the remaining stage and resume it through a
+  fresh evaluation. Completed stages are never replayed. The manual request's
+  desired-window bypass remains attached only to that occurrence.
+- **Manual vacuum only** and **Manual mop only** are single-stage occurrences.
+  They do not mutate the room's configured program or remove the other
+  operation from future scheduled occurrences.
+- Telemetry-backed no-water rejects an initial mop-only request without a clean
+  or cadence change. A verified mop-capable robot without water telemetry uses
+  plan 3's explicit one-hour **Confirm water / Cancel mopping** workflow; cancel,
+  dismissal, timeout, or ambiguity closes the manual request without dispatch.
+  In a configured vacuum-then-mop request, water is still evaluated only when
+  mop becomes current, so water becoming available during vacuuming permits it.
+- Persist the request/occurrence with source `manual_dashboard`, caller context,
+  normalized requested mode, stable robot registry ID, resolved program/profile,
+  operation-specific passes, adapter schema, and stage state before applying a
+  profile or dispatching. Never persist native targets, action secrets, or raw
+  integration errors.
+- A manual occurrence that physically completes updates the room's normal
+  completion timestamp and therefore restarts its single cadence exactly once.
+  A rejected request, water-cancelled mop-only request, or clean that never
+  starts does not advance history or cadence. External
+  `manual_home_assistant` calls retain their existing bounded audit/deferral
+  behavior.
+- Profile, dispatch, and start-confirmation failures after an accepted attempt
+  are real system failures and engage the existing durable global halt/Repair.
+  Ordinary preflight rejection is a safe user-visible outcome, not a Repair,
+  unless it reveals a persistent actionable configuration incompatibility.
 
 ## Adapter profile contract
 
@@ -242,11 +323,16 @@ live discovery.
   selects. It presents vacuum passes and mop passes as distinct controls.
   Program choices are capability-filtered normalized labels; vendor fields use
   the exact live union for eligible robots on that floor.
+- Every room card also shows **Manual clean**, **Manual vacuum only**, and
+  **Manual mop only** buttons. Keep all three positions stable; make mop-only
+  unavailable with a clear capability/carpet reason when it cannot run, and
+  keep configured-program incompatibility visible instead of silently changing
+  what **Manual clean** means.
 - Room status shows the resolved robot, effective program, ordered/current
   stage, inherited fields, pending water-confirmation deadline, water-skipped or
-  unconfirmed stage, and compatibility reasons. It does not retain separate
-  vacuum/mop due rows, repeat the room name on every row, or display another
-  room's controls.
+  unconfirmed stage, latest manual-request outcome, and compatibility reasons.
+  It does not retain separate vacuum/mop due rows, repeat the room name on every
+  row, or display another room's controls.
 - Dynamic capability/friendly-name changes update option membership and labels
   through the existing discovery signal. Both JavaScript copies remain
   byte-identical.
@@ -280,25 +366,67 @@ live discovery.
    order; repeat capability and just-in-time water preflight before
    checkpoint/application. Route work through config-entry task tracking and
    repeat the closing check before every service call and dispatch.
-6. Reuse the system fault latch for actual application errors. Add separate
-   auto-clearing compatibility Repairs for missing defaults, saved unsupported
-   programs/values, carpet/mop conflicts, or capability regression. Make their
-   issue IDs/data enumerable during config-entry removal without `runtime_data`.
-7. Add stable robot-default and room-override controls/status roles to the
-   selected cards without replacing unaffected public entity IDs or unique IDs.
-   Remove/migrate only the superseded dual-cadence and mopping-enable surfaces.
-8. Store program, requested/resolved profile, both operation pass resolutions,
-   adapter version, stable robot registry ID, stage index, and terminal stage
-   outcomes in occurrence/active-stage checkpoints. Project only safe display
-   data; keep current entity IDs transient and robot observations authoritative
-   during recovery.
-9. Put room/vacuum compatibility and effective-profile status in
-   `projections.py`, then document normalized program semantics, exact-value
-   compatibility, required defaults, one cadence, water skipping, pass
-   handling, and Repair/resume behavior.
+6. Add pure manual-mode resolution and initial eligibility decisions. Build a
+   `configured` request from the effective room program and build the two
+   operation overrides without mutating settings. Return stable rejected/busy/
+   accepted reason codes and require all immediate safety gates.
+7. Add a typed `manual_dashboard` request/source to occurrence and active-job
+   state. Persist caller context, normalized mode, profile fingerprint, stable
+   robot identity, stages, and desired-window-bypass scope before side effects.
+   Reuse observed lifecycle/recovery and duration learning while keeping
+   external `manual_home_assistant` tracking distinct.
+8. Add `adaptive_robovacs.manual_clean_room` with validated config entry,
+   `area_id`, and normalized mode. Serialize it through the coordinator lock,
+   reject duplicates/unsafe initial state without queuing, and run accepted work
+   through the same adapter profile/preflight/dispatch/start-confirmation path.
+9. Reuse the system fault latch for actual profile/application/start errors.
+   Add separate auto-clearing compatibility Repairs for missing defaults, saved
+   unsupported programs/values, carpet/mop conflicts, or capability regression.
+   Make their issue IDs/data enumerable during config-entry removal without
+   `runtime_data`; ordinary manual preflight rejection creates no Repair.
+10. Add stable robot-default and room-override controls/status roles plus three
+    room-owned manual button roles. Preserve unaffected public entity IDs and
+    unique IDs, remove/migrate only superseded profile surfaces, and expose safe
+    manual outcomes without target-name prefixes.
+11. Store program, manual/configured intent, requested/resolved profile, both
+    operation pass resolutions, adapter version, stable robot registry ID,
+    stage index, terminal outcomes, and cadence effect in occurrence/active
+    checkpoints. Project room/vacuum compatibility, effective profile, and
+    manual state only through `projections.py`; keep robot observations
+    authoritative during recovery.
+12. Document normalized program semantics, exact-value compatibility, manual
+    bypass boundaries, one cadence, water/confirmation behavior, pass handling,
+    external-manual distinction, and Repair/resume behavior.
 
 ## Validation
 
+- Test that each room owns exactly three manual button entities and the backend
+  accepts only `configured`, `vacuum_only`, or `mop_only` for a discovered room
+  in the selected entry. Confirm there is no dedicated multipass action.
+- Test **Manual clean** snapshots the effective configured program/profile and
+  exact operation-specific pass counts. Test the two single-operation actions
+  override only the program and never mutate saved settings.
+- Test that a safe press bypasses due time and the room desired window, while
+  Party Mode, observe-only/storage-safe/closing/halted states, occupancy,
+  unresolved occupancy, bedroom-transit policy, busy robots, battery,
+  capability, carpet, water, mapping, and profile checks still reject it.
+- Test an initially blocked/duplicate press records one bounded visible outcome
+  but creates no occurrence, delayed evaluation, cadence change, Repair, or
+  later clean.
+- Test an accepted configured two-stage manual occurrence across restart and an
+  intervening occupancy/readiness change. The completed stage is not replayed,
+  the remaining stage retains only that occurrence's desired-window bypass,
+  and profile/pass changes invalidate it safely.
+- Test authoritative no-water mop-only rejection and no-sensor mop-only
+  confirmation/cancel/timeout. None advances cadence without a physical clean;
+  vacuum-then-mop still permits water that becomes ready during vacuuming.
+- Test successful manual completion updates the unified room completion/cadence
+  once and learns only observed exact robot/operation/pass duration. Test
+  cancellation and start failure do not update completion; start failure
+  engages the durable global halt.
+- Test existing external `vacuum.clean_area` observation remains
+  `manual_home_assistant` with its current audit/deferral semantics and is not
+  double-counted as a dashboard occurrence.
 - Test all robot-default and room-override program combinations, including
   exact ordered expansion and rejection when a robot cannot support the whole
   program.
@@ -331,8 +459,9 @@ live discovery.
 - Test profile edits, occupancy waits, restart, and robot capability changes
   between stages without leakage or replay.
 - Test unload while profile application is queued, while it owns the
-  coordinator lock, and between two profile service calls. No later profile or
-  clean action may run after closing begins.
+  coordinator lock, between two profile service calls, and while a manual button
+  request is queued. No later profile or clean action may run after closing
+  begins.
 - Test compatibility Repairs auto-clear, while an actual stage-profile
   application failure aborts the occurrence and durably halts all scheduler
   work until explicit successful recheck/resume.
@@ -347,6 +476,15 @@ live discovery.
 
 - A robot owns one explicit cleaning-program/profile default and every room can
   inherit or override it without creating a second cadence.
+- Every room card offers exactly **Manual clean**, **Manual vacuum only**, and
+  **Manual mop only**. There is no special multipass action; effective pass
+  settings are honored by the operation being requested.
+- An accepted manual action uses the same selected-robot profile, adapter,
+  mapping, water, start-confirmation, lifecycle, and failure path as scheduled
+  work while bypassing only cadence and the room desired window.
+- An initially unsafe press never becomes a latent clean. A successful manual
+  occurrence advances the room's single cadence once; a request that never
+  starts does not advance it.
 - Vacuum and mop pass counts resolve independently from robot defaults and room
   overrides, and each is validated against operation-specific adapter support.
 - Two rooms can reliably request different profiles on the same robot, and a

@@ -54,6 +54,11 @@ single-choice select merely to fit the existing renderer.
   occupied, matching the existing start-safety model. Every later stage in an
   ordered cleaning occurrence is a new start: it must recheck adjacency and,
   when blocked, persist the remaining sequence until a newly valid safe window.
+- Plan 5 is implemented first and adds integration-owned manual room
+  occurrences. Apply adjacency to their initial press-time preflight and every
+  later configured-program stage. An initially blocked manual press is rejected
+  rather than queued; a later stage of an already-started occurrence waits under
+  the normal restart-safe continuation rules.
 - Adjacency occupancy is a pre-dispatch safety gate, not a failed clean start.
   A block never engages the v1.3 system-wide dispatch halt.
 - A pooled duration estimate must not be used to approve adjacency/vacancy as a
@@ -93,7 +98,8 @@ single-choice select merely to fit the existing renderer.
    within the evaluation so reciprocal edges do not duplicate state reads.
    Apply the same gate to an occurrence's first stage and every resumed stage,
    then repeat it after robot-specific duration resolution and immediately
-   before profile application/dispatch.
+   before profile application/dispatch. Use the same path for scheduled and
+   `manual_dashboard` occurrences.
 6. Include blocker kind (`local`, `adjacent`, or `bedroom_transit`), adjacent
    room names, missing references, and confidence in room status and schedule
    preview data produced by `projections.py`. Add stable room-owned entity roles
@@ -128,6 +134,9 @@ single-choice select merely to fit the existing renderer.
 - Test adjacency becoming occupied between ordered vacuum/mop stages: the
   running stage is not stopped, the remaining stage does not start, and it
   resumes only through a fresh safe-window evaluation.
+- Test plan 5 manual actions: an occupied neighbor rejects the initial press
+  without a latent request, while adjacency appearing after the first stage
+  preserves only the remaining manual stage until a fresh safe evaluation.
 - Test target/entry validation, the per-room native multi-area dialog, room-card
   ownership, missing-reference Repair lifecycle/translation placeholders, and
   dashboard-copy equality.
@@ -144,6 +153,8 @@ single-choice select merely to fit the existing renderer.
 - A link behaves symmetrically and survives restart without duplicate edges.
 - Occupancy in any direct neighbor prevents a new clean in the target room.
 - Each separately dispatched stage counts as a new clean for adjacency safety.
+- Scheduled and dashboard-manual starts use the same adjacency result; manual
+  window/cadence bypass never bypasses a neighbor.
 - Missing references and unavailable observations are visible and never
   silently treated as known vacant.
 - Robot-specific duration and final safety reevaluation can still veto a room

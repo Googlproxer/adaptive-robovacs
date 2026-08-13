@@ -1,9 +1,13 @@
-# Issue #2 feature plans
+# Adaptive RoboVacs feature plans
 
 These documents break [GitHub issue #2, **Features**](https://github.com/Googlproxer/adaptive-robovacs/issues/2)
 into one implementation plan per checklist item. They are planning artifacts;
 none of the issue items is complete until its plan has been implemented,
 validated, released, installed through HACS, and verified in Home Assistant.
+Plan 5 also absorbs [issue #4, **Manual operation
+triggering**](https://github.com/Googlproxer/adaptive-robovacs/issues/4), because
+manual room actions depend on the same effective-profile and adapter dispatch
+work.
 
 ## Baseline
 
@@ -73,7 +77,8 @@ remaining plans:
 | Multipass support | Implemented for v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs; corrected through v1.3.2 | [Implemented plan](02-room-multipass.md) |
 | Mopping when water is available | Implemented in v1.4.0 and corrected through v1.4.3: telemetry-backed live readiness, ordered stages, one cadence, and explicit one-hour all-user confirmation when water telemetry is absent | [Implemented plan](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
-| Power level settings per room | Robot-owned program/profile defaults with per-room overrides for program, fan speed, modes, intensity, and independent vacuum/mop passes | [Robot defaults and per-room cleaning profiles](05-room-power-levels.md) |
+| Power level settings per room | Robot-owned program/profile defaults with per-room overrides for program, fan speed, modes, intensity, and independent vacuum/mop passes | [Robot defaults, per-room profiles, and manual room cleans](05-room-power-levels.md) |
+| Issue #4: manual operation triggering | One room-owned action for the configured program, one for vacuum only, and one for mop only; no dedicated multipass action | [Combined into plan 5](05-room-power-levels.md) |
 | Confirm with message before bedrooms | Assign one user and phone to each bedroom and send an actionable notification for each run | [Bedroom confirmation](06-bedroom-confirmation.md) |
 
 ## Live capability findings
@@ -178,6 +183,11 @@ Every implementation must retain these repository contracts:
   notification/profile callback through the coordinator's shutdown gate. No
   remaining feature may send a notification, apply a profile, or dispatch a
   clean after config-entry unload begins.
+- Treat dashboard manual room actions as integration-owned occurrences, not as
+  observed external service calls. They may bypass cadence and the room desired
+  window, but never occupancy/transit, Party Mode, observe-only/storage-safe/
+  halted/closing state, readiness, water/approval, profile, mapping, or
+  start-confirmation gates.
 - Treat each shipped item as an integration release: bump `manifest.json`, run
   the complete validation suite, create the matching annotated semantic tag
   and GitHub Release, update through HACS, and restart Home Assistant only after
@@ -187,14 +197,16 @@ Every implementation must retain these repository contracts:
 
 Plans 1 through 3 and the shared refactor are complete. For the remaining work:
 
-1. Implement symmetric room adjacency as an independent occupancy gate and
+1. Complete plan 5's remaining per-room fan-speed, cleaning-mode, mop-mode,
+   and mop-intensity overrides together with issue #4's three manual room
+   actions. Version 1.4.0 already supplies the shared cleaning-program
+   ownership, cadence, independent pass resolution, adapter readiness, and
+   ordered-stage checkpoint model; v1.4.4 supplies stable robot identity and
+   robot-specific final forecasting. This makes plan 5 the smallest next step
+   and gives later safety gates one shared scheduled/manual dispatch path.
+2. Implement symmetric room adjacency as an independent occupancy gate and
    per-room-card editor using the typed Store/projection/shutdown boundaries
-   established by v1.4.4.
-2. Complete plan 5's remaining per-room fan-speed, cleaning-mode, mop-mode,
-   and mop-intensity overrides. Version 1.4.0 already supplies the shared
-   cleaning-program ownership, cadence, independent pass resolution, adapter
-   readiness, and ordered-stage checkpoint model; v1.4.4 supplies stable robot
-   identity and robot-specific final forecasting.
+   established by v1.4.4. Apply it to scheduled and plan 5 manual occurrences.
 3. Add durable bedroom assignments and confirmation after adjacency, water,
    and profile gates are stable. Reuse the water-confirmation transport and
    config-entry-owned lifecycle infrastructure without sharing authorization.
@@ -232,7 +244,10 @@ migrations and public controls needed by that release.
    room cards expose **Robot default** plus capability-compatible overrides.
    Existing pass settings migrate as vacuum passes and new mop-pass settings
    default to one. Adapters own capability normalization and stage profile
-   application; the generic adapter uses standard Home Assistant actions.
+   application; the generic adapter uses standard Home Assistant actions. Each
+   room card also exposes **Manual clean**, **Manual vacuum only**, and **Manual
+   mop only**. There is no dedicated multipass manual action; the requested
+   operation uses its current effective pass setting.
 6. Each bedroom is assigned a Home Assistant user and Companion-app phone. The
    durable assignment uses registry/config-entry identities and resolves the
    current notify target at send time. The assigned phone receives a per-run

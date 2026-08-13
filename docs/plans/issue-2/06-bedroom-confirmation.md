@@ -48,6 +48,12 @@ boundaries and the global scheduler halt: a halted, closing, or storage-safe
 scheduler may show existing safe confirmation status but must not send another
 prompt or start a bedroom clean.
 
+Plan 5 is implemented before this plan and adds `manual_dashboard` room
+occurrences. Those actions are integration-owned bedroom runs, not external
+manual observations, so they require this plan's assigned-recipient approval.
+Pressing **Manual clean**, **Manual vacuum only**, or **Manual mop only** is not
+itself bedroom authorization and does not bypass the phone workflow.
+
 Home Assistant Companion actionable notifications return actions through the
 `mobile_app_notification_action` event. Each request needs unpredictable action
 IDs so stale or unrelated actions cannot approve a clean. See the
@@ -145,6 +151,11 @@ only as a compatibility hint. Re-resolve and validate it on every send.
   scheduler halt is active.
 - Dashboard approve/skip actions use the same backend validation and are a
   fallback response surface, not a separate authorization path.
+- A plan 5 manual bedroom request bypasses cadence and the room desired window
+  only after approval; every other bedroom gate remains mandatory. If initial
+  non-approval safety checks fail, reject the press without sending or queuing
+  a prompt. Once otherwise eligible, persist the manual mode/profile fingerprint
+  and send the normal assigned-phone request before creating an active stage.
 
 ## Action validation and privacy
 
@@ -294,6 +305,10 @@ profile, or clean merely because Store says authorization was active.
   bedroom approval precedes the all-user water request; confirm/cancel actions
   cannot cross-authorize; and expiry of either authorization blocks mopping
   while preserving any safe configured vacuum stage.
+- Test all three plan 5 manual actions for an enabled bedroom: the button press
+  alone never dispatches, the assigned-phone approval fingerprint includes the
+  manual mode and resolved stages/profile, skip/timeout leaves cadence unchanged,
+  and an approved request retains only its documented cadence/window bypass.
 - Test that changing either vacuum or mop pass count invalidates the applicable
   approval fingerprint, while unrelated live water-state changes do not.
 - Test that assignment/delivery failures are room-local but a real post-approval
@@ -319,6 +334,8 @@ profile, or clean merely because Store says authorization was active.
   sent to the bedroom's currently resolved assigned phone, and no separately
   dispatched stage starts after that authorization expires without a fresh
   remaining-stage confirmation.
+- Plan 5 manual bedroom actions follow the same assigned-recipient rule; a
+  dashboard press is a request, not authorization.
 - An unassigned, stale, or undeliverable bedroom fails closed with actionable
   room-card and Repairs guidance while unrelated rooms remain schedulable.
 - Approval cannot bypass scheduler halt, windows, local/adjacent/transit
