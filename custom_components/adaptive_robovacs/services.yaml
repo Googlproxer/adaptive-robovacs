@@ -7,6 +7,12 @@ evaluate:
       description: Build a non-dispatching schedule preview.
       selector:
         boolean:
+    entry_id:
+      name: Config entry
+      description: Required only when more than one Adaptive RoboVacs entry is loaded.
+      selector:
+        config_entry:
+          integration: adaptive_robovacs
 record_manual_clean:
   name: Record manual clean
   description: Defers known area work due in the next 24 hours by one day.
@@ -28,3 +34,37 @@ record_manual_clean:
           options:
             - vacuum
             - mop
+    entry_id:
+      name: Config entry
+      description: Required only when more than one Adaptive RoboVacs entry is loaded.
+      selector:
+        config_entry:
+          integration: adaptive_robovacs
+manual_clean_room:
+  name: Manually clean room
+  description: Immediately attempts a safety-gated clean of one discovered room. Cadence and the desired window are bypassed; all physical and scheduler safety gates remain active.
+  fields:
+    area_id:
+      name: Room
+      required: true
+      selector:
+        area:
+    mode:
+      name: Cleaning mode
+      required: true
+      default: configured
+      selector:
+        select:
+          options:
+            - label: Current settings
+              value: configured
+            - label: Vacuum only
+              value: vacuum_only
+            - label: Mop only
+              value: mop_only
+    entry_id:
+      name: Config entry
+      description: Required only when more than one Adaptive RoboVacs entry is loaded.
+      selector:
+        config_entry:
+          integration: adaptive_robovacs

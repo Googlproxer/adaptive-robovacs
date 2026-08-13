@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING
 from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
-from .models import effective_cleaning_program, expand_cleaning_program, stage_pass_count
+from .models import (
+    effective_cleaning_program,
+    cleaning_profile_is_supported,
+    expand_cleaning_program,
+    resolve_cleaning_profile,
+    stage_pass_count,
+)
 
 if TYPE_CHECKING:
     from .coordinator import AdaptiveRoboVacCoordinator
@@ -21,6 +27,9 @@ FAULT_SUMMARIES = {
     "adapter_request_unsupported": "The selected vacuum no longer supports this cleaning request.",
     "adapter_preflight_failed": "The vacuum adapter could not validate this cleaning request.",
     "profile_apply_failed": "The vacuum cleaning profile could not be applied.",
+    "profile_validation_failed": "The vacuum cleaning profile could not be validated.",
+    "profile_option_unsupported": "A saved cleaning profile option is no longer supported.",
+    "profile_control_unavailable": "A required vacuum profile control is unavailable.",
     "generic_dispatch_failed": "Home Assistant could not start the room clean.",
     "native_dispatch_failed": "The vacuum vendor command could not start the room clean.",
     "start_confirmation_failed": "The vacuum did not confirm that cleaning started.",
@@ -182,8 +191,19 @@ def async_sync_cleaning_program_issues(
                     if stage_index >= len(stages):
                         continue
                     stage = stages[stage_index]
-                    if robot.adapter_capabilities.supports(
-                        str(stage.get("operation")), int(stage.get("passes", 1))
+                    operation = str(stage.get("operation"))
+                    profile = stage.get("cleaning_profile")
+                    if (
+                        robot.adapter_capabilities.supports(
+                            operation, int(stage.get("passes", 1))
+                        )
+                        and (
+                            not isinstance(profile, dict)
+                            or not profile
+                            or cleaning_profile_is_supported(
+                                profile, robot.adapter_capabilities
+                            )
+                        )
                     ):
                         compatible = True
                         break
@@ -211,6 +231,13 @@ def async_sync_cleaning_program_issues(
                         )
                     ) is not None
                     and robot.adapter_capabilities.supports(operation, passes)
+                    and resolve_cleaning_profile(
+                        operation,
+                        settings,
+                        robot_settings,
+                        robot.adapter_capabilities,
+                    )
+                    is not None
                     for operation in operations
                 ):
                     compatible = True

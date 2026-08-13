@@ -7,7 +7,16 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.util import dt as dt_util
 
-from .models import next_usable_window_start, next_window_start
+from .models import (
+    effective_cleaning_program,
+    expand_cleaning_program,
+    next_usable_window_start,
+    next_window_start,
+    cleaning_profile_sources,
+    requested_cleaning_profile,
+    resolve_cleaning_profile,
+    stage_pass_count,
+)
 
 if TYPE_CHECKING:
     from .coordinator import AdaptiveRoboVacCoordinator
@@ -75,6 +84,9 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
     occurrence_view = (
         {
             "program": occurrence.get("program"),
+            "source": occurrence.get("source", "scheduler"),
+            "manual_mode": occurrence.get("manual_mode"),
+            "bypass_desired_window": occurrence.get("bypass_desired_window", False),
             "current_stage": occurrence.get("current_stage"),
             "scheduled_at": occurrence.get("scheduled_at"),
             "created_at": occurrence.get("created_at"),
@@ -83,7 +95,8 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
                     key: stage.get(key)
                     for key in (
                         "operation", "passes", "status", "reason",
-                        "started_at", "completed_at",
+                        "started_at", "completed_at", "cleaning_profile",
+                        "requested_profile", "profile_sources",
                     )
                 }
                 for stage in occurrence.get("stages", [])
@@ -99,6 +112,64 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         if confirmation else None
     )
     episode = coordinator.data.get("water_notification_episodes", {}).get(area_id)
+    effective_profiles: list[dict[str, Any]] = []
+    for robot in coordinator.discovery.robots.values():
+        if robot.floor_id != room.floor_id:
+            continue
+        robot_settings = coordinator._robot_settings(robot)
+        program = effective_cleaning_program(
+            settings.get("cleaning_program"),
+            str(robot_settings.get("cleaning_program", "vacuum_only")),
+        )
+        operations = expand_cleaning_program(program or "")
+        if settings.get("carpet"):
+            operations = tuple(item for item in operations if item != "mop")
+        stages: list[dict[str, Any]] = []
+        compatible = bool(operations)
+        for operation in operations:
+            passes = stage_pass_count(
+                operation,
+                settings.get("vacuum_pass_count"),
+                settings.get("mop_pass_count"),
+                bool(robot_settings.get("double_pass")),
+                bool(robot_settings.get("mop_double_pass")),
+                robot.adapter_capabilities,
+            )
+            profile = resolve_cleaning_profile(
+                operation, settings, robot_settings, robot.adapter_capabilities
+            )
+            if passes is None or profile is None:
+                compatible = False
+                break
+            stages.append(
+                {
+                    "operation": operation,
+                    "passes": passes,
+                    "cleaning_profile": profile.to_mapping(),
+                    "requested_profile": requested_cleaning_profile(
+                        settings, robot_settings
+                    ).to_mapping(),
+                    "profile_sources": cleaning_profile_sources(settings),
+                }
+            )
+        effective_profiles.append(
+            {
+                "robot_entity_id": robot.entity_id,
+                "robot_name": robot.name,
+                "program": program,
+                "compatible": compatible,
+                "stages": stages,
+            }
+        )
+    latest_manual = next(
+        (
+            dict(item)
+            for item in reversed(coordinator.data.get("manual_events", []))
+            if item.get("source") == "manual_dashboard"
+            and area_id in item.get("rooms", [])
+        ),
+        None,
+    )
     return {
         "name": room.name,
         "area_id": room.area_id,
@@ -124,6 +195,12 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "vacuum_pass_count": settings.get("vacuum_pass_count"),
         "mop_pass_count": settings.get("mop_pass_count"),
         "cleaning_program": settings.get("cleaning_program"),
+        "fan_speed": settings.get("fan_speed"),
+        "mode": settings.get("mode"),
+        "mop_mode": settings.get("mop_mode"),
+        "mop_intensity": settings.get("mop_intensity"),
+        "effective_profiles": effective_profiles,
+        "latest_manual_request": latest_manual,
         "occupancy": detail["occupancy"],
         "occupancy_source": detail["source"],
         "unavailable_radars": detail["unavailable_radars"],
@@ -178,6 +255,17 @@ def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict
         for area_id in coordinator._active_rooms(active)
         if area_id in coordinator.discovery.rooms
     ] if active else []
+    def observed(entity: str | None) -> str | None:
+        observed_state = coordinator.hass.states.get(entity) if entity else None
+        return observed_state.state if observed_state else None
+
+    observed_profile = {
+        "fan_speed": state.attributes.get("fan_speed") if state else None,
+        "mode": observed(robot.profile.mode_select_entity_id),
+        "mop_mode": observed(robot.profile.mop_mode_select_entity_id),
+        "mop_intensity": observed(robot.profile.mop_intensity_select_entity_id),
+        "passes": observed(robot.profile.passes_select_entity_id),
+    }
     return {
         "name": robot.name,
         "entity_id": entity_id,
@@ -220,4 +308,5 @@ def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict
             else None
         ),
         "settings": coordinator._robot_settings(robot),
+        "observed_profile": observed_profile,
     }

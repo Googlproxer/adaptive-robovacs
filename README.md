@@ -22,9 +22,11 @@ automatically on supported versions.
 - Supports party mode, manual-clean deferrals, learned vacancy forecasts,
   restart recovery, multi-robot ready-first allocation, room pass overrides,
   carpet-aware vacuum-only rooms, ordered vacuum/mop programs, independent
-  vacuum/mop pass counts, and water-aware mopping.
+  vacuum/mop pass counts, water-aware mopping, robot cleaning-profile defaults,
+  and exact per-room fan/mode/mop overrides.
 - Provides target-scoped Lovelace cards for global settings, each vacuum, and
-  each room, with generated status and control rows.
+  each room, with generated status and control rows. Every room card includes
+  safety-gated manual clean, vacuum-only, and mop-only actions.
 
 ## Installation
 
@@ -47,6 +49,12 @@ automatically on supported versions.
 See [setup](docs/setup.md) and [dashboard setup](docs/dashboard.md). Home
 Assistant user-initiated room cleans are tracked automatically; native
 vacuum-app starts are intentionally left untracked.
+
+Robot cards define the default cleaning program, fan speed, mode, mop mode,
+mop intensity, and independent pass behavior. A room can inherit each default
+or choose an exact value advertised by a robot on that floor. The resolved
+profile is saved with the occurrence and reapplied before every physical stage,
+so one room cannot inherit controls left behind by another.
 
 ## Safety
 
@@ -76,6 +84,13 @@ stage or engaging the system-failure latch. Mop-capable robots without water
 telemetry require an explicit one-hour **Confirm water** mobile action; cancel,
 dismissal, timeout, or an unreachable notification safely skips only mopping.
 
+The three manual room actions bypass only cadence and the desired cleaning
+window. They still enforce scheduler halt, Party/observe-only state, occupancy,
+bedroom-transit rules, robot state and battery, carpet, water confirmation,
+adapter compatibility, area mapping, and start confirmation. A rejected press
+is audited but never queued to start later. A manual occurrence that physically
+completes becomes the room's normal cadence anchor.
+
 Native map and segment identifiers are read transiently from the selected
 vacuum entity's current Home Assistant area mapping. They are never copied to
 Adaptive RoboVacs storage, status entities, Repairs, or logs. See the
@@ -103,6 +118,11 @@ entity-ID fragment is retained only to preserve existing Adaptive RoboVacs
 entity unique IDs and Home Assistant history. Store schema v6 performs this
 migration during discovery; legacy identities that cannot be matched safely are
 left unattached rather than assigned to the wrong robot.
+
+Version 1.5.0 adds Store schema v7 for nullable room profile overrides and
+restart-safe `manual_dashboard` occurrence metadata. Existing settings migrate
+to **Robot default**, while accepted occurrences retain their exact resolved
+profile across a restart.
 
 ## Releases and upgrades
 

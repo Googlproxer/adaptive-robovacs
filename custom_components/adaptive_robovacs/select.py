@@ -162,10 +162,6 @@ class _RoomProgramSelect(AdaptiveEntity, SelectEntity):
 
 class _RobotSelect(AdaptiveEntity, SelectEntity):
     def __init__(self, coordinator, robot_entity_id: str, key: str, options: tuple[str, ...], label: str) -> None:
-        saved = coordinator.robot_state(robot_entity_id)["settings"].get(key)
-        visible_options = [NOT_CONFIGURED_OPTION, *options]
-        if isinstance(saved, str) and saved and saved not in visible_options:
-            visible_options.append(saved)
         super().__init__(
             coordinator,
             f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_{key}",
@@ -176,7 +172,27 @@ class _RobotSelect(AdaptiveEntity, SelectEntity):
         )
         self.robot_entity_id = robot_entity_id
         self.key = key
-        self._attr_options = tuple(visible_options)
+        self._fallback_options = options
+
+    @property
+    def options(self) -> tuple[str, ...]:
+        robot = self.coordinator.discovery.robots.get(self.robot_entity_id)
+        if robot:
+            options = {
+                "fan_speed": robot.adapter_capabilities.fan_speed_options,
+                "mode": robot.adapter_capabilities.mode_options,
+                "mop_mode": robot.adapter_capabilities.mop_mode_options,
+                "mop_intensity": robot.adapter_capabilities.mop_intensity_options,
+            }[self.key]
+        else:
+            options = self._fallback_options
+        visible = [NOT_CONFIGURED_OPTION, *options]
+        saved = self.coordinator.robot_state(self.robot_entity_id)["settings"].get(
+            self.key
+        )
+        if isinstance(saved, str) and saved and saved not in visible:
+            visible.append(saved)
+        return tuple(visible)
 
     @property
     def current_option(self) -> str | None:
@@ -188,6 +204,58 @@ class _RobotSelect(AdaptiveEntity, SelectEntity):
             self.robot_entity_id,
             self.key,
             None if option == NOT_CONFIGURED_OPTION else option,
+        )
+
+
+class _RoomProfileSelect(AdaptiveEntity, SelectEntity):
+    """One room override backed by the union of same-floor robot options."""
+
+    def __init__(self, coordinator, area_id: str, name: str, key: str, label: str) -> None:
+        super().__init__(
+            coordinator,
+            f"room_{area_id}_{key}",
+            f"{name} {label}",
+            f"room_{key}_control",
+            area_id=area_id,
+        )
+        self.area_id = area_id
+        self.key = key
+
+    def _floor_options(self) -> tuple[str, ...]:
+        room = self.coordinator.discovery.rooms[self.area_id]
+        values: list[str] = []
+        for robot in self.coordinator.discovery.robots.values():
+            if robot.floor_id != room.floor_id:
+                continue
+            options = {
+                "fan_speed": robot.adapter_capabilities.fan_speed_options,
+                "mode": robot.adapter_capabilities.mode_options,
+                "mop_mode": robot.adapter_capabilities.mop_mode_options,
+                "mop_intensity": robot.adapter_capabilities.mop_intensity_options,
+            }[self.key]
+            for option in options:
+                if option not in values:
+                    values.append(option)
+        return tuple(values)
+
+    @property
+    def options(self) -> tuple[str, ...]:
+        visible = ["Robot default", *self._floor_options()]
+        saved = self.coordinator.get_room_setting(self.area_id, self.key)
+        if isinstance(saved, str) and saved and saved not in visible:
+            visible.append(saved)
+        return tuple(visible)
+
+    @property
+    def current_option(self) -> str:
+        value = self.coordinator.get_room_setting(self.area_id, self.key)
+        return value if isinstance(value, str) and value in self.options else "Robot default"
+
+    async def async_select_option(self, option: str) -> None:
+        await self.coordinator.async_set_room_setting(
+            self.area_id,
+            self.key,
+            None if option == "Robot default" else option,
         )
 
 
@@ -261,6 +329,17 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
                     coordinator, room.area_id, "mop", f"{room.name} mop passes"
                 )
             )
+        for key, label in (
+            ("fan_speed", "fan speed"),
+            ("mode", "mode"),
+            ("mop_mode", "mop mode"),
+            ("mop_intensity", "mop intensity"),
+        ):
+            profile_select = _RoomProfileSelect(
+                coordinator, room.area_id, room.name, key, label
+            )
+            if len(profile_select.options) > 1:
+                entities.append(profile_select)
     return entities
 
 

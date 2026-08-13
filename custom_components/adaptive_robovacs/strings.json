@@ -59,16 +59,16 @@
       }
     },
     "cleaning_program_incompatible": {
-      "title": "Room cleaning program is unavailable",
+      "title": "Room cleaning profile is unavailable",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Recheck room cleaning compatibility",
-            "description": "{room} is configured with a cleaning program or pass count that no vacuum on its floor can currently execute. Restore a compatible vacuum or update the room/robot controls, then submit to recheck without starting a clean."
+            "title": "Recheck room cleaning profile",
+            "description": "{room} is configured with a cleaning program, pass count, fan speed, mode, mop mode, or mop intensity that no vacuum on its floor can currently execute. Restore a compatible vacuum or update the room/robot controls, then submit to recheck without starting a clean."
           }
         },
         "error": {
-          "recheck_failed": "No compatible vacuum can currently execute this room's complete cleaning program."
+          "recheck_failed": "No compatible vacuum can currently execute this room's complete cleaning profile."
         }
       }
     }

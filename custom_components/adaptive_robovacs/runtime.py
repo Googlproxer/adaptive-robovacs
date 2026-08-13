@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 import logging
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.util import slugify
 from homeassistant.util import dt as dt_util
 
 from .adapters.base import AdapterMatchContext
@@ -23,13 +22,6 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 SERVICE_CALL_TIMEOUT_SECONDS = 30
-
-
-def _stage_mode_option(options: tuple[str, ...], operation: str) -> str | None:
-    """Select an explicit single-operation mode without using a combined mode."""
-
-    wanted = {"vacuum", "vacuum_only"} if operation == "vacuum" else {"mop", "mop_only"}
-    return next((option for option in options if slugify(option) in wanted), None)
 
 
 class HomeAssistantRuntime:
@@ -55,74 +47,43 @@ class HomeAssistantRuntime:
             fan_speed_options=robot.adapter_capabilities.fan_speed_options,
             device_id=robot.device_id,
             entities=entities,
+            can_mutate=lambda: not self._coordinator._closing,
         )
 
     async def async_apply_profile(
-        self, robot: DiscoveredRobot, operation: str, passes: int
+        self,
+        robot: DiscoveredRobot,
+        operation: str,
+        passes: int,
+        cleaning_profile: dict[str, object] | None = None,
     ) -> None:
-        """Set optional controls discovered on the selected robot device."""
+        """Delegate exact profile application to the selected adapter."""
 
-        coordinator = self._coordinator
         profile = robot.profile
-        settings = coordinator._robot_settings(robot)
-        stage_mode = _stage_mode_option(profile.mode_options, operation)
-        selections = [(profile.mode_select_entity_id, stage_mode)]
+        settings = dict(cleaning_profile or {})
         if operation == "mop":
-            stage_mop_mode = _stage_mode_option(profile.mop_mode_options, operation)
-            selections.extend(
-                (
-                    (
-                        profile.mop_mode_select_entity_id,
-                        stage_mop_mode or settings.get("mop_mode"),
-                    ),
-                    (
-                        profile.mop_intensity_select_entity_id,
-                        settings.get("mop_intensity"),
-                    ),
-                )
-            )
-        for entity_id, option in selections:
-            if entity_id and option:
-                await coordinator.hass.services.async_call(
-                    "select", "select_option", {"entity_id": entity_id, "option": option}, blocking=True
-                )
-        fan_speed = settings.get("fan_speed")
-        if fan_speed and fan_speed in robot.adapter_capabilities.fan_speed_options:
-            await coordinator.hass.services.async_call(
-                "vacuum",
-                "set_fan_speed",
-                {"entity_id": robot.entity_id, "fan_speed": fan_speed},
-                blocking=True,
-            )
-        if (
-            profile.passes_select_entity_id
-            and passes not in robot.adapter_capabilities.native_pass_counts_for(operation)
-        ):
-            wanted_slugs = (
-                {"two_pass", "double_pass"}
-                if passes == 2
-                else {"one_pass", "single_pass"}
-            )
-            wanted = next(
-                (
-                    option
-                    for option in profile.passes_options
-                    if slugify(option) in wanted_slugs
-                ),
-                None,
-            )
-            if wanted:
-                await coordinator.hass.services.async_call(
-                    "select",
-                    "select_option",
-                    {"entity_id": profile.passes_select_entity_id, "option": wanted},
-                    blocking=True,
-                )
+            if not profile.mop_mode_select_entity_id:
+                settings["mop_mode"] = None
+            if not profile.mop_intensity_select_entity_id:
+                settings["mop_intensity"] = None
+        else:
+            settings["mop_mode"] = None
+            settings["mop_intensity"] = None
+        request = AdapterDispatchRequest(
+            robot_entity_id=robot.entity_id,
+            area_ids=(),
+            operation=operation,
+            passes=passes,
+            cleaning_profile=settings,
+        )
+        await adapter_for_id(robot.adapter_id).async_apply_profile(
+            self._coordinator.hass, self._adapter_context(robot), request
+        )
 
     def _request(
         self, robot: DiscoveredRobot, candidate: dict[str, Any]
     ) -> AdapterDispatchRequest:
-        settings = dict(self._coordinator._robot_settings(robot))
+        settings = dict(candidate.get("resolved_profile") or {})
         settings["water_confirmed"] = bool(candidate.get("water_confirmed", False))
         settings["ignore_water_readiness"] = bool(
             candidate.get("ignore_water_readiness", False)
@@ -148,29 +109,23 @@ class HomeAssistantRuntime:
         )
 
     def profile_is_ready(
-        self, robot: DiscoveredRobot, operation: str, passes: int
+        self,
+        robot: DiscoveredRobot,
+        operation: str,
+        passes: int,
+        cleaning_profile: dict[str, object] | None = None,
     ) -> bool:
         """Validate configured profile controls without calling a service."""
 
-        settings = self._coordinator._robot_settings(robot)
-        stage_mode = _stage_mode_option(robot.profile.mode_options, operation)
-        selections = [(robot.profile.mode_select_entity_id, stage_mode)]
-        if operation == "mop":
-            stage_mop_mode = _stage_mode_option(
-                robot.profile.mop_mode_options, operation
-            )
-            selections.extend(
-                (
-                    (
-                        robot.profile.mop_mode_select_entity_id,
-                        stage_mop_mode or settings.get("mop_mode"),
-                    ),
-                    (
-                        robot.profile.mop_intensity_select_entity_id,
-                        settings.get("mop_intensity"),
-                    ),
-                )
-            )
+        settings = cleaning_profile or {}
+        selections = [
+            (robot.profile.mode_select_entity_id, settings.get("mode")),
+            (robot.profile.mop_mode_select_entity_id, settings.get("mop_mode")),
+            (
+                robot.profile.mop_intensity_select_entity_id,
+                settings.get("mop_intensity"),
+            ),
+        ]
         for entity_id, option in selections:
             if not entity_id or not option:
                 continue
@@ -216,7 +171,7 @@ class HomeAssistantRuntime:
             "started": now.isoformat(),
             "seen_cleaning": False,
             "phase": "dispatching",
-            "source": "scheduler",
+            "source": candidate.get("source", "scheduler"),
             "expected_minutes": candidate["duration_minutes"],
             "expected_end": (now + timedelta(minutes=candidate["duration_minutes"])).isoformat(),
             "last_observed_at": now.isoformat(),
@@ -225,6 +180,11 @@ class HomeAssistantRuntime:
             "adapter_schema_version": robot.adapter_schema_version,
             "occurrence_id": candidate.get("occurrence_id"),
             "stage_index": candidate.get("stage_index"),
+            "cleaning_profile": dict(candidate.get("resolved_profile") or {}),
+            "requested_profile": dict(candidate.get("requested_profile") or {}),
+            "profile_sources": dict(candidate.get("profile_sources") or {}),
+            "manual_mode": candidate.get("manual_mode"),
+            "manual_context_id": candidate.get("manual_context_id"),
         }
 
         adapter = adapter_for_id(robot.adapter_id)
@@ -268,11 +228,41 @@ class HomeAssistantRuntime:
             )
             return False, fault_summary(preflight.code)
         try:
+            profile_preflight = await adapter.async_validate_profile(
+                coordinator.hass, context, request
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Adaptive RoboVacs profile validation failed unexpectedly: robot=%s room=%s adapter=%s",
+                robot.entity_id,
+                room.name,
+                robot.adapter_id,
+            )
+            await coordinator._async_latch_scheduler_fault(
+                robot,
+                room,
+                "profile_validation_failed",
+                "profile_preflight",
+                native_command_may_have_started=False,
+                outcome_uncertain=False,
+            )
+            return False, fault_summary("profile_validation_failed")
+        if not profile_preflight.ready:
+            await coordinator._async_latch_scheduler_fault(
+                robot,
+                room,
+                profile_preflight.code,
+                "profile_preflight",
+                native_command_may_have_started=False,
+                outcome_uncertain=False,
+            )
+            return False, fault_summary(profile_preflight.code)
+        try:
             if coordinator._closing:
                 return False, "coordinator shutting down"
             async with asyncio.timeout(SERVICE_CALL_TIMEOUT_SECONDS):
-                await self.async_apply_profile(
-                    robot, candidate["operation"], int(candidate["passes"])
+                await adapter.async_apply_profile(
+                    coordinator.hass, context, request
                 )
         except Exception:  # ServiceValidationError varies between HA versions.
             _LOGGER.exception(
@@ -291,6 +281,9 @@ class HomeAssistantRuntime:
                 outcome_uncertain=False,
             )
             return False, fault_summary("profile_apply_failed")
+
+        if coordinator._closing:
+            return False, "coordinator shutting down"
 
         coordinator.data["active"][robot.entity_id] = active
         await coordinator._async_save()
@@ -340,6 +333,19 @@ class HomeAssistantRuntime:
             return False, fault_summary(result.code)
         active["phase"] = "accepted"
         active["accepted_at"] = dt_util.utcnow().isoformat()
+        if active.get("source") == "manual_dashboard":
+            coordinator.jobs.record_manual_event(
+                {
+                    "at": active["accepted_at"],
+                    "robot": robot.entity_id,
+                    "rooms": [room.area_id],
+                    "operations": [candidate["operation"]],
+                    "context_id": candidate.get("manual_context_id"),
+                    "mode": candidate.get("manual_mode"),
+                    "outcome": "started",
+                    "source": "manual_dashboard",
+                }
+            )
         occurrence = coordinator.data.get("occurrences", {}).get(room.area_id)
         stage_index = int(candidate.get("stage_index", 0))
         if occurrence and stage_index < len(occurrence.get("stages", [])):

@@ -31,7 +31,7 @@ from .const import (
 from .models import is_valid_daily_time
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DAILY_WINDOW_VERSION = 1
 
 
@@ -49,6 +49,24 @@ def _string(value: object, default: str | None = None) -> str | None:
     if value is None:
         return default
     return str(value)
+
+
+def _optional_string(value: object, name: str) -> str | None:
+    """Decode a nullable string without coercing current-schema corruption."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise StateSchemaError(f"{name} must be a string or null")
+    return value
+
+
+def _boolean(value: object, default: bool, name: str) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise StateSchemaError(f"{name} must be a boolean")
+    return value
 
 
 def _number(value: object, default: float) -> float:
@@ -122,6 +140,32 @@ def _event_list(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _profile_mapping(value: object) -> dict[str, str | None]:
+    """Decode the bounded, string-only cleaning profile snapshot."""
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise StateSchemaError("cleaning profile must be an object")
+    allowed = {"operation", "fan_speed", "mode", "mop_mode", "mop_intensity"}
+    if set(value) - allowed:
+        raise StateSchemaError("cleaning profile has unsupported fields")
+    if any(item is not None and not isinstance(item, str) for item in value.values()):
+        raise StateSchemaError("cleaning profile values must be strings or null")
+    return {str(key): item for key, item in value.items()}
+
+
+def _profile_sources_mapping(value: object) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise StateSchemaError("cleaning profile sources must be an object")
+    allowed = {"fan_speed", "mode", "mop_mode", "mop_intensity"}
+    if set(value) - allowed or any(item not in {"room", "robot"} for item in value.values()):
+        raise StateSchemaError("cleaning profile sources are invalid")
+    return {str(key): str(item) for key, item in value.items()}
 
 
 def _optional_daily_time(value: object, name: str) -> str | None:
@@ -317,6 +361,10 @@ class RoomSettings:
     cleaning_program: str | None = None
     vacuum_pass_count: int | None = None
     mop_pass_count: int | None = None
+    fan_speed: str | None = None
+    mode: str | None = None
+    mop_mode: str | None = None
+    mop_intensity: str | None = None
 
     @property
     def vacuum_interval(self) -> float:
@@ -404,6 +452,12 @@ class RoomSettings:
                 value.get("vacuum_pass_count", value.get("pass_count"))
             ),
             mop_pass_count=_optional_pass_count(value.get("mop_pass_count")),
+            fan_speed=_optional_string(value.get("fan_speed"), "room fan_speed"),
+            mode=_optional_string(value.get("mode"), "room mode"),
+            mop_mode=_optional_string(value.get("mop_mode"), "room mop_mode"),
+            mop_intensity=_optional_string(
+                value.get("mop_intensity"), "room mop_intensity"
+            ),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -424,6 +478,10 @@ class RoomSettings:
             "vacuum_pass_count": self.vacuum_pass_count,
             "mop_pass_count": self.mop_pass_count,
             "pass_count": self.vacuum_pass_count,
+            "fan_speed": self.fan_speed,
+            "mode": self.mode,
+            "mop_mode": self.mop_mode,
+            "mop_intensity": self.mop_intensity,
         }
 
     def to_runtime(self) -> dict[str, object]:
@@ -444,6 +502,10 @@ class RoomSettings:
             "vacuum_pass_count": self.vacuum_pass_count,
             "mop_pass_count": self.mop_pass_count,
             "pass_count": self.vacuum_pass_count,
+            "fan_speed": self.fan_speed,
+            "mode": self.mode,
+            "mop_mode": self.mop_mode,
+            "mop_intensity": self.mop_intensity,
         }
 
 
@@ -685,6 +747,10 @@ class ActiveJob:
     adapter_schema_version: int = 1
     occurrence_id: str | None = None
     stage_index: int | None = None
+    cleaning_profile: dict[str, str | None] = field(default_factory=dict)
+    requested_profile: dict[str, str | None] = field(default_factory=dict)
+    profile_sources: dict[str, str] = field(default_factory=dict)
+    manual_mode: str | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> ActiveJob | None:
@@ -736,6 +802,10 @@ class ActiveJob:
                 if value.get("stage_index") is not None
                 else None
             ),
+            cleaning_profile=_profile_mapping(value.get("cleaning_profile")),
+            requested_profile=_profile_mapping(value.get("requested_profile")),
+            profile_sources=_profile_sources_mapping(value.get("profile_sources")),
+            manual_mode=_string(value.get("manual_mode")),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -770,6 +840,10 @@ class ActiveJob:
             "adapter_schema_version": self.adapter_schema_version,
             "occurrence_id": self.occurrence_id,
             "stage_index": self.stage_index,
+            "cleaning_profile": dict(self.cleaning_profile),
+            "requested_profile": dict(self.requested_profile),
+            "profile_sources": dict(self.profile_sources),
+            "manual_mode": self.manual_mode,
         }
 
 
@@ -781,6 +855,9 @@ class CleaningStage:
     reason: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    cleaning_profile: dict[str, str | None] = field(default_factory=dict)
+    requested_profile: dict[str, str | None] = field(default_factory=dict)
+    profile_sources: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> CleaningStage | None:
@@ -793,14 +870,28 @@ class CleaningStage:
             "skipped_unconfirmed_water", "skipped_no_mop",
         }:
             status = "pending"
+        profile = _profile_mapping(value.get("cleaning_profile"))
+        if profile.get("operation") not in {None, operation}:
+            raise StateSchemaError("stage cleaning profile operation does not match")
         return cls(operation, max(1, _integer(value.get("passes"), 1)), status,
                    _string(value.get("reason")), _timestamp(value.get("started_at")),
-                   _timestamp(value.get("completed_at")))
+                   _timestamp(value.get("completed_at")),
+                   profile,
+                   _profile_mapping(value.get("requested_profile")),
+                   _profile_sources_mapping(value.get("profile_sources")))
 
     def to_store(self) -> dict[str, object]:
-        return {"operation": self.operation, "passes": self.passes,
-                "status": self.status, "reason": self.reason,
-                "started_at": _iso(self.started_at), "completed_at": _iso(self.completed_at)}
+        return {
+            "operation": self.operation,
+            "passes": self.passes,
+            "status": self.status,
+            "reason": self.reason,
+            "started_at": _iso(self.started_at),
+            "completed_at": _iso(self.completed_at),
+            "cleaning_profile": dict(self.cleaning_profile),
+            "requested_profile": dict(self.requested_profile),
+            "profile_sources": dict(self.profile_sources),
+        }
 
 
 @dataclass(slots=True)
@@ -816,6 +907,11 @@ class CleaningOccurrence:
     adapter_id: str
     adapter_schema_version: int
     current_stage: int = 0
+    source: str = "scheduler"
+    manual_mode: str | None = None
+    bypass_desired_window: bool = False
+    manual_context_id: str | None = None
+    manual_user_id: str | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> CleaningOccurrence | None:
@@ -828,9 +924,31 @@ class CleaningOccurrence:
         if not all((*required, scheduled, created, stages)):
             return None
         current = min(max(0, _integer(value.get("current_stage"), 0)), len(stages))
+        source = value.get("source", "scheduler")
+        if source not in {"scheduler", "manual_dashboard"}:
+            raise StateSchemaError("occurrence source is invalid")
+        manual_mode = _optional_string(
+            value.get("manual_mode"), "occurrence manual_mode"
+        )
+        if manual_mode not in {None, "configured", "vacuum_only", "mop_only"}:
+            raise StateSchemaError("occurrence manual_mode is invalid")
         return cls(*required, stages, scheduled, created,
                    str(value.get("adapter_id", "generic")),
-                   max(1, _integer(value.get("adapter_schema_version"), 1)), current)
+                   max(1, _integer(value.get("adapter_schema_version"), 1)), current,
+                   source,
+                   manual_mode,
+                   _boolean(
+                       value.get("bypass_desired_window"),
+                       False,
+                       "occurrence bypass_desired_window",
+                   ),
+                   _optional_string(
+                       value.get("manual_context_id"),
+                       "occurrence manual_context_id",
+                   ),
+                   _optional_string(
+                       value.get("manual_user_id"), "occurrence manual_user_id"
+                   ))
 
     def to_store(self) -> dict[str, object]:
         return {"occurrence_id": self.occurrence_id, "room_id": self.room_id,
@@ -840,7 +958,12 @@ class CleaningOccurrence:
                 "scheduled_at": _iso(self.scheduled_at), "created_at": _iso(self.created_at),
                 "adapter_id": self.adapter_id,
                 "adapter_schema_version": self.adapter_schema_version,
-                "current_stage": self.current_stage}
+                "current_stage": self.current_stage,
+                "source": self.source,
+                "manual_mode": self.manual_mode,
+                "bypass_desired_window": self.bypass_desired_window,
+                "manual_context_id": self.manual_context_id,
+                "manual_user_id": self.manual_user_id}
 
 
 @dataclass(slots=True)
@@ -1038,7 +1161,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v6 or convert older shapes, returning whether a save is required."""
+        """Load v7 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -1046,7 +1169,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5}:
+        if schema_version in {2, 3, 4, 5, 6}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -1268,7 +1391,7 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v6 codec, and platform entities use
+        persistent I/O stays on the typed v7 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 

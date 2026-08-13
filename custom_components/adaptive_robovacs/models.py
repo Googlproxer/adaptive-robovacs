@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import math
 import re
-from typing import Iterable, Mapping
+from typing import Iterable, Literal, Mapping
 
 
 VALID_OCCUPANCY_STATES = {"on", "off"}
@@ -220,7 +220,225 @@ class AdapterDispatchResult:
         return self.status == "blocked"
 
 
-CLEANING_PROGRAMS = (
+PROFILE_SETTING_KEYS = ("fan_speed", "mode", "mop_mode", "mop_intensity")
+type CleaningProgram = Literal[
+    "vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"
+]
+
+
+@dataclass(frozen=True, slots=True)
+class RequestedCleaningProfile:
+    """Robot defaults with optional room-owned replacements."""
+
+    fan_speed: str | None = None
+    mode: str | None = None
+    mop_mode: str | None = None
+    mop_intensity: str | None = None
+
+    def to_mapping(self) -> dict[str, str | None]:
+        return {
+            "fan_speed": self.fan_speed,
+            "mode": self.mode,
+            "mop_mode": self.mop_mode,
+            "mop_intensity": self.mop_intensity,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCleaningProfile:
+    """Exact adapter-facing settings resolved for one physical stage."""
+
+    operation: str
+    fan_speed: str | None = None
+    mode: str | None = None
+    mop_mode: str | None = None
+    mop_intensity: str | None = None
+
+    def to_mapping(self) -> dict[str, str | None]:
+        """Return a Store- and adapter-safe snapshot."""
+
+        return {
+            "operation": self.operation,
+            "fan_speed": self.fan_speed,
+            "mode": self.mode,
+            "mop_mode": self.mop_mode,
+            "mop_intensity": self.mop_intensity,
+        }
+
+
+def _profile_value(
+    room_settings: Mapping[str, object],
+    robot_settings: Mapping[str, object],
+    key: str,
+) -> str | None:
+    value = room_settings.get(key)
+    if value is None:
+        value = robot_settings.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def requested_cleaning_profile(
+    room_settings: Mapping[str, object], robot_settings: Mapping[str, object]
+) -> RequestedCleaningProfile:
+    """Resolve raw requested values without applying operation semantics."""
+
+    return RequestedCleaningProfile(
+        **{
+            key: _profile_value(room_settings, robot_settings, key)
+            for key in PROFILE_SETTING_KEYS
+        }
+    )
+
+
+def cleaning_profile_sources(
+    room_settings: Mapping[str, object],
+) -> dict[str, str]:
+    """Describe whether each effective value is room-owned or inherited."""
+
+    return {
+        key: "room" if room_settings.get(key) is not None else "robot"
+        for key in PROFILE_SETTING_KEYS
+    }
+
+
+def _normalized_profile_option(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+
+def _operation_mode_option(
+    options: Iterable[str], operation: str
+) -> str | None:
+    wanted = (
+        {"vacuum", "vacuum_only"}
+        if operation == "vacuum"
+        else {"mop", "mop_only"}
+    )
+    return next(
+        (option for option in options if _normalized_profile_option(option) in wanted),
+        None,
+    )
+
+
+def resolve_cleaning_profile(
+    operation: str,
+    room_settings: Mapping[str, object],
+    robot_settings: Mapping[str, object],
+    capabilities: AdapterCapabilities,
+) -> ResolvedCleaningProfile | None:
+    """Resolve one exact stage profile, rejecting stale saved options.
+
+    The normalized program owns a vendor operation selector. A room mode
+    override is therefore accepted only when it describes the current stage;
+    otherwise the request is incompatible instead of silently changing the
+    user's requested operation.
+    """
+
+    if operation not in {"vacuum", "mop"}:
+        return None
+    option_sets = {
+        "fan_speed": capabilities.fan_speed_options,
+        "mode": capabilities.mode_options,
+        "mop_mode": capabilities.mop_mode_options,
+        "mop_intensity": capabilities.mop_intensity_options,
+    }
+    requested = requested_cleaning_profile(room_settings, robot_settings)
+    values = {key: getattr(requested, key) for key in PROFILE_SETTING_KEYS}
+    for key, value in values.items():
+        if value is not None and value not in option_sets[key]:
+            return None
+
+    operation_mode = _operation_mode_option(capabilities.mode_options, operation)
+    explicit_modes = {
+        "vacuum", "vacuum_only", "mop", "mop_only", "vacuum_and_mop",
+        "vac_and_mop",
+    }
+    wanted = (
+        {"vacuum", "vacuum_only"}
+        if operation == "vacuum"
+        else {"mop", "mop_only"}
+    )
+    room_mode = room_settings.get("mode")
+    if isinstance(room_mode, str) and room_mode:
+        normalized = _normalized_profile_option(room_mode)
+        operation_selector = any(
+            _normalized_profile_option(option) in explicit_modes
+            for option in capabilities.mode_options
+        )
+        if (operation_selector and normalized not in wanted) or (
+            normalized in explicit_modes and normalized not in wanted
+        ):
+            return None
+        mode = room_mode
+    else:
+        saved_mode = values["mode"]
+        if (
+            saved_mode
+            and _normalized_profile_option(saved_mode) in explicit_modes
+            and _normalized_profile_option(saved_mode) not in wanted
+            and operation_mode is None
+        ):
+            return None
+        mode = operation_mode or values["mode"]
+
+    mop_mode = values["mop_mode"] if operation == "mop" else None
+    if operation == "mop" and mop_mode is None:
+        mop_mode = _operation_mode_option(capabilities.mop_mode_options, operation)
+
+    required = (
+        (capabilities.fan_speed_options, values["fan_speed"]),
+        (capabilities.mode_options, mode),
+    )
+    if operation == "mop":
+        required += (
+            (capabilities.mop_mode_options, mop_mode),
+            (capabilities.mop_intensity_options, values["mop_intensity"]),
+        )
+    if any(options and value is None for options, value in required):
+        return None
+
+    return ResolvedCleaningProfile(
+        operation=operation,
+        fan_speed=values["fan_speed"],
+        mode=mode,
+        mop_mode=mop_mode,
+        mop_intensity=(values["mop_intensity"] if operation == "mop" else None),
+    )
+
+
+def cleaning_profile_is_supported(
+    profile: Mapping[str, object], capabilities: AdapterCapabilities
+) -> bool:
+    """Return whether a persisted exact profile still exists in capabilities."""
+
+    option_sets = {
+        "fan_speed": capabilities.fan_speed_options,
+        "mode": capabilities.mode_options,
+        "mop_mode": capabilities.mop_mode_options,
+        "mop_intensity": capabilities.mop_intensity_options,
+    }
+    if not all(
+        value is None or isinstance(value, str) and value in option_sets[key]
+        for key, value in (
+            (key, profile.get(key)) for key in PROFILE_SETTING_KEYS
+        )
+    ):
+        return False
+    operation = profile.get("operation")
+    if operation not in {"vacuum", "mop"}:
+        return False
+    required = (
+        (capabilities.fan_speed_options, profile.get("fan_speed")),
+        (capabilities.mode_options, profile.get("mode")),
+    )
+    if operation == "mop":
+        required += (
+            (capabilities.mop_mode_options, profile.get("mop_mode")),
+            (capabilities.mop_intensity_options, profile.get("mop_intensity")),
+        )
+    return not any(options and value is None for options, value in required)
+
+
+CLEANING_PROGRAMS: tuple[CleaningProgram, ...] = (
     "vacuum_only",
     "mop_only",
     "vacuum_then_mop",
@@ -241,7 +459,7 @@ def expand_cleaning_program(program: str) -> tuple[str, ...]:
 
 def effective_cleaning_program(
     room_program: str | None, robot_program: str
-) -> str | None:
+) -> CleaningProgram | None:
     """Resolve a room override while rejecting malformed stored values."""
 
     program = room_program or robot_program

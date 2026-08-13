@@ -14,7 +14,7 @@ The available card types are:
 | --- | --- | --- |
 | `custom:adaptive-robovacs-global` | One | Scheduler status, Repairs halt/resume, Party Mode, observe-only mode, cleaning windows, forecast confidence, and schedule preview. |
 | `custom:adaptive-robovacs-vacuum` | One per vacuum | Status/activity, water readiness, cleaning program, independent vacuum/mop pass defaults, adapter capabilities, safe failure diagnostics, and robot-owned controls. |
-| `custom:adaptive-robovacs-room` | One per room | Single-cadence schedule, last-cleaned and occupancy status, program override, independent vacuum/mop pass overrides, occurrence/water-confirmation diagnostics, and room-owned controls. |
+| `custom:adaptive-robovacs-room` | One per room | Single-cadence schedule, last-cleaned and occupancy status, program and exact profile overrides, independent vacuum/mop pass overrides, occurrence/water-confirmation diagnostics, and three manual actions. |
 
 All three cards are available in Home Assistant's card picker and have visual
 editors. The integration entry is optional when only one Adaptive RoboVacs
@@ -51,6 +51,20 @@ inherit it or choose Vacuum only, Mop only, Vacuum then mop, or Mop then vacuum.
 The room schedule row exposes the persisted occurrence/current stage, last
 terminal stage outcome, water-confirmation deadline/status, and the Roborock
 water-readiness reason through its attributes.
+
+Robot cards provide defaults for fan speed, cleaning mode, mop mode, and mop
+intensity when the adapter advertises those controls. Room cards expose
+**Robot default** plus the live same-floor option union for each applicable
+field. Assignment still requires one robot to support the complete exact
+profile; unsupported saved values remain visible and produce a Repair rather
+than being changed silently.
+
+Each room card ends with **Manual clean**, **Manual vacuum only**, and **Manual
+mop only**. These are immediate integration-owned requests, not shortcuts to
+the external manual-clean observer. They use the displayed effective profile
+and pass counts and bypass only cadence and the desired window. A currently
+blocked press is rejected rather than queued. The room schedule attributes
+expose the latest dashboard-manual outcome and any active occurrence source.
 
 ## Migrating from 1.3
 

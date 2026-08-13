@@ -81,6 +81,10 @@ const baseStates = () => ({
     area_id: "kitchen",
     friendly_name: "Kitchen occupancy",
   }),
+  "sensor.kitchen_manual": adaptiveState("room_manual_status", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen manual request",
+  }),
   "select.kitchen_desired_start": adaptiveState("room_window_start_control", {
     area_id: "kitchen",
     friendly_name: "Kitchen desired cleaning start",
@@ -93,6 +97,14 @@ const baseStates = () => ({
     area_id: "kitchen",
     friendly_name: "Kitchen cleaning passes",
   }),
+  "select.kitchen_fan": adaptiveState("room_fan_speed_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen fan speed",
+  }),
+  "select.kitchen_mode": adaptiveState("room_mode_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen mode",
+  }),
   "number.kitchen_cadence": adaptiveState("room_control", {
     area_id: "kitchen",
     friendly_name: "Kitchen cadence",
@@ -100,6 +112,18 @@ const baseStates = () => ({
   "switch.kitchen_enabled": adaptiveState("room_control", {
     area_id: "kitchen",
     friendly_name: "Kitchen enabled",
+  }),
+  "button.kitchen_clean": adaptiveState("room_manual_clean_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen manual clean",
+  }),
+  "button.kitchen_vacuum": adaptiveState("room_manual_vacuum_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen manual vacuum only",
+  }),
+  "button.kitchen_mop": adaptiveState("room_manual_mop_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen manual mop only",
   }),
   "sensor.bedroom_next_clean": adaptiveState("room_schedule", {
     area_id: "bedroom",
@@ -187,11 +211,17 @@ test("room card contains one selected room with status before controls", () => {
     { entity: "sensor.kitchen_next_clean", name: "Next clean" },
     { entity: "sensor.kitchen_last_cleaned", name: "Last cleaned" },
     { entity: "sensor.kitchen_occupancy", name: "Occupancy" },
+    { entity: "sensor.kitchen_manual", name: "Manual request" },
     { entity: "select.kitchen_passes", name: "Cleaning passes" },
+    { entity: "select.kitchen_fan", name: "Fan speed" },
+    { entity: "select.kitchen_mode", name: "Mode" },
     { entity: "select.kitchen_desired_start", name: "Desired cleaning start" },
     { entity: "select.kitchen_desired_end", name: "Desired cleaning end" },
     { entity: "number.kitchen_cadence", name: "Cadence" },
     { entity: "switch.kitchen_enabled", name: "Enabled" },
+    { entity: "button.kitchen_clean", name: "Manual clean" },
+    { entity: "button.kitchen_vacuum", name: "Manual vacuum only" },
+    { entity: "button.kitchen_mop", name: "Manual mop only" },
   ]);
   const entityIds = configuration.entities.map((row) => row.entity);
   assert.ok(entityIds.every((entityId) => !entityId.includes("bedroom")));

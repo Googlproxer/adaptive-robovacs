@@ -205,6 +205,8 @@ class SchedulerStateTests(unittest.TestCase):
         study_settings, _ = state.ensure_room("study", is_bedroom=False)
         study_settings.desired_window_start = "10:15"
         study_settings.pass_count = 2
+        study_settings.fan_speed = "max"
+        study_settings.mop_mode = "deep"
         state.ensure_room("kitchen", is_bedroom=False)
         state.room_history["study"] = RoomHistory(
             vacuum_completed_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
@@ -220,6 +222,10 @@ class SchedulerStateTests(unittest.TestCase):
             expected_end=datetime(2026, 8, 3, 9, 25, tzinfo=timezone.utc),
             adapter_id="roborock",
             adapter_schema_version=1,
+            cleaning_profile={"operation": "vacuum", "fan_speed": "max"},
+            requested_profile={"fan_speed": "max", "mode": "vacuum"},
+            profile_sources={"fan_speed": "room", "mode": "robot"},
+            manual_mode="configured",
         )
         state.robot_entity_aliases["registry-robot"] = "vacuum.beta"
         state.scheduler_fault = SchedulerFault(
@@ -237,12 +243,30 @@ class SchedulerStateTests(unittest.TestCase):
             robot_registry_id="registry-robot",
             robot_entity_id="vacuum.beta",
             program="vacuum_then_mop",
-            stages=[CleaningStage("vacuum", 2, "completed"), CleaningStage("mop", 1)],
+            stages=[
+                CleaningStage(
+                    "vacuum",
+                    2,
+                    "completed",
+                    cleaning_profile={
+                        "operation": "vacuum",
+                        "fan_speed": "max",
+                        "mode": "vacuum",
+                    },
+                    requested_profile={"fan_speed": "max", "mode": "vacuum"},
+                    profile_sources={"fan_speed": "room", "mode": "robot"},
+                ),
+                CleaningStage("mop", 1),
+            ],
             scheduled_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
             created_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
             adapter_id="roborock",
             adapter_schema_version=2,
             current_stage=1,
+            source="manual_dashboard",
+            manual_mode="configured",
+            bypass_desired_window=True,
+            manual_context_id="context-one",
         )
 
         restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
@@ -259,9 +283,25 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertEqual(restored.active_jobs["vacuum.beta"].expected_minutes, 25)
         self.assertEqual(restored.active_jobs["vacuum.beta"].adapter_id, "roborock")
         self.assertEqual(restored.room_settings["study"].pass_count, 2)
+        self.assertEqual(restored.room_settings["study"].fan_speed, "max")
+        self.assertEqual(restored.room_settings["study"].mop_mode, "deep")
         self.assertEqual(restored.scheduler_fault.robot_registry_id, "registry-robot")
         self.assertEqual(restored.occurrences["study"].current_stage, 1)
         self.assertEqual(restored.occurrences["study"].stages[0].status, "completed")
+        self.assertEqual(
+            restored.occurrences["study"].stages[0].cleaning_profile["fan_speed"],
+            "max",
+        )
+        self.assertEqual(restored.occurrences["study"].source, "manual_dashboard")
+        self.assertTrue(restored.occurrences["study"].bypass_desired_window)
+        self.assertEqual(
+            restored.active_jobs["vacuum.beta"].cleaning_profile["fan_speed"],
+            "max",
+        )
+        self.assertEqual(
+            restored.active_jobs["vacuum.beta"].profile_sources["fan_speed"],
+            "room",
+        )
         self.assertEqual(
             restored.robot_entity_aliases["registry-robot"], "vacuum.beta"
         )
@@ -280,6 +320,29 @@ class SchedulerStateTests(unittest.TestCase):
             stored_room["daily_window"],
             {"version": 1, "start": "10:15", "end": None},
         )
+
+    def test_v6_payload_migrates_to_nullable_room_profiles(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.ensure_room("study", is_bedroom=False)
+        payload = state.to_store()
+        payload["schema_version"] = 6
+        for key in ("fan_speed", "mode", "mop_mode", "mop_intensity"):
+            payload["room_settings"]["study"].pop(key)
+
+        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertTrue(migrated)
+        self.assertIsNone(restored.room_settings["study"].fan_speed)
+        self.assertIsNone(restored.room_settings["study"].mode)
+
+    def test_current_schema_rejects_malformed_profile_values(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.ensure_room("study", is_bedroom=False)
+        payload = state.to_store()
+        payload["room_settings"]["study"]["fan_speed"] = ["max"]
+
+        with self.assertRaises(StateSchemaError):
+            SchedulerState.from_store(payload, ENTRY_DATA)
 
     def test_v2_rooms_migrate_to_inherited_daily_windows(self) -> None:
         state = SchedulerState.create(ENTRY_DATA)

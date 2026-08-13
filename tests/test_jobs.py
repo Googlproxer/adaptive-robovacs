@@ -26,7 +26,14 @@ JobLifecycle = jobs_module.JobLifecycle
 
 class _Coordinator:
     def __init__(self) -> None:
-        self.data = {"active": {}, "manual_events": [], "recovery_events": []}
+        self.data = {
+            "active": {},
+            "manual_events": [],
+            "recovery_events": [],
+            "occurrences": {},
+            "water_confirmations": {},
+            "water_notification_episodes": {},
+        }
         self._rooms: dict[str, dict[str, object]] = {}
 
     def _room_data(self, area_id: str) -> dict[str, object]:
@@ -98,6 +105,42 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertEqual(coordinator._rooms, {})
         self.assertEqual(coordinator.data["manual_events"][0]["outcome"], "cancelled")
         self.assertEqual(coordinator.data["recovery_events"][0]["reason"], "physical_cancelled")
+
+    def test_dashboard_manual_completion_updates_cadence_and_duration_once(self) -> None:
+        coordinator = _Coordinator()
+        lifecycle = JobLifecycle(coordinator)
+        completed = datetime(2026, 8, 9, 9, 30, tzinfo=timezone.utc)
+        coordinator.data["occurrences"]["study"] = {
+            "occurrence_id": "occ-1",
+            "current_stage": 0,
+            "stages": [
+                {
+                    "operation": "vacuum",
+                    "passes": 2,
+                    "status": "running",
+                }
+            ],
+        }
+        active = {
+            "room": "study",
+            "operation": "vacuum",
+            "source": "manual_dashboard",
+            "manual_mode": "vacuum_only",
+            "manual_context_id": "ctx-2",
+            "occurrence_id": "occ-1",
+            "stage_index": 0,
+            "passes": 2,
+            "measured_minutes": 18.0,
+            "duration_source": "state_transition",
+        }
+        coordinator.data["active"]["vacuum.alpha"] = active
+
+        lifecycle.complete("vacuum.alpha", active, completed, "observed")
+
+        self.assertEqual(coordinator._rooms["study"]["cleaning"], completed.isoformat())
+        self.assertEqual(len(coordinator._rooms["study"]["duration_samples"]), 1)
+        self.assertEqual(coordinator.data["manual_events"][-1]["outcome"], "completed")
+        self.assertNotIn("study", coordinator.data["occurrences"])
 
 
 if __name__ == "__main__":

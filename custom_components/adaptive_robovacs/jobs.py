@@ -86,6 +86,24 @@ class JobLifecycle:
                     "outcome": "cancelled",
                 }
             )
+        elif active.get("source") == "manual_dashboard":
+            self.record_manual_event(
+                {
+                    "at": _iso(cancelled_at),
+                    "robot": robot_id,
+                    "rooms": area_ids,
+                    "operations": [active.get("operation")],
+                    "context_id": active.get("manual_context_id"),
+                    "mode": active.get("manual_mode"),
+                    "outcome": "cancelled",
+                    "reason": reason,
+                    "source": "manual_dashboard",
+                }
+            )
+            coordinator.data.get("occurrences", {}).pop(active.get("room"), None)
+            coordinator.data.get("water_confirmations", {}).pop(
+                str(active.get("occurrence_id")), None
+            )
         coordinator.data["recovery_events"].append(
             {"robot": robot_id, "rooms": area_ids, "at": _iso(cancelled_at), "reason": reason}
         )
@@ -155,7 +173,10 @@ class JobLifecycle:
                 detail["last_stage_outcome"] = "completed"
                 detail["last_stage_reason"] = confidence
                 detail["last_stage_at"] = _iso(completion)
-                if occurrence["current_stage"] >= len(occurrence["stages"]):
+                occurrence_complete = occurrence["current_stage"] >= len(
+                    occurrence["stages"]
+                )
+                if occurrence_complete:
                     detail["cleaning"] = _iso(completion)
                     coordinator.data["occurrences"].pop(active["room"], None)
                     coordinator.data.get("water_confirmations", {}).pop(
@@ -165,12 +186,28 @@ class JobLifecycle:
                         coordinator.data.get("water_notification_episodes", {}).pop(
                             active["room"], None
                         )
+                if active.get("source") == "manual_dashboard":
+                    self.record_manual_event(
+                        {
+                            "at": _iso(completion),
+                            "robot": robot_id,
+                            "rooms": [active["room"]],
+                            "operations": [operation],
+                            "context_id": active.get("manual_context_id"),
+                            "mode": active.get("manual_mode"),
+                            "outcome": (
+                                "completed" if occurrence_complete else "stage_completed"
+                            ),
+                            "confidence": confidence,
+                            "source": "manual_dashboard",
+                        }
+                    )
             else:
                 # A schema-one scheduler checkpoint completes one whole occurrence.
                 detail["cleaning"] = _iso(completion)
         measured = active.get("measured_minutes")
         if (
-            active.get("source") == "scheduler"
+            active.get("source") in {"scheduler", "manual_dashboard"}
             and confidence == "observed"
             and not active.get("interrupted")
             and isinstance(measured, (float, int))

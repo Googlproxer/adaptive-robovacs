@@ -1,5 +1,14 @@
 # Plan: Robot defaults, per-room profiles, and manual room cleans
 
+## Implementation status
+
+Implemented for Adaptive RoboVacs v1.5.0. Store schema v7 adds nullable room
+fan-speed/mode/mop overrides and immutable per-stage resolved profiles. The
+generic adapter boundary now validates and applies profiles, the existing
+compatibility Repair covers the complete profile, and each room owns the three
+restart-safe `manual_dashboard` actions described below. Issue #4 is therefore
+implemented by this plan without a dedicated hard-coded multipass action.
+
 ## Goal
 
 Let every robot define its default cleaning behavior and let each room inherit

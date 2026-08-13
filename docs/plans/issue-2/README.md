@@ -11,8 +11,8 @@ work.
 
 ## Baseline
 
-Plans 1 through 3 are implemented. The remaining plans target the architecture
-deployed in integration version 1.4.4:
+Plans 1 through 3 and plan 5 are implemented. The remaining plans target the
+architecture deployed in integration version 1.5.0:
 
 - v1.1 introduced one global card, one card per vacuum, and one card per room;
 - v1.2 introduced independently inherited per-room daily windows;
@@ -33,7 +33,10 @@ deployed in integration version 1.4.4:
   operation-selector options directly as well as the normalized profile; and
 - v1.4.4 migrated durable robot identity to registry IDs, made duration
   forecasts robot-specific, repaired offline held-job recovery, and hardened
-  Store validation and config-entry shutdown/removal.
+  Store validation and config-entry shutdown/removal; and
+- v1.5.0 added exact per-room profile inheritance/overrides, adapter-owned
+  profile validation/application, complete profile Repairs, and the three
+  safety-gated manual room actions shared with issue #4.
 
 Pull request [#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3)
 introduced the typed Store codec and separated runtime service calls, job
@@ -46,7 +49,7 @@ refactored shape:
 - entity-facing data in `projections.py`; and
 - orchestration in `coordinator.py`.
 
-The current durable scheduler payload is Store schema v6. Each remaining plan
+The current durable scheduler payload is Store schema v7. Each remaining plan
 must migrate from the schema present when it is implemented rather than assume
 that it will receive a particular future schema number.
 
@@ -77,8 +80,8 @@ remaining plans:
 | Multipass support | Implemented for v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs; corrected through v1.3.2 | [Implemented plan](02-room-multipass.md) |
 | Mopping when water is available | Implemented in v1.4.0 and corrected through v1.4.3: telemetry-backed live readiness, ordered stages, one cadence, and explicit one-hour all-user confirmation when water telemetry is absent | [Implemented plan](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
-| Power level settings per room | Robot-owned program/profile defaults with per-room overrides for program, fan speed, modes, intensity, and independent vacuum/mop passes | [Robot defaults, per-room profiles, and manual room cleans](05-room-power-levels.md) |
-| Issue #4: manual operation triggering | One room-owned action for the configured program, one for vacuum only, and one for mop only; no dedicated multipass action | [Combined into plan 5](05-room-power-levels.md) |
+| Power level settings per room | Implemented in v1.5.0: robot-owned program/profile defaults with per-room overrides for program, fan speed, modes, intensity, and independent vacuum/mop passes | [Implemented plan](05-room-power-levels.md) |
+| Issue #4: manual operation triggering | Implemented in v1.5.0: one room-owned action for the configured program, one for vacuum only, and one for mop only; no dedicated multipass action | [Implemented with plan 5](05-room-power-levels.md) |
 | Confirm with message before bedrooms | Assign one user and phone to each bedroom and send an actionable notification for each run | [Bedroom confirmation](06-bedroom-confirmation.md) |
 
 ## Live capability findings
@@ -195,19 +198,14 @@ Every implementation must retain these repository contracts:
 
 ## Recommended implementation order
 
-Plans 1 through 3 and the shared refactor are complete. For the remaining work:
+Plans 1 through 3, plan 5, and the shared refactor are complete. For the
+remaining work:
 
-1. Complete plan 5's remaining per-room fan-speed, cleaning-mode, mop-mode,
-   and mop-intensity overrides together with issue #4's three manual room
-   actions. Version 1.4.0 already supplies the shared cleaning-program
-   ownership, cadence, independent pass resolution, adapter readiness, and
-   ordered-stage checkpoint model; v1.4.4 supplies stable robot identity and
-   robot-specific final forecasting. This makes plan 5 the smallest next step
-   and gives later safety gates one shared scheduled/manual dispatch path.
-2. Implement symmetric room adjacency as an independent occupancy gate and
+1. Implement symmetric room adjacency as an independent occupancy gate and
    per-room-card editor using the typed Store/projection/shutdown boundaries
-   established by v1.4.4. Apply it to scheduled and plan 5 manual occurrences.
-3. Add durable bedroom assignments and confirmation after adjacency, water,
+   established through v1.5.0. Apply it to scheduled and plan 5 manual
+   occurrences.
+2. Add durable bedroom assignments and confirmation after adjacency, water,
    and profile gates are stable. Reuse the water-confirmation transport and
    config-entry-owned lifecycle infrastructure without sharing authorization.
    Approval authorizes a fresh evaluation; it never bypasses a safety gate or

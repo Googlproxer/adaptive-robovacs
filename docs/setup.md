@@ -73,6 +73,40 @@ then vacuum**. A room has one cleaning cadence; two-stage programs use two
 separate physical starts and repeat every safety check before stage two.
 Enable **Carpet (no mopping)** to block any program containing a mop stage.
 
+Vacuum cards also own default **Fan speed**, **Mode**, **Mop mode**, and **Mop
+intensity** controls when the selected adapter discovers them. Room cards show
+**Robot default** plus the exact option values advertised by eligible robots on
+that floor. A room value is resolved only after a robot is assigned; a stale
+or unsupported value blocks the room and creates a cleaning-profile Repair
+instead of being silently substituted.
+
+Before every physical stage, the selected adapter validates and reapplies the
+complete relevant profile. Vacuum stages never apply mop-only settings. An
+accepted ordered occurrence keeps the same robot and exact resolved values for
+its remaining stages across Home Assistant restarts.
+
+## Manual room actions
+
+Every discovered room has three integration-owned buttons:
+
+- **Manual clean** runs its current effective program and profile.
+- **Manual vacuum only** runs one vacuum stage with its effective vacuum pass
+  count and profile.
+- **Manual mop only** runs one mop stage with its effective mop pass count and
+  profile.
+
+These actions bypass the room cadence and desired window only. All other
+safety gates remain active, including occupancy, bedroom-transit rules,
+Party/observe-only mode, the global halt, robot battery/readiness, carpet,
+water, mapping, profile compatibility, and start confirmation. A blocked press
+is rejected immediately and is not retained as work that can start later.
+
+Scripts can call `adaptive_robovacs.manual_clean_room` with one `area_id` and
+`mode: configured`, `vacuum_only`, or `mop_only`. Supply `entry_id` when more
+than one Adaptive RoboVacs config entry is loaded. A physically completed
+manual occurrence updates the room's normal cadence; a rejected or unstarted
+request does not.
+
 ## Water-aware mopping
 
 The Roborock adapter uses same-device registry metadata for Mop attached, Water

@@ -83,6 +83,13 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             "cleaning_program": state["settings"].get("cleaning_program"),
             "mopping_enabled": state["settings"].get("mopping_enabled"),
             "fan_speed": state["settings"].get("fan_speed"),
+            "mop_mode": state["settings"].get("mop_mode"),
+            "mop_intensity": state["settings"].get("mop_intensity"),
+            "configured_profile_defaults": {
+                key: state["settings"].get(key)
+                for key in ("fan_speed", "mode", "mop_mode", "mop_intensity")
+            },
+            "observed_profile": state["observed_profile"],
             "adapter_id": state["adapter_id"],
             "adapter_schema_version": state["adapter_schema_version"],
             "adapter_capabilities": state["adapter_capabilities"],
@@ -159,6 +166,12 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "vacuum_pass_count": state["vacuum_pass_count"],
             "mop_pass_count": state["mop_pass_count"],
             "cleaning_program": state["cleaning_program"],
+            "fan_speed": state["fan_speed"],
+            "mode": state["mode"],
+            "mop_mode": state["mop_mode"],
+            "mop_intensity": state["mop_intensity"],
+            "effective_profiles": state["effective_profiles"],
+            "latest_manual_request": state["latest_manual_request"],
             "effective_pass_count": (
                 state["active"].get("passes")
                 if state["active"]
@@ -244,6 +257,32 @@ class _RoomOccupancySensor(AdaptiveEntity, SensorEntity):
         }
 
 
+class _RoomManualStatusSensor(AdaptiveEntity, SensorEntity):
+    def __init__(self, coordinator, area_id: str, name: str) -> None:
+        super().__init__(
+            coordinator,
+            f"room_{area_id}_manual_status",
+            f"{name} manual request",
+            "room_manual_status",
+            area_id=area_id,
+        )
+        self.area_id = area_id
+
+    @property
+    def native_value(self) -> str:
+        event = self.coordinator.room_state(self.area_id)["latest_manual_request"]
+        return (
+            str(event.get("outcome", "unknown")).replace("_", " ")
+            if event
+            else "never requested"
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        event = self.coordinator.room_state(self.area_id)["latest_manual_request"]
+        return {**super().extra_state_attributes, "latest_request": event}
+
+
 def _entities(coordinator) -> list[AdaptiveEntity]:
     entities: list[AdaptiveEntity] = [_SchedulerSensor(coordinator)]
     for robot in coordinator.discovery.robots.values():
@@ -254,6 +293,7 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
                 _RoomScheduleSensor(coordinator, room.area_id, room.name),
                 _RoomLastCleanedSensor(coordinator, room.area_id, room.name),
                 _RoomOccupancySensor(coordinator, room.area_id, room.name),
+                _RoomManualStatusSensor(coordinator, room.area_id, room.name),
             ]
         )
     return entities

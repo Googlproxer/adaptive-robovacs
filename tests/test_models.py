@@ -227,6 +227,92 @@ class CadenceTests(unittest.TestCase):
         self.assertEqual(samples, 3)
 
 
+class CleaningProfileTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.capabilities = models.AdapterCapabilities(
+            adapter_id="roborock",
+            schema_version=2,
+            portable_area_clean=True,
+            supported_pass_counts=frozenset({1, 2}),
+            supported_operations=frozenset({"vacuum", "mop"}),
+            fan_speed_options=("quiet", "max"),
+            mode_options=("vacuum", "mop"),
+            mop_mode_options=("standard", "deep"),
+            mop_intensity_options=("low", "high"),
+        )
+
+    def test_room_values_replace_robot_defaults_and_are_exact(self) -> None:
+        resolved = models.resolve_cleaning_profile(
+            "mop",
+            {"fan_speed": "max", "mop_mode": "deep"},
+            {
+                "fan_speed": "quiet",
+                "mode": "vacuum",
+                "mop_mode": "standard",
+                "mop_intensity": "high",
+            },
+            self.capabilities,
+        )
+
+        self.assertEqual(
+            resolved.to_mapping(),
+            {
+                "operation": "mop",
+                "fan_speed": "max",
+                "mode": "mop",
+                "mop_mode": "deep",
+                "mop_intensity": "high",
+            },
+        )
+
+    def test_stale_or_operation_conflicting_room_values_fail_closed(self) -> None:
+        self.assertIsNone(
+            models.resolve_cleaning_profile(
+                "vacuum",
+                {"fan_speed": "removed"},
+                {},
+                self.capabilities,
+            )
+        )
+
+    def test_supported_fields_require_a_robot_default_or_room_override(self) -> None:
+        self.assertIsNone(
+            models.resolve_cleaning_profile(
+                "vacuum",
+                {},
+                {"mode": "vacuum"},
+                self.capabilities,
+            )
+        )
+        resolved = models.resolve_cleaning_profile(
+            "vacuum",
+            {"fan_speed": "quiet"},
+            {"mode": "vacuum"},
+            self.capabilities,
+        )
+        self.assertIsNotNone(resolved)
+        self.assertIsNone(
+            models.resolve_cleaning_profile(
+                "mop",
+                {"mode": "vacuum"},
+                {},
+                self.capabilities,
+            )
+        )
+
+    def test_persisted_profile_support_ignores_later_default_changes(self) -> None:
+        profile = {
+            "operation": "vacuum",
+            "fan_speed": "max",
+            "mode": "vacuum",
+            "mop_mode": None,
+            "mop_intensity": None,
+        }
+        self.assertTrue(
+            models.cleaning_profile_is_supported(profile, self.capabilities)
+        )
+
+
 class RecoveryTransitionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.recovered_at = datetime(2026, 8, 8, 12, 0)
