@@ -7,11 +7,11 @@ validated, released, installed through HACS, and verified in Home Assistant.
 
 ## Baseline
 
-The checked-out `main` branch is integration version 1.0.11. Open pull request
-[#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3) introduces a typed
-Store codec and separates runtime service calls, job lifecycle mutations, and
-dashboard projections. The plans use that refactored shape as the preferred
-baseline:
+The checked-out `main` branch is integration version 1.2.1. Pull request
+[#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3) has been merged;
+it introduced a typed Store codec and separated runtime service calls, job
+lifecycle mutations, and dashboard projections. The remaining plans use that
+refactored shape:
 
 - durable configuration and migrations in `state.py`;
 - pure safety decisions in `models.py`;
@@ -19,16 +19,16 @@ baseline:
 - entity-facing data in `projections.py`; and
 - orchestration in `coordinator.py`.
 
-If an item is implemented before PR #3 is merged, make the equivalent change
-on the current modules and explicitly forward-port it during the refactor. Do
-not independently implement the same state migration on both branches.
+Per-room daily cleaning windows shipped in v1.2.0. Version 1.2.1 contains the
+subsequent docked-completion recovery fix and is the baseline for the remaining
+feature work.
 
 ## Plans
 
 | Issue item | Confirmed direction | Plan |
 | --- | --- | --- |
 | Per-room cleaning windows | One repeating daily interval; weekday/weekend schedules are deferred | [Implemented in v1.2.0](01-per-room-cleaning-windows.md) |
-| Multipass support | Native two-pass cross-hatching, initially for Roborock; requires upstream Home Assistant support | [Room-specific native multipass](02-room-multipass.md) |
+| Multipass support | Add a generic/vendor adapter contract, then use a Roborock adapter for mapped native two-pass cross-hatching | [Vacuum adapters and Roborock native multipass](02-room-multipass.md) |
 | Mopping when water is available | A robot without the required live water/mop signals does not support scheduler mopping | [Water-aware mopping](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
 | Power level settings per room | Native fan speed, presented with the other supported per-room robot behaviors | [Per-room cleaning profiles](05-room-power-levels.md) |
@@ -48,9 +48,12 @@ names, map details, or notification targets.
   advertised values differ. Cleaning mode values also differ, while mop mode
   and mop intensity are available only where supported.
 - The current Home Assistant `vacuum.clean_area` action accepts an area but no
-  pass count. The Roborock implementation also omits the native repeat value
-  when cleaning mapped segments, so safe native cross-hatching needs an
-  upstream API and integration change before scheduler implementation.
+  pass count. Home Assistant retains the user-maintained area-to-segment
+  mapping, and the Roborock implementation omits the native repeat value when
+  cleaning those segments. The revised multipass plan adds an integration-owned
+  adapter layer: the Roborock adapter may resolve Home Assistant's mapping at
+  dispatch time and issue the native repeat command without persisting a
+  second mapping.
 
 ## Shared constraints
 
@@ -60,8 +63,10 @@ Every implementation must retain these repository contracts:
   notification targets from Home Assistant. Never add deployment-specific
   entity IDs, area IDs, device IDs, native segment IDs, service names, or
   credentials to source.
-- Prefer Home Assistant areas and standard entity actions. Do not work around a
-  missing area-cleaning feature with raw Roborock segment commands.
+- Home Assistant areas remain the scheduler's public target. Vendor adapters
+  may use native commands only after resolving the requested area through the
+  selected vacuum's current Home Assistant area mapping. Native target IDs are
+  transient and must never be hard-coded, persisted, logged, or projected.
 - Keep Party Mode and observe-only mode non-dispatching. Occupancy and
   bedroom-transit rules remain mandatory and are rechecked immediately before
   dispatch.
@@ -88,11 +93,12 @@ Every implementation must retain these repository contracts:
    migration path.
 2. Implement per-room daily windows and symmetric room adjacency, which are
    independent scheduling gates.
-3. Introduce the shared room cleaning-profile model and dashboard controls.
-   Fan speed can ship first; water-gated mop controls plug into the same model.
-4. Pursue the Home Assistant vacuum-contract and Roborock changes needed for
-   native two-pass area cleaning. Add the scheduler multipass control only
-   after the installed Home Assistant advertises that capability.
+3. Introduce the generic/vendor vacuum adapter contract and the Roborock
+   adapter while adding native two-pass room cleaning. Unadapted vendors retain
+   the current Home Assistant behavior.
+4. Introduce the shared room cleaning-profile model and dashboard controls.
+   Fan speed and water-gated mop controls consume the normalized adapter
+   capabilities instead of adding vendor checks to the scheduler.
 5. Add durable bedroom assignments and confirmation after ordinary candidate
    gates are stable. Approval authorizes a re-evaluation; it never bypasses a
    safety gate.
@@ -105,7 +111,10 @@ migrations and public controls needed by that release.
 1. The first cleaning-window release supports one daily start/end interval per
    room. Weekday/weekend schedules may be added later.
 2. Multipass means Roborock's native two-pass cross-hatching. Roborock is the
-   first vendor target; other vendors are follow-up adapters.
+   first vendor adapter. Adapters may run native commands, but native targets
+   must be resolved from the user-maintained Home Assistant area mapping for
+   every dispatch and must never be persisted by Adaptive RoboVacs. Vacuums
+   without an adapter retain the portable Home Assistant behavior.
 3. Scheduler mopping requires authoritative water/mop telemetry. A robot with
    no supported water signal is not mop-capable in this integration.
 4. Cross-room occupancy models undirected adjacency. If either adjacent room
