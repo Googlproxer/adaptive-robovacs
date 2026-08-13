@@ -1,111 +1,177 @@
-# Plan: Per-room fan speed and cleaning profiles
+# Plan: Per-room fan speed and adapter-applied cleaning profiles
 
 ## Goal
 
-Allow each room to request a fan/suction speed and expose the other supported
-robot-specific cleaning behaviors in one capability-driven dashboard profile.
-Apply the complete resolved profile before dispatch so settings from one room
-cannot leak into the next job.
+Allow each room to request a fan/suction speed and the other supported
+room-cleaning behaviors. Resolve one complete profile for the selected robot
+and apply it before dispatch so settings from one room cannot leak into the
+next job.
 
 ## Product decision
 
-**Power level** means Home Assistant's native vacuum fan speed. The room
-dashboard should also expose the robot-specific behaviors that directly affect
-that room's clean: cleaning mode, mop mode, mop intensity, and native
-two-pass cross-hatching when supported. Maintenance or administrative controls
-such as child lock, do-not-disturb, or dust-bin actions are not part of the room
-profile.
+**Power level** means the vacuum's advertised fan speed. Vacuum cards own robot
+defaults. Room cards own optional exact-value overrides for fan speed, cleaning
+mode, mop mode, mop intensity, and the already implemented pass-count setting.
+Maintenance or administrative controls such as child lock, do-not-disturb, or
+dust-bin actions are not room profile fields.
 
-## Live discovery finding
+## v1.3.2 baseline and gap
 
-Both inspected robots advertise Home Assistant's standard fan-speed feature,
-but their option sets differ. Their cleaning-mode options also differ, and only
-capable hardware exposes usable mop-mode and mop-intensity controls. The UI and
-assignment logic therefore must use each robot's advertised raw options rather
-than a hard-coded common list.
+The adapter capability snapshot already publishes per-robot raw fan-speed,
+cleaning-mode, mop-mode, mop-intensity, operation, and pass options. Vacuum
+cards already expose robot-owned defaults, and room cards already expose
+**Robot default / 1 pass / 2 passes**. Runtime profile application currently
+reads only robot settings and directly calls common Home Assistant services;
+there are no room overrides, no whole-profile compatibility filter, and no
+guarantee that a **Robot default** room resets a value changed for the preceding
+room.
 
-Home Assistant's portable interface is `fan_speed_list` plus
-`vacuum.set_fan_speed`; see the
-[vacuum entity contract](https://developers.home-assistant.io/docs/core/entity/vacuum/).
+Both inspected robots advertise fan speed but with different option sets.
+Their other options also differ. Every option therefore remains an exact raw
+Home Assistant value associated with the robots that advertise it; there is no
+hard-coded common list or semantic translation.
 
-## Proposed behavior
+## Adapter profile contract
 
-- Add a room cleaning profile with **Robot default** or an exact advertised
-  value for each supported behavior.
-- Use `vacuum.set_fan_speed` for fan speed. Do not add a vendor-specific select
-  fallback in the first release while the standard feature is available.
-- Keep existing robot mode/mop entities and stable unique IDs as robot defaults.
-  Add a robot fan-speed default. A room override resolves against the selected
-  robot before assignment.
-- Build dashboard choices from live capabilities. If multiple eligible robots
-  advertise different values, show their union with compatibility detail and
-  restrict assignment to a robot supporting every explicit selection.
-- Never translate raw option names, silently substitute a value, or expose a
-  control on unsupported hardware.
-- Mopping controls remain subject to the complete water-capability and current
-  readiness rules. Two-pass is visible only after native support is advertised.
+This plan consumes the adapter schema evolution from the water-aware mopping
+plan. If implemented independently, it must introduce the same versioned
+extension rather than adding vendor branches to runtime orchestration.
 
-## Migration and default safety
+- Keep normalized option sets in `AdapterCapabilities` and add typed
+  `RequestedCleaningProfile` and `ResolvedCleaningProfile` values.
+- Add adapter methods to validate a resolved profile without side effects and
+  to apply it without starting a clean. The generic adapter implements standard
+  Home Assistant fan-speed and discovered select actions. A vendor adapter may
+  override or extend application while preserving the same normalized result.
+- Keep dispatch separate: profile application performs no area clean or native
+  segment command, and dispatch receives the resolved profile in its request.
+- Adapters return stable result codes and never expose native targets or raw
+  exceptions. Roborock continues to use native repeat-2 dispatch only when two
+  passes are requested; shared runtime does not also toggle a pass select for a
+  native request.
+- Record the adapter ID/schema and requested/resolved profile in the active-job
+  checkpoint. After restart, observed robot state remains authoritative and no
+  profile or command is replayed automatically.
 
-Existing rooms and the new robot fan-speed default migrate to unset, preserving
-current behavior. The dashboard must require a robot fan-speed default before
-allowing any room on that robot to save an explicit fan-speed override. Once
-enabled, every dispatch resolves and reapplies a speed, so a later **Robot
-default** room cannot inherit the previous room's override accidentally.
+## Defaults and leakage prevention
+
+- Preserve every existing v1.3 robot mode/mop/fan setting and entity/unique ID
+  as that robot's default. Migrate new room override fields to null (**Robot
+  default**) so upgrades do not alter behavior.
+- An unset robot field is visibly **Not configured**; the UI must not display
+  the first advertised option as though it were saved.
+- Before a room may save or use an explicit override for a field, an eligible
+  robot must advertise the value and have an explicit robot default for that
+  field. This guarantees that a later **Robot default** job can restore a known
+  value instead of inheriting the prior room's override.
+- Resolve all applicable fields for every dispatch and reapply them in a stable
+  order, including defaults. Do not apply only the fields that differ from the
+  scheduler's last estimate.
+- If eligible robots differ, assignment filters to robots supporting the entire
+  resolved profile before battery/readiness ranking. Never partially apply,
+  translate, or silently substitute an unsupported value.
+
+## Mopping and pass interaction
+
+- Room mop-mode/intensity overrides appear only when a floor has an adapter
+  that supports scheduler mopping under the authoritative water contract.
+- Mop work remains subject to live water readiness and carpet exclusion during
+  evaluation and final pre-dispatch checks.
+- Pass count remains the existing room-owned setting and participates in the
+  same compatibility/profile fingerprint; do not create a second pass entity.
+- A capability regression or saved value that no eligible robot can apply is a
+  normal fail-closed configuration block. Show it on the room card and create a
+  translated, deduplicated Repair that auto-clears when the profile is edited or
+  compatibility returns. It does not engage the global dispatch halt because no
+  clean was attempted.
+
+## Failure behavior
+
+Profile service calls are not atomic. Apply the full resolved profile before
+the adapter dispatch and checkpoint the phase. If any call raises, times out, or
+returns an error:
+
+- do not send the clean command or advance cadence;
+- log safe robot, room, adapter, profile-field, and requested-value context;
+- retain no native target or raw exception in Store/entities/Repairs;
+- engage the existing durable system-wide scheduler halt with
+  `profile_apply_failed`; and
+- use the scheduler-failure Repair/global recheck flow to validate current
+  entities/options without issuing a test clean before explicit resume.
+
+The next successful dispatch after resume reapplies the complete profile, so a
+partially changed robot is not trusted.
+
+## Dashboard experience
+
+- Vacuum cards retain the existing robot defaults and add clear configured,
+  current-observation, and compatibility status where needed.
+- Each room card gains room-owned profile selects. Choices are **Robot default**
+  plus the exact live union for eligible robots on that floor, with supporting
+  robot names as presentation-only compatibility detail.
+- A room card explains missing defaults, incompatible saved values, water
+  gating, and which fields are inherited. It never repeats the room name on
+  every row and never displays another room's controls.
+- Dynamic capability/friendly-name changes update option membership and labels
+  through the existing discovery signal. Both JavaScript copies remain
+  byte-identical.
 
 ## Implementation plan
 
-1. Extend `RobotProfile` with the native fan-speed target, advertised raw
-   options, current observation, and the already discovered cleaning/mop
-   controls. Normalize only transport shape, not user-facing values.
-2. Add a typed `RoomCleaningProfile` containing nullable `fan_speed`,
-   `cleaning_mode`, `mop_mode`, `mop_intensity`, and `pass_count`. Add a
-   nullable robot `fan_speed_default`. Version and test the Store migration.
-3. Add pure helpers to resolve defaults and test whole-profile compatibility
-   against a robot. Filter incompatible robots before battery ranking and
-   publish a specific generic block reason if none can apply the profile.
-4. Add a robot-owned fan-speed-default select. Add room controls whose choices
-   are **Robot default** plus the live union for eligible floor robots. Display
-   which robot supports a heterogeneous option without persisting that display
-   metadata.
-5. Create one runtime profile transaction that applies cleaning mode, fan
-   speed, mop mode/intensity, and pass count in a deterministic order before
-   `vacuum.clean_area`. Recheck capability and water readiness immediately
-   before application.
-6. If any profile call fails, do not clean. Log robot, room, control kind, and
-   requested option with safe exception context; clear provisional active
-   state, expose a generic profile error, and leave the room eligible later.
-7. Store requested and resolved profile values in preview and the durable
-   active-job checkpoint. Robot observations after restart remain authoritative
-   and the profile is reapplied only as part of a fresh safe dispatch.
-8. Refactor the dashboard room panel into a capability-driven **Cleaning
-   profile** section. Hide unsupported rows, explain incompatible saved values,
-   and keep both JavaScript copies byte identical.
-9. Document raw-value compatibility, defaults, water gating, and the distinction
-   between cleaning mode and fan speed.
+1. Add typed requested/resolved room profiles and pure default-resolution and
+   whole-profile compatibility helpers in `models.py`.
+2. Extend `RoomSettings` with nullable fan-speed, cleaning-mode, mop-mode, and
+   mop-intensity overrides. Bump from the Store schema current at implementation
+   time; preserve current robot defaults and existing room pass values.
+3. Extend the versioned adapter contract with profile validation/application.
+   Implement the standard Home Assistant path in the generic adapter and make
+   Roborock delegate unless a vendor-specific override is required.
+4. Refactor candidate/assignment construction to resolve a complete profile per
+   robot, discard incompatible robots before ranking, and carry the chosen
+   typed profile into preview and dispatch.
+5. Refactor runtime profile application into the adapter boundary. Apply
+   cleaning mode, fan speed, mop mode/intensity, and non-native pass controls in
+   deterministic order; repeat the capability/water checks immediately before
+   checkpoint and application.
+6. Reuse the existing system fault latch for application errors. Add a separate
+   auto-clearing compatibility Repair for saved profiles that cannot reach the
+   application phase.
+7. Add stable room-owned controls/status roles to the selected room card and
+   improve existing vacuum-default status without replacing public entity IDs
+   or unique IDs.
+8. Store requested/resolved profiles and adapter version in previews and active
+   checkpoints. Keep robot observations authoritative during recovery.
+9. Document exact-value compatibility, required defaults, water gating, pass
+   handling, and Repair/resume behavior.
 
 ## Validation
 
-- Test standard fan-speed discovery and exact service calls before dispatch.
-- Test consecutive rooms with different speeds and a following **Robot
-  default** room; each receives the resolved value.
-- Test heterogeneous robots and whole-profile compatibility filtering.
-- Test that mop fields cannot make a robot without complete water telemetry
-  mop-capable and that two-pass remains absent without native support.
-- Test profile failure aborts area cleaning without changing cadence or map
-  status and remains retryable.
-- Test Store migration, dynamic dashboard options, stable unique IDs, and
-  dashboard-copy equality.
-- Run the repository unit tests and compile every integration Python module.
+- Test standard generic fan-speed/select calls and vendor delegation without a
+  clean command during profile application.
+- Test consecutive rooms with different speeds followed by a **Robot default**
+  room; every job receives an explicit resolved value.
+- Test missing robot defaults, heterogeneous robots, exact raw values, and
+  whole-profile compatibility filtering.
+- Test that mop fields never make a robot without authoritative water telemetry
+  mop-capable and two passes are unavailable without adapter support.
+- Test compatibility Repairs auto-clear, while an actual profile-application
+  failure aborts dispatch and durably halts all scheduler work until explicit
+  successful recheck/resume.
+- Test Store migration, active checkpoint/restart behavior, dynamic room/vacuum
+  card membership, stable unique IDs, translation placeholders, and dashboard
+  copy equality.
+- Run the complete repository tests and compile every integration Python
+  module.
 
 ## Acceptance criteria
 
-- Two rooms can reliably request different fan speeds on the same robot.
-- The dashboard shows only the cleaning behaviors supported by eligible robots
-  and derives every raw option from Home Assistant at runtime.
-- **Robot default** restores an explicit saved default and never leaks a prior
-  room's profile.
-- An incompatible profile blocks safely rather than being translated or
-  partially applied.
-- Profile failures prevent dispatch and do not permanently exclude the room.
-
+- Two rooms can reliably request different fan speeds on the same robot, and a
+  following inherited room restores the configured robot default.
+- Room cards show only capability-compatible cleaning behaviors and derive raw
+  options from live adapter snapshots.
+- An incompatible profile blocks before dispatch and is actionable without
+  creating a false global failure.
+- Any failure while applying a selected profile prevents the clean and uses the
+  existing durable system-wide halt/Repair workflow.
+- Future vendors can validate and apply profiles through the adapter contract
+  without scheduler changes.

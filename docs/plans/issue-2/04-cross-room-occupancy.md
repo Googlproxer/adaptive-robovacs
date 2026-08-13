@@ -10,14 +10,20 @@ room then prevents the scheduler from starting a clean in the other room.
 Adjacency is symmetric, not directional. If rooms A and B are linked, A being
 occupied blocks B and B being occupied blocks A. Only direct, single-hop
 neighbors are evaluated; adjacency is not transitively expanded. The first
-release includes a dashboard room-list editor.
+release includes an editor launched from each target room card.
 
-## Current behavior and gap
+## v1.3.2 baseline and gap
 
 Ordinary rooms evaluate only their own radar/fallback sources. Bedroom-transit
 rooms additionally require every labeled bedroom to be clear. There is no
 durable room-adjacency graph or diagnostic that distinguishes local occupancy
 from an adjacent-room block.
+
+The dashboard is no longer one aggregate panel: each room has its own
+`custom:adaptive-robovacs-room` card, which currently renders integration-owned
+entities in one native entities card. Home Assistant has no multi-area entity
+domain, so adjacency must not be represented as comma-separated text or a
+single-choice select merely to fit the existing renderer.
 
 ## Proposed behavior
 
@@ -31,8 +37,14 @@ from an adjacent-room block.
 - Reuse the scheduler's existing unresolved/no-sensor policy for a discovered
   adjacent room. A saved reference that no longer resolves to a discovered
   scheduler room fails closed until discovery recovers or the edge is removed.
+- A missing saved area or cross-floor relationship is a recoverable
+  configuration problem. Show it on both affected room cards and create one
+  translated, deduplicated Repair for user action. Auto-clear that Repair when
+  discovery recovers or the edge is removed.
 - Do not stop an already-running job when an adjacent room later becomes
   occupied, matching the existing start-safety model.
+- Adjacency occupancy is a pre-dispatch safety gate, not a failed clean start.
+  A block never engages the v1.3 system-wide dispatch halt.
 
 ## Implementation plan
 
@@ -42,25 +54,34 @@ from an adjacent-room block.
    and bedroom-transit combinations in `tests/test_models.py`.
 2. Add `adjacency_edges: list[tuple[str, str]]` to durable scheduler settings.
    Normalize each edge lexically, deduplicate it, reject self-edges, and retain
-   temporarily missing IDs. Migrate existing Stores to an empty graph.
+   temporarily missing IDs. Bump from the Store schema current at
+   implementation time and migrate existing Stores to an empty graph.
 3. Add `adaptive_robovacs.set_room_adjacency` with one target area and a
    multiple-area selector. On save, replace all edges touching the target in
    one atomic Store update, validate same-floor discovered rooms, and run a dry
    preview.
-4. Add a per-room multi-area editor to the custom dashboard. Populate it from
-   Home Assistant's area registry, exclude the room itself and other floors,
-   show missing saved references, and save explicitly through the service.
+4. Add an **Edit adjacent rooms** action to each room card. It opens a custom
+   dialog backed by Home Assistant's native multiple-area selector, populated
+   from the selected entry's discovered scheduler rooms. Exclude the room
+   itself and other floors, show missing saved references separately, and save
+   explicitly through the backend service. Keep the service available for
+   scripts/Developer Tools; do not store display names from the dialog.
 5. Build the effective occupancy scope once per evaluation, then reuse the
    existing radar-preferred resolver for every member. Cache room resolutions
    within the evaluation so reciprocal edges do not duplicate state reads.
 6. Include blocker kind (`local`, `adjacent`, or `bedroom_transit`), adjacent
-   room names, missing references, and confidence in schedule/preview
-   projections. Keep names presentation-only and durable references area-ID
-   based.
+   room names, missing references, and confidence in room status and schedule
+   preview projections. Add stable room-owned entity roles so only the selected
+   room card receives them. Keep names presentation-only and durable references
+   area-ID based.
 7. Subscribe through the normal occupancy entity watch set. A neighbor's state
    change should update both rooms' previews and cause an ordinary safe
    evaluation, never a direct dispatch.
-8. Document symmetric, direct-only behavior and keep both dashboard JavaScript
+8. Add translated missing-reference Repairs under the corrected
+   `issues.<key>.fix_flow` schema. The non-dispatching fix flow refreshes
+   discovery and directs the user to the affected room cards; it never clears
+   or resumes an unrelated scheduler dispatch fault.
+9. Document symmetric, direct-only behavior and keep both dashboard JavaScript
    copies byte identical.
 
 ## Validation
@@ -73,16 +94,17 @@ from an adjacent-room block.
   migration/restart.
 - Test interactions with desired windows, unresolved occupancy, Party Mode,
   observe-only mode, and the stricter bedroom-transit aggregate.
-- Test the dashboard multi-area editor and dashboard-copy equality.
+- Test target/entry validation, the per-room native multi-area dialog, room-card
+  ownership, missing-reference Repair lifecycle/translation placeholders, and
+  dashboard-copy equality.
 - Run the repository unit tests and compile every integration Python module.
 
 ## Acceptance criteria
 
-- Users can edit a room's direct neighbors from the dashboard using discovered
-  Home Assistant rooms.
+- Users can edit a room's direct neighbors from that room's card using
+  discovered Home Assistant rooms and a native multiple-area selector.
 - A link behaves symmetrically and survives restart without duplicate edges.
 - Occupancy in any direct neighbor prevents a new clean in the target room.
 - Missing references and unavailable observations are visible and never
   silently treated as known vacant.
 - Existing safety gates remain independent and mandatory.
-

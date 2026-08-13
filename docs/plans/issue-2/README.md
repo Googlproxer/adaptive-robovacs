@@ -7,10 +7,20 @@ validated, released, installed through HACS, and verified in Home Assistant.
 
 ## Baseline
 
-Plan 2 is implemented for integration version 1.3.0. The preceding baseline
-was 1.2.1. Pull request
-[#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3) has been merged;
-it introduced a typed Store codec and separated runtime service calls, job
+Plans 1 and 2 are implemented. The remaining plans target the architecture
+deployed in integration version 1.3.2:
+
+- v1.1 introduced one global card, one card per vacuum, and one card per room;
+- v1.2 introduced independently inherited per-room daily windows;
+- v1.3.0 introduced the typed generic/vendor adapter contract, Roborock native
+  two-pass dispatch, room pass controls, system-wide dispatch-failure halt, and
+  Home Assistant Repairs integration;
+- v1.3.1 made adapter capability/profile discovery dynamically add controls;
+  and
+- v1.3.2 corrected the Repair translation and placeholder contract.
+
+Pull request [#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3)
+introduced the typed Store codec and separated runtime service calls, job
 lifecycle mutations, and dashboard projections. The remaining plans use that
 refactored shape:
 
@@ -20,16 +30,16 @@ refactored shape:
 - entity-facing data in `projections.py`; and
 - orchestration in `coordinator.py`.
 
-Per-room daily cleaning windows shipped in v1.2.0. Version 1.2.1 contains the
-subsequent docked-completion recovery fix and is the baseline for the remaining
-feature work.
+The current durable scheduler payload is Store schema v4. Each remaining plan
+must migrate from the schema present when it is implemented rather than assume
+that it will receive a particular future schema number.
 
 ## Plans
 
 | Issue item | Confirmed direction | Plan |
 | --- | --- | --- |
 | Per-room cleaning windows | One repeating daily interval; weekday/weekend schedules are deferred | [Implemented in v1.2.0](01-per-room-cleaning-windows.md) |
-| Multipass support | Implemented for v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs | [Implemented plan](02-room-multipass.md) |
+| Multipass support | Implemented for v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs; corrected through v1.3.2 | [Implemented plan](02-room-multipass.md) |
 | Mopping when water is available | A robot without the required live water/mop signals does not support scheduler mopping | [Water-aware mopping](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
 | Power level settings per room | Native fan speed, presented with the other supported per-room robot behaviors | [Per-room cleaning profiles](05-room-power-levels.md) |
@@ -37,7 +47,7 @@ feature work.
 
 ## Live capability findings
 
-The Home Assistant instance was inspected on 2026-08-10 to resolve the issue's
+The Home Assistant instance was inspected through 2026-08-13 to resolve the issue's
 capability questions. These documents intentionally record only portable
 integration metadata and behavior, never local entity IDs, device IDs, room
 names, map details, or notification targets.
@@ -48,6 +58,10 @@ names, map details, or notification targets.
 - Both robots expose Home Assistant's standard fan-speed feature, but their
   advertised values differ. Cleaning mode values also differ, while mop mode
   and mop intensity are available only where supported.
+- The v1.3 adapter capability snapshot already carries operation, pass-count,
+  fan-speed, cleaning-mode, mop-mode, mop-intensity, and water-readiness fields.
+  The remaining plans extend that snapshot and its transient observation
+  sources instead of adding vendor checks to scheduler orchestration.
 - The current Home Assistant `vacuum.clean_area` action accepts an area but no
   pass count. Home Assistant retains the user-maintained area-to-segment
   mapping, and the Roborock implementation omits the native repeat value when
@@ -78,10 +92,12 @@ Every implementation must retain these repository contracts:
   `tests/test_models.py`. Add focused state, runtime, service, entity, and
   dashboard contract tests where the implementation boundary warrants them.
 - Build dashboard choices from live registries and advertised capabilities.
-  Keep both dashboard JavaScript copies byte identical and preserve existing
-  public entity and unique IDs.
+  Put robot defaults and robot diagnostics on the selected vacuum card. Put
+  room overrides, adjacency, assignment, and room diagnostics on the selected
+  room card. Keep both dashboard JavaScript copies byte identical and preserve
+  existing public entity and unique IDs.
 - Log complete dispatch, profile, and notification failures with safe context
-  while exposing only generic dashboard errors. Failures must not permanently
+  while exposing only generic dashboard errors. No failure may permanently
   exclude a room.
 - Surface user-actionable failures as translated, deduplicated Home Assistant
   Repairs issues and safe target-card diagnostics. Do not create Repairs noise
@@ -90,6 +106,15 @@ Every implementation must retain these repository contracts:
   as a durable system-wide dispatch halt. Create an immediate Repairs error and
   start no further cleans on any robot until the user completes a successful
   non-dispatching recheck and explicitly resumes the scheduler.
+- Distinguish normal pre-dispatch waits from system failures. Occupancy,
+  adjacency, unavailable water, missing approval, and similar fail-closed gates
+  do not constitute an attempted clean and do not engage the global halt.
+  Profile-application, adapter-dispatch, and start-confirmation failures do.
+- Put fix-flow translations directly under `issues.<translation_key>.fix_flow`,
+  pass issue translation placeholders into every Repair form, and test the
+  served English translation bundle. Repairs that represent recoverable
+  configuration gaps must auto-clear when discovery/configuration recovers;
+  the scheduler-failure Repair clears only after explicit successful resume.
 - Treat each shipped item as an integration release: bump `manifest.json`, run
   the complete validation suite, create the matching annotated semantic tag
   and GitHub Release, update through HACS, and restart Home Assistant only after
@@ -97,19 +122,19 @@ Every implementation must retain these repository contracts:
 
 ## Recommended implementation order
 
-1. Merge or otherwise settle PR #3 so all later state changes have one
-   migration path.
-2. Implement per-room daily windows and symmetric room adjacency, which are
-   independent scheduling gates.
-3. Introduce the generic/vendor vacuum adapter contract and the Roborock
-   adapter while adding native two-pass room cleaning. Unadapted vendors retain
-   the current Home Assistant behavior.
-4. Introduce the shared room cleaning-profile model and dashboard controls.
-   Fan speed and water-gated mop controls consume the normalized adapter
-   capabilities instead of adding vendor checks to the scheduler.
-5. Add durable bedroom assignments and confirmation after ordinary candidate
-   gates are stable. Approval authorizes a re-evaluation; it never bypasses a
-   safety gate.
+Plans 1 and 2 and the shared refactor are complete. For the remaining work:
+
+1. Implement symmetric room adjacency as an independent occupancy gate and
+   per-room-card editor.
+2. Extend adapter schema v1 with normalized, transient observation sources and
+   implement authoritative Roborock water readiness. The generic adapter stays
+   vacuum-only unless a future vendor adapter supplies an equivalent contract.
+3. Build room cleaning profiles on the normalized adapter capability/profile
+   boundary. Reuse the existing vacuum-card defaults and room pass control;
+   add only the missing room-owned overrides.
+4. Add durable bedroom assignments and confirmation after adjacency, water,
+   and profile gates are stable. Approval authorizes a fresh evaluation; it
+   never bypasses a safety gate or reserves a robot.
 
 The features may be released separately. Each release includes only the
 migrations and public controls needed by that release.
@@ -125,12 +150,17 @@ migrations and public controls needed by that release.
    without an adapter retain the portable Home Assistant behavior. This work
    targets v1.3.0 and includes user-visible dashboard diagnostics and Home
    Assistant Repairs issues for actionable adapter failures.
-3. Scheduler mopping requires authoritative water/mop telemetry. A robot with
-   no supported water signal is not mop-capable in this integration.
+3. Scheduler mopping requires authoritative water/mop telemetry supplied by a
+   vendor adapter. A robot with no supported water signal is vacuum-only even
+   if generic Home Assistant controls advertise mop-related modes.
 4. Cross-room occupancy models undirected adjacency. If either adjacent room
    is occupied, a new clean cannot start in the other.
-5. Power means fan speed. The dashboard should expose all supported
-   per-room cleaning-profile behaviors without assuming identical option names
-   across robots.
+5. Power means fan speed. Vacuum cards retain robot defaults; room cards expose
+   exact-value overrides for supported room cleaning-profile behavior without
+   assuming identical option names across robots. Adapters own capability
+   normalization and profile application; the generic adapter uses standard
+   Home Assistant actions.
 6. Each bedroom is assigned a Home Assistant user and Companion-app phone. The
-   assigned phone receives a per-run actionable confirmation request.
+   durable assignment uses registry/config-entry identities and resolves the
+   current notify target at send time. The assigned phone receives a per-run
+   actionable confirmation request.
