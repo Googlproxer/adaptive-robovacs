@@ -93,10 +93,10 @@ only as a compatibility hint. Re-resolve and validate it on every send.
   request is invalidated and a new confirmation is required.
 - Every normal gate is rechecked before the first stage and every later stage:
   scheduler halt, Party Mode, observe-only, daily window,
-  local/adjacent/bedroom-transit occupancy, robot readiness, authoritative
-  water readiness when the current stage is mop, profile compatibility,
-  operation-specific pass support, and current Home Assistant area
-  mapping/preflight.
+  local/adjacent/bedroom-transit occupancy, robot readiness, telemetry-backed
+  water readiness or explicit water confirmation when the current stage is mop,
+  profile compatibility, operation-specific pass support, and current Home
+  Assistant area mapping/preflight.
 - One approval authorizes the immutable scheduled occurrence, not arbitrary
   future room work. A later stage may proceed without another prompt while the
   same approval remains valid. If occupancy or another gate defers the sequence
@@ -107,6 +107,11 @@ only as a compatibility hint. Re-resolve and validate it on every send.
   replacement approval. Any configured vacuum stage may still proceed. The
   all-user skipped-mop notification is separate from this bedroom's assigned
   recipient confirmation and carries no approval authority.
+- A no-sensor robot's all-user **Confirm water / Cancel mopping** request is also
+  separate from bedroom authorization. Send the bedroom's assigned-recipient
+  request first. Only after valid bedroom approval and a fresh otherwise-safe
+  evaluation may plan 3 send the water request. The mop must start before both
+  independent authorizations expire; neither action can satisfy the other.
 - **Skip**, expiry, invalid response, and delivery failure never count as a
   clean. They follow the defer/throttle policy and leave cadence due.
 - Dry runs and schedule previews never send. No new prompt is sent while Party
@@ -225,6 +230,10 @@ never reserved in this record.
   expiry requires a new remaining-stage confirmation; completed stages never
   replay; water becoming ready during vacuum permits the approved mop stage;
   and a skipped no-water mop does not invalidate an approved vacuum.
+- Test no-sensor bedroom mopping with two independent requests: assigned-user
+  bedroom approval precedes the all-user water request; confirm/cancel actions
+  cannot cross-authorize; and expiry of either authorization blocks mopping
+  while preserving any safe configured vacuum stage.
 - Test that changing either vacuum or mop pass count invalidates the applicable
   approval fingerprint, while unrelated live water-state changes do not.
 - Test that assignment/delivery failures are room-local but a real post-approval

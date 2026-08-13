@@ -5,8 +5,9 @@
 Replace independently scheduled vacuum and mop work with one room-cleaning
 occurrence whose configured program may contain a vacuum stage, a mop stage,
 or both in a chosen order. Dispatch a mop stage only when the selected vendor
-adapter reports authoritative mop/water support and current readiness, while
-allowing any vacuum stage to proceed when water is unavailable.
+adapter reports mop support and water readiness is established either by
+authoritative telemetry or a fresh explicit user confirmation. Allow any vacuum
+stage to proceed when water is unavailable or unobservable.
 
 ## Confirmed product model
 
@@ -34,6 +35,11 @@ allowing any vacuum stage to proceed when water is unavailable.
   start. For **Vacuum then mop**, unavailable water at the beginning does not
   pre-skip the later mop: if water becomes ready while vacuuming, the fresh
   mop-stage preflight allows mopping to run.
+- A robot with a verified mop function but no authoritative water telemetry is
+  conditionally mop-capable. When its mop stage becomes current, notify all
+  resolvable users and require one explicit **Confirm water** action within one
+  hour. **Cancel mopping**, a reported dismissal, timeout, delivery ambiguity,
+  or any other absence of explicit confirmation cancels that mop stage.
 - A failure while applying a stage profile, sending a stage clean command, or
   confirming that a stage started is a system failure. Persist the incomplete
   occurrence, cancel its remaining automatic work, and start no more cleans on
@@ -67,8 +73,10 @@ Roborock entity-description keys are defined by Home Assistant's
 | `water_shortage` | Water shortage/problem is off |
 
 These keys are adapter metadata, not deployment entity IDs. A Roborock without
-one unambiguous same-device match for every key is vacuum-only for scheduler
-decisions.
+one unambiguous same-device match for every key may use the user-attested path
+only if its adapter independently verifies a supported mop operation. A robot
+with neither authoritative telemetry nor a verified mop operation remains
+vacuum-only.
 
 ## Adapter schema evolution
 
@@ -81,8 +89,9 @@ decisions.
   watched entity IDs. Watched IDs refresh discovery/evaluation and are never
   stored, logged, checkpointed, exposed in Repairs, or projected to dashboard
   entities.
-- Replace the free-form water string with a typed readiness result containing
-  `supported`, `ready`, a stable reason code, and normalized
+- Replace the free-form water string with a typed readiness result that
+  distinguishes `sensor_ready`, `sensor_blocked`, `confirmation_required`,
+  `confirmed`, and `unsupported`, with stable reason codes and normalized
   booleans/unknowns. Scheduler code consumes only this vendor-neutral result.
 - Add an adapter operation-readiness method used during evaluation and again
   before every mop-stage dispatch checkpoint. Adapter `async_preflight`
@@ -105,17 +114,18 @@ decisions.
   they no longer drive separate due decisions.
 - Replace the robot `mopping_enabled` behavior with an explicit cleaning
   program. A disabled legacy setting migrates to **Vacuum only**. An enabled
-  setting migrates to **Vacuum then mop** only when authoritative adapter
-  capability is available during post-migration reconciliation; otherwise it
-  reconciles to **Vacuum only** and produces one actionable compatibility
-  diagnostic instead of silently enabling unsupported mopping.
+  setting migrates to **Vacuum then mop** when the adapter verifies the mop
+  operation. Complete telemetry uses automatic readiness; missing telemetry
+  uses the confirmation-required path. It reconciles to **Vacuum only** with an
+  actionable compatibility diagnostic only when no mop operation is verified.
 - New room program overrides migrate to **Robot default**. Existing room pass
-  values remain intact and apply to each dispatched stage; per-stage pass
-  counts are outside this plan.
+  values become vacuum-pass overrides, while new mop-pass overrides inherit the
+  new one-pass robot default, as defined jointly with plan 5.
 - A scheduled occurrence becomes cadence-complete only after every configured
   stage has reached a terminal outcome: successfully completed or deliberately
-  skipped for water. An ordinary safety wait, incompatible saved program, or
-  system failure does not advance the occurrence.
+  skipped for sensed no-water, canceled/expired confirmation, or unconfirmed
+  water. An ordinary safety wait, incompatible saved program, or system failure
+  does not advance the occurrence.
 
 ## Durable occurrence lifecycle
 
@@ -134,8 +144,10 @@ transient water entity IDs.
    **Mop then vacuum**, that is the initial evaluation. For **Vacuum then mop**,
    defer the decision until vacuuming completes and the later stage passes a
    fresh normal evaluation. Water that becomes ready during vacuuming therefore
-   permits the mop stage; water still unavailable at final mop preflight marks
-   only that stage skipped.
+   permits the mop stage. For a telemetry-backed robot, water still unavailable
+   at final mop preflight marks only that stage skipped. For a robot without
+   telemetry, create or validate its explicit one-hour user confirmation before
+   allowing final preflight.
 4. Apply and dispatch only the current stage. Observe completion before making
    the next stage eligible. The same robot remains assigned to the occurrence,
    but is not reserved while the sequence waits.
@@ -153,20 +165,27 @@ For **Mop only** with unavailable water, no clean command is sent. The mop stage
 is marked `skipped_no_water`, the occurrence advances to its next scheduled
 time, and the same notification policy applies.
 
+For an unobservable-water robot, **Mop only** or **Mop then vacuum** creates the
+confirmation request when the occurrence is otherwise eligible. A canceled or
+unconfirmed mop is terminal for that occurrence; a following vacuum stage
+remains eligible. **Vacuum then mop** creates no water prompt until vacuuming is
+complete and mop is the current stage.
+
 ## Water-state behavior
 
-- The Roborock adapter recognizes the complete sensor trio on the vacuum's
-  current Home Assistant device and advertises mop operations only when the
-  required controls and authoritative telemetry are present.
+- The Roborock adapter determines mop-operation support from the required
+  controls/native capability independently from water observation. A complete
+  same-device sensor trio enables authoritative readiness; verified mopping
+  without the trio enables only the confirmation-required path.
 - Attached mop, attached water box, and no shortage means ready. A missing
   member, duplicate match, `unknown`, or `unavailable` is never ready.
-- A robot that has never exposed an authoritative set is unsupported, not
-  temporarily out of water. Mop choices are unavailable for new configuration.
-  Legacy intent is reconciled to **Vacuum only** during migration. A later
-  saved mop program whose capability disappears creates an auto-clearing
+- A robot that has never exposed an authoritative water set but has an
+  adapter-verified mop operation is `confirmation_required`, not unsupported.
+  It exposes mop programs with a clear **Water confirmation required**
+  diagnostic. A robot without a verified mop operation is vacuum-only. A saved
+  mop program whose operation capability disappears creates an auto-clearing
   compatibility Repair and blocks that incompatible occurrence before any
-  stage; this is a capability/configuration problem, not the transient
-  no-water condition described below.
+  stage.
 - Removal, shortage, `unknown`, or `unavailable` from an otherwise supported
   observation is a normal no-water episode. Skip only the mop stage, record a
   safe reason, and continue/complete the occurrence as defined above.
@@ -178,6 +197,64 @@ time, and the same notification policy applies.
   remains authoritative.
 - Water state is not part of the program compatibility fingerprint. It is a
   transient stage precondition and cannot invalidate or block a vacuum stage.
+
+## User-attested water confirmation
+
+- When a current mop stage belongs to a robot with verified mopping but no
+  authoritative water telemetry, persist one request before sending it to every
+  resolvable user's active Companion-app targets. The copy uses current safe
+  friendly names, for example: **Sheila wants to mop the kitchen, but cannot
+  check whether water is onboard. Confirm water before mopping starts.** Never
+  hard-code that example robot or room name.
+- Provide exactly two request-bound actions: **Confirm water** and **Cancel
+  mopping**. Use cryptographically unpredictable action identifiers,
+  `authenticationRequired` where supported, a unique request tag, and a
+  dedicated non-critical `Adaptive RoboVacs - Mop confirmation` Android
+  channel. Companion actionable notifications return explicit action events as
+  documented by the [Home Assistant actionable-notification contract](https://companion.home-assistant.io/docs/notifications/actionable-notifications/).
+- Persist `sent_at` and `expires_at = sent_at + 1 hour`. An explicit valid
+  **Confirm water** event must be recorded before `expires_at`, and the mop
+  command must start before the same deadline. Confirmation schedules a fresh
+  evaluation; it never dispatches directly, bypasses a safety check, or remains
+  reusable for another room, occurrence, robot, or mop stage.
+- The first valid terminal response wins atomically across all notified users
+  and devices. A first explicit confirmation authorizes the stage and clears
+  every copy. A first explicit cancel or correlated dismissal cancels the stage
+  and clears every copy. Late, duplicate, forged, mismatched, or post-terminal
+  events are ignored safely.
+- Listen for Android's
+  [`mobile_app_notification_cleared` event](https://companion.home-assistant.io/docs/notifications/notification-cleared/)
+  and treat a correlated user dismissal as **Cancel mopping**. Because other
+  platforms and some dismissal paths do not report a cleared event, the absence
+  of a recorded explicit confirmation at expiry is always cancel. Merely
+  opening, receiving, or viewing the notification never confirms water.
+- Auto-dismiss at the deadline by setting Android `timeout: 3600` and sending
+  `clear_notification` with the request tag to every target after atomically
+  expiring the request. Send the same clear immediately after confirm/cancel.
+  The [Companion clearing contract](https://companion.home-assistant.io/docs/notifications/notifications-basic/#clearing)
+  notes platform delivery limitations; server-side expiry remains authoritative
+  even if a client fails to remove its visible copy.
+- Persist the request before delivery and do not resend it after restart.
+  Restart restores the original deadline; an already expired or ambiguously
+  delivered request becomes canceled. Record no push token, notify service
+  name, raw action token, or local device/user identifier in public state,
+  Repairs, or logs.
+- Cancel, dismissal, timeout, and no explicit response mark the mop stage
+  `skipped_unconfirmed_water`; they are normal safe outcomes, not system
+  failures or Repairs. If the program has a vacuum stage, it may continue under
+  fresh normal evaluation. Mopping is offered again only at the room's next
+  scheduled occurrence.
+- The actionable request itself is the user notification for an unconfirmed
+  stage. Do not immediately send the separate 24-hour `skipped_no_water`
+  broadcast when that request is canceled or expires.
+- If no target resolves or every delivery fails, cancel immediately and create
+  or update the local actionable notification-delivery Repair. Partial delivery
+  leaves the request pending for successfully targeted devices. A user disabling
+  the confirmation channel simply results in no confirmation and therefore a
+  safe cancel.
+- An explicit confirmation is a user attestation, not sensor evidence. All
+  adapter/profile/map/occupancy checks still apply. Once an actual profile or
+  clean command is attempted, its failure uses the global scheduler halt.
 
 ## All-user skipped-mop notifications
 
@@ -217,35 +294,41 @@ time, and the same notification policy applies.
 ## Dashboard and Repairs experience
 
 - The vacuum card shows adapter mopping support, current water readiness, safe
-  reason text, effective robot cleaning-program default, and compatible mop
-  profile controls.
+  reason text including **User confirmation required**, effective robot
+  cleaning-program default, and compatible mop profile controls.
 - The room card shows its inherited/overridden cleaning program, single
   cadence, separate effective vacuum/mop pass counts, occurrence/stage progress,
-  last terminal outcome, water-skip reason, and next notification eligibility.
-  Carpet remains an independent stronger exclusion for mop stages.
+  pending water-confirmation deadline/status, last terminal outcome, water-skip
+  reason, and next notification eligibility. Carpet remains an independent
+  stronger exclusion for mop stages.
 - Do not retain separate mop-due/vacuum-due controls or status rows. Historical
   stage timestamps may remain clearly labeled diagnostics.
 - Capability changes use the existing dynamic discovery signal. Unsupported or
   malformed adapter capability produces a translated, deduplicated Repair only
-  when user action is required. Ordinary empty-water skips produce mobile
-  notifications, not Repairs or the global scheduler halt.
+  when user action is required. Ordinary empty-water skips and unconfirmed
+  water cancellations produce mobile status/notifications, not Repairs or the
+  global scheduler halt.
 - Both dashboard JavaScript copies remain byte-identical; no local water entity
   ID, mobile target, user ID, or native adapter target is exposed.
 
 ## Implementation plan
 
 1. Add typed adapter discovery evidence, watched sources, water readiness, and
-   operation-preflight contracts. Keep the generic adapter vacuum-only for
-   scheduler operation support.
+   operation-preflight contracts. The generic fallback may advertise a verified
+   standard Home Assistant mop operation, but without authoritative telemetry
+   it must return `confirmation_required`; it never returns sensor-ready from
+   mop-related controls alone.
 2. Implement Roborock discovery of the three stable same-device sensor keys and
    reject missing, duplicate, cross-device, or ambiguous matches safely.
 3. Add pure cleaning-program expansion, stage-specific pass resolution,
    unified due calculation, stage transition, just-in-time water-skip,
+   confirmation eligibility/expiry/first-response decisions,
    cadence-completion, safe-window, and notification throttle decisions in
    `models.py`.
 4. Replace dual room cadence and single-operation Store state with the unified
-   interval and bounded occurrence/notification-episode records. Implement the
-   explicit migration above and preserve historical diagnostics.
+   interval and bounded occurrence, water-confirmation, and notification-episode
+   records. Implement the explicit migration above and preserve historical
+   diagnostics.
 5. Add watched water entities to discovery signatures and the coordinator watch
    set so readiness changes refresh cards/previews and close notification
    episodes without exposing the entity IDs.
@@ -255,9 +338,11 @@ time, and the same notification policy applies.
 7. Put stage-specific profile application and dispatch behind the adapter
    boundary. Preserve typed `blocked` versus `error` results and the existing
    global failure latch for actual profile/command/start failures.
-8. Add a registry-driven all-user Companion notification resolver, Android
-   channel/tag payload, 24-hour room-episode throttle, redacted delivery
-   diagnostics, and a local delivery Repair for complete delivery failure.
+8. Add a registry-driven all-user Companion notification resolver; request-bound
+   confirm/cancel and cleared-event handlers; one-hour timeout/clear behavior;
+   skipped-mop channel/tag payload; 24-hour room-episode throttle; redacted
+   delivery diagnostics; and a local delivery Repair for complete delivery
+   failure.
 9. Update vacuum/room entities and cards for cleaning programs, one cadence,
    occurrence status, water readiness, skipped-stage outcomes, and notification
    status while preserving unaffected public IDs and stable ownership roles.
@@ -268,7 +353,9 @@ time, and the same notification policy applies.
 
 - Test discovery of one complete same-device Roborock trio and rejection of
   missing, duplicated, cross-device, ambiguous, unknown, and unavailable
-  evidence. The generic adapter and robots without the trio remain vacuum-only.
+  evidence. A robot with verified mopping but no complete telemetry becomes
+  confirmation-required; a robot with no verified mop operation remains
+  vacuum-only.
 - Test all four programs, robot defaults, room overrides, one cadence, program
   expansion, carpet exclusion, and capability compatibility.
 - Test **Vacuum then mop** with water unavailable initially but restored during
@@ -290,6 +377,14 @@ time, and the same notification policy applies.
   no target, Android channel/tag payloads, iOS-safe payloads, first alert,
   24-hour reminders, recovery/reset, restart, partial delivery, total delivery
   failure, and redaction.
+- Test no-sensor confirmation for every program: request persisted before send,
+  exact copy/actions, valid confirm immediately before the one-hour boundary,
+  confirm at/after expiry, explicit cancel, Android dismissal, unreported
+  dismissal, body open, timeout, automatic clear, restart, and no duplicate
+  prompt.
+- Test concurrent recipient events atomically: first confirm permits one fresh
+  evaluation; first cancel/dismiss prevents mop; late events cannot reverse the
+  terminal outcome. No event other than explicit valid confirm may authorize.
 - Test Store migration from dual cadence/history, public entity migration,
   independent vacuum/mop pass settings, dynamic card membership, Repair
   translation placeholders, and dashboard-copy equality.
@@ -303,9 +398,13 @@ time, and the same notification policy applies.
 - Every stage receives a fresh full safety evaluation; occupancy between stages
   persists the remainder until a new safe window without replaying completed
   work.
-- A mop stage starts only with adapter-confirmed support and ready water/mop
-  telemetry at its just-in-time final preflight. A preceding vacuum stage gives
-  water time to become ready; initial unavailability cannot pre-cancel the mop.
+- A mop stage starts only with adapter-confirmed operation support plus either
+  ready authoritative telemetry or an unexpired explicit user confirmation at
+  its just-in-time final preflight. A preceding vacuum stage gives water time to
+  become ready; initial unavailability cannot pre-cancel the mop.
+- For an unobservable-water robot, cancel, dismissal, timeout, ambiguous action
+  state, or failure to record an explicit confirmation cancels only that mop
+  stage and cannot issue a mop command.
 - No-water conditions skip mopping for that occurrence, allow vacuuming, notify
   all resolvable users under the throttled channel policy, and retry mopping
   only at the next scheduled occurrence.

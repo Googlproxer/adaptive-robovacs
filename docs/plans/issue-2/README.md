@@ -40,7 +40,7 @@ that it will receive a particular future schema number.
 | --- | --- | --- |
 | Per-room cleaning windows | One repeating daily interval; weekday/weekend schedules are deferred | [Implemented in v1.2.0](01-per-room-cleaning-windows.md) |
 | Multipass support | Implemented for v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs; corrected through v1.3.2 | [Implemented plan](02-room-multipass.md) |
-| Mopping when water is available | One room cadence expands a robot default/per-room cleaning program; no water skips only that occurrence's mop stage and notifies all users | [Water-aware ordered cleaning programs](03-water-aware-mopping.md) |
+| Mopping when water is available | Telemetry-backed robots use live readiness; verified mop-capable robots without water telemetry require explicit one-hour all-user confirmation | [Water-aware ordered cleaning programs](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
 | Power level settings per room | Robot-owned program/profile defaults with per-room overrides for program, fan speed, modes, intensity, and independent vacuum/mop passes | [Robot defaults and per-room cleaning profiles](05-room-power-levels.md) |
 | Confirm with message before bedrooms | Assign one user and phone to each bedroom and send an actionable notification for each run | [Bedroom confirmation](06-bedroom-confirmation.md) |
@@ -54,7 +54,9 @@ names, map details, or notification targets.
 
 - One Roborock device exposes a complete same-device set for mop attachment,
   water-box attachment, and water shortage. The other robot exposes no water
-  telemetry and therefore must be treated as vacuum-only by this scheduler.
+  telemetry. If its adapter verifies its mop operation, it is conditionally
+  mop-capable through explicit per-occurrence user confirmation; otherwise it
+  remains vacuum-only.
 - Both robots expose Home Assistant's standard fan-speed feature, but their
   advertised values differ. Cleaning mode values also differ, while mop mode
   and mop intensity are available only where supported.
@@ -120,6 +122,11 @@ Every implementation must retain these repository contracts:
   Unavailable water skips only the current occurrence's mop stage and never
   blocks a vacuum stage. Profile-application, adapter-dispatch, and
   start-confirmation failures do engage the halt.
+- For a verified mop-capable robot without authoritative water telemetry, only
+  a valid explicit **Confirm water** action within the request's one-hour window
+  authorizes its current mop stage. Cancel, dismissal, timeout, delivery
+  ambiguity, or any inability to prove that action is a normal safe cancellation
+  and never authorizes mopping.
 - Put fix-flow translations directly under `issues.<translation_key>.fix_flow`,
   pass issue translation placeholders into every Repair form, and test the
   served English translation bundle. Repairs that represent recoverable
@@ -136,10 +143,11 @@ Plans 1 and 2 and the shared refactor are complete. For the remaining work:
 
 1. Implement symmetric room adjacency as an independent occupancy gate and
    per-room-card editor.
-2. Implement authoritative Roborock water readiness, one room cadence, durable
-   ordered cleaning occurrences, and the all-user skipped-mop notification.
-   The generic adapter stays vacuum-only unless a future vendor adapter
-   supplies an equivalent water contract.
+2. Implement authoritative Roborock water readiness, a user-attested fallback
+   for verified mop-capable robots without telemetry, one room cadence, durable
+   ordered cleaning occurrences, and all-user mop notifications. The generic
+   adapter may use standard Home Assistant mopping only through the attested
+   path; it cannot infer water readiness from mop controls.
 3. Implement robot cleaning-program/profile defaults and per-room overrides on
    the same normalized adapter and Store migration. Plans 3 and 5 should ship
    together because program ownership, cadence replacement, independent
@@ -163,15 +171,16 @@ migrations and public controls needed by that release.
    without an adapter retain the portable Home Assistant behavior. This work
    targets v1.3.0 and includes user-visible dashboard diagnostics and Home
    Assistant Repairs issues for actionable adapter failures.
-3. Scheduler mopping requires authoritative water/mop telemetry supplied by a
-   vendor adapter. Each room has one cadence and uses an effective cleaning
+3. Scheduler mopping requires a verified mop operation plus either authoritative
+   water/mop telemetry or a fresh explicit one-hour user attestation when water
+   is unobservable. Each room has one cadence and uses an effective cleaning
    program of vacuum only, mop only, vacuum then mop, or mop then vacuum. A
    no-water condition skips mopping for that occurrence, still permits
    vacuuming, and retries mopping only at the next scheduled occurrence. For
    vacuum-then-mop, water is evaluated when mop becomes eligible, so water that
    becomes available during vacuuming permits the mop stage. A
-   robot with no supported water signal is vacuum-only even if generic Home
-   Assistant controls advertise mop-related modes.
+   robot with no supported water signal may mop only after the request-bound
+   all-user confirmation; lack of an explicit confirm cancels that stage.
 4. Cross-room occupancy models undirected adjacency. If either adjacent room
    is occupied, a new clean cannot start in the other.
 5. Power means fan speed. Vacuum cards own robot defaults for cleaning program,
@@ -193,3 +202,8 @@ migrations and public controls needed by that release.
    appears between stages, the running stage is observed normally and the
    remaining stage waits for a newly valid safe window. Any attempted stage
    that fails to start engages the durable global scheduler halt.
+9. A no-sensor water request contains exactly **Confirm water** and **Cancel
+   mopping**, expires and is cleared after one hour, and uses first-terminal
+   response semantics across recipients. Only explicit confirm authorizes;
+   cancel, a reported dismissal, timeout, or an indeterminate response cancels
+   the mop stage while leaving configured vacuum work eligible.

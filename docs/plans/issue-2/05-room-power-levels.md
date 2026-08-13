@@ -68,8 +68,9 @@ is no hard-coded common list or semantic translation.
   scheduler's last estimate.
 - Assignment filters to robots that support the full program and resolved
   profile before battery/readiness ranking. Never partially translate or
-  silently substitute an unsupported value. Transient no-water readiness is
-  not profile incompatibility; it skips only the mop stage under plan 3.
+  silently substitute an unsupported value. Transient no-water readiness or a
+  required per-stage user attestation is not profile incompatibility; plan 3
+  resolves it only when mop is current.
 - The robot chosen for an occurrence supplies all inherited defaults and remains
   the sequence's robot. It is not reserved between stages, but a later stage is
   not reassigned to a robot with different defaults. Removal or capability
@@ -118,8 +119,9 @@ versioned extension rather than adding vendor branches to orchestration.
   independently authoritative cadences.
 - The legacy robot `mopping_enabled` setting is replaced rather than retained
   as a second source of truth. **Vacuum only** is the safe default; an explicit
-  legacy mop intent is reconciled to **Vacuum then mop** only where the water
-  adapter confirms scheduler mopping support.
+  legacy mop intent is reconciled to **Vacuum then mop** where the adapter
+  verifies scheduler mopping. Authoritative water telemetry enables automatic
+  readiness; otherwise plan 3 requires explicit per-stage confirmation.
 - Reapply a complete applicable profile before each stage. Vacuum stages do not
   apply mop-only fields. Mop stages apply the resolved mop settings. Shared
   fields such as fan speed and cleaning mode follow adapter-declared relevance;
@@ -141,17 +143,21 @@ versioned extension rather than adding vendor branches to orchestration.
 ## Mopping, carpet, and sequence interaction
 
 - Cleaning-program and mop-mode/intensity controls appear only when a floor has
-  an adapter that supports scheduler mopping under the authoritative water
-  contract. **Mop only** and both ordered programs are incompatible with a
-  vacuum-only robot.
+  an adapter that verifies scheduler mopping. Telemetry-backed robots use the
+  authoritative water contract; verified mop-capable robots without telemetry
+  show **Water confirmation required** and use plan 3's explicit per-stage
+  confirmation. **Mop only** and both ordered programs remain incompatible with
+  a truly vacuum-only robot.
 - Carpet is a stronger room exclusion for mop stages. A carpeted room may use
   **Vacuum only**; a saved program containing mop is an actionable
   configuration incompatibility, not a transient water skip.
 - Water readiness is checked when the mop stage is actually next and again in
   its final adapter preflight. For **Vacuum then mop**, do not pre-skip mop from
   the initial water state: water becoming ready during the vacuum stage allows
-  mop to run. Water still unavailable at the mop-stage preflight skips that
-  stage and leaves vacuum stages eligible regardless of ordering.
+  mop to run. Water still unavailable at the telemetry-backed mop preflight
+  skips that stage. A no-sensor robot requires an unexpired explicit user
+  confirmation instead. Both paths leave vacuum stages eligible regardless of
+  ordering.
 - Completed stages remain completed. Occupancy, adjacency, transit, battery, or
   window changes between stages persist the remaining sequence and return it
   through normal candidate evaluation.
@@ -191,9 +197,10 @@ enters this failure path.
   Program choices are capability-filtered normalized labels; vendor fields use
   the exact live union for eligible robots on that floor.
 - Room status shows the resolved robot, effective program, ordered/current
-  stage, inherited fields, water-skipped stage, and compatibility reasons. It
-  does not retain separate vacuum/mop due rows, repeat the room name on every
-  row, or display another room's controls.
+  stage, inherited fields, pending water-confirmation deadline, water-skipped or
+  unconfirmed stage, and compatibility reasons. It does not retain separate
+  vacuum/mop due rows, repeat the room name on every row, or display another
+  room's controls.
 - Dynamic capability/friendly-name changes update option membership and labels
   through the existing discovery signal. Both JavaScript copies remain
   byte-identical.
@@ -257,6 +264,9 @@ enters this failure path.
   made, and the occurrence advances only under plan 3's terminal-outcome rules.
   When water becomes ready during a preceding vacuum, the configured mop pass
   count must run.
+- Test no-sensor robots independently from unsupported robots: verified mopping
+  remains program-compatible, but no mop profile or command may be applied
+  without plan 3's current unexpired explicit confirmation.
 - Test profile edits, occupancy waits, restart, and robot capability changes
   between stages without leakage or replay.
 - Test compatibility Repairs auto-clear, while an actual stage-profile
