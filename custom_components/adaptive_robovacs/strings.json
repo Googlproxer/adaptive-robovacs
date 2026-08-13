@@ -18,39 +18,29 @@
   "issues": {
     "scheduler_halted": {
       "title": "Adaptive RoboVacs scheduler halted",
-      "description": "Adaptive RoboVacs stopped all new scheduler dispatch after a cleaning request failed for {room} with {robot}. {reason} Check that the vacuum is available and docked, its vendor integration is healthy, and the room is mapped through the vacuum entity's Map vacuum segments to areas action. Dismissing this Repair does not resume scheduling."
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Recheck and resume Adaptive RoboVacs",
+            "description": "Adaptive RoboVacs stopped all new scheduler dispatch after a cleaning request failed for {room} with {robot}. {reason}\n\nThis checks vacuum availability, battery, adapter compatibility, and the current Home Assistant area mapping without sending a cleaning command. Submit to confirm that Adaptive RoboVacs may resume future scheduler dispatch."
+          }
+        },
+        "error": {
+          "recheck_failed": "The non-dispatching recheck still found a problem. Confirm the vacuum is docked and available, then review its Home Assistant area mapping and try again."
+        }
+      }
     },
     "two_pass_no_longer_supported": {
       "title": "Two-pass cleaning is unavailable",
-      "description": "{room} is configured for two passes, but no compatible vacuum currently serves its floor. Restore a compatible vacuum or change the room's Cleaning passes control to Robot default or 1 pass."
-    }
-  },
-  "repairs": {
-    "issues": {
-      "scheduler_halted": {
-        "fix_flow": {
-          "step": {
-            "confirm": {
-              "title": "Recheck and resume Adaptive RoboVacs",
-              "description": "This checks vacuum availability, battery, adapter compatibility, and the current Home Assistant area mapping without sending a cleaning command. Submit to confirm that Adaptive RoboVacs may resume future scheduler dispatch."
-            }
-          },
-          "error": {
-            "recheck_failed": "The non-dispatching recheck still found a problem. Confirm the vacuum is docked and available, then review its Home Assistant area mapping and try again."
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Recheck two-pass compatibility",
+            "description": "{room} is configured for two passes, but no compatible vacuum currently serves its floor. This refreshes vacuum discovery and verifies compatibility without sending a cleaning command. Restore a compatible vacuum or change the room's Cleaning passes control to Robot default or 1 pass."
           }
-        }
-      },
-      "two_pass_no_longer_supported": {
-        "fix_flow": {
-          "step": {
-            "confirm": {
-              "title": "Recheck two-pass compatibility",
-              "description": "This refreshes vacuum discovery and verifies that the room has a compatible two-pass vacuum. It does not send a cleaning command."
-            }
-          },
-          "error": {
-            "recheck_failed": "No compatible two-pass vacuum currently serves this room. Restore compatibility or change the room's Cleaning passes control."
-          }
+        },
+        "error": {
+          "recheck_failed": "No compatible two-pass vacuum currently serves this room. Restore compatibility or change the room's Cleaning passes control."
         }
       }
     }

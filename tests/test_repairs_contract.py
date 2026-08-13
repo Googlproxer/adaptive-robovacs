@@ -15,13 +15,17 @@ class RepairsContractTests(unittest.TestCase):
             (PACKAGE / "translations" / "en.json").read_text(encoding="utf-8")
         )
         self.assertEqual(strings, translations)
+        self.assertNotIn("repairs", translations)
         for key in ("scheduler_halted", "two_pass_no_longer_supported"):
             self.assertIn(key, translations["issues"])
-            self.assertIn(key, translations["repairs"]["issues"])
+            issue = translations["issues"][key]
+            self.assertIn("fix_flow", issue)
+            self.assertNotIn("description", issue)
             self.assertIn(
                 "confirm",
-                translations["repairs"]["issues"][key]["fix_flow"]["step"],
+                issue["fix_flow"]["step"],
             )
+            self.assertIn("recheck_failed", issue["fix_flow"]["error"])
 
     def test_scheduler_halt_issue_is_persistent_fixable_and_error_severity(self) -> None:
         source = (PACKAGE / "repairs_manager.py").read_text(encoding="utf-8")
@@ -39,6 +43,7 @@ class RepairsContractTests(unittest.TestCase):
         self.assertIn("runtime.async_preflight", method)
         self.assertNotIn("async_dispatch", method)
         self.assertNotIn("services.async_call", method)
+        self.assertIn("description_placeholders=_description_placeholders(self)", repairs)
 
     def test_repairs_and_public_fault_state_exclude_native_targets_and_raw_errors(self) -> None:
         source = "".join(

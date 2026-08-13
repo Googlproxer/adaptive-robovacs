@@ -7,10 +7,18 @@ import voluptuous as vol
 from homeassistant import data_entry_flow
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
 from .repairs_manager import scheduler_halted_issue_id
 from .repairs_manager import two_pass_issue_id
+
+
+def _description_placeholders(flow: RepairsFlow) -> dict[str, str] | None:
+    """Return the issue placeholders used by this Repair flow."""
+
+    issue = ir.async_get(flow.hass).async_get_issue(flow.handler, flow.issue_id)
+    return issue.translation_placeholders if issue else None
 
 
 class SchedulerHaltedRepairFlow(RepairsFlow):
@@ -40,6 +48,7 @@ class SchedulerHaltedRepairFlow(RepairsFlow):
             step_id="confirm",
             data_schema=vol.Schema({}),
             errors=errors,
+            description_placeholders=_description_placeholders(self),
         )
 
 
@@ -66,7 +75,10 @@ class TwoPassCompatibilityRepairFlow(RepairsFlow):
                 return self.async_create_entry(title="", data={})
             errors["base"] = "recheck_failed"
         return self.async_show_form(
-            step_id="confirm", data_schema=vol.Schema({}), errors=errors
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            errors=errors,
+            description_placeholders=_description_placeholders(self),
         )
 
 

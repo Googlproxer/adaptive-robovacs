@@ -18,7 +18,7 @@ class ReleaseContractTests(unittest.TestCase):
         )
         self.assertEqual(hacs["name"], manifest["name"])
         self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$")
-        self.assertEqual(manifest["version"], "1.3.1")
+        self.assertEqual(manifest["version"], "1.3.2")
 
     def test_hacs_listing_icon_matches_the_local_integration_brand(self) -> None:
         root_icon = ROOT / "icon.png"
