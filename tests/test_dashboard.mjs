@@ -211,7 +211,6 @@ test("room card contains one selected room with status before controls", () => {
     { entity: "sensor.kitchen_next_clean", name: "Next clean" },
     { entity: "sensor.kitchen_last_cleaned", name: "Last cleaned" },
     { entity: "sensor.kitchen_occupancy", name: "Occupancy" },
-    { entity: "sensor.kitchen_manual", name: "Manual request" },
     { entity: "select.kitchen_passes", name: "Cleaning passes" },
     { entity: "select.kitchen_fan", name: "Fan speed" },
     { entity: "select.kitchen_mode", name: "Mode" },
@@ -226,6 +225,7 @@ test("room card contains one selected room with status before controls", () => {
   const entityIds = configuration.entities.map((row) => row.entity);
   assert.ok(entityIds.every((entityId) => !entityId.includes("bedroom")));
   assert.equal(new Set(entityIds).size, entityIds.length);
+  assert.ok(!entityIds.includes("sensor.kitchen_manual"));
 });
 
 test("new target-owned controls appear without changing card configuration", () => {

@@ -18,7 +18,6 @@ const ROOM_ROLES = new Map([
   ["room_schedule", 0],
   ["room_last_cleaned", 1],
   ["room_occupancy", 2],
-  ["room_manual_status", 3],
   ["room_cleaning_program_control", 4],
   ["room_pass_count_control", 5],
   ["room_mop_pass_count_control", 6],
@@ -33,6 +32,7 @@ const ROOM_ROLES = new Map([
   ["room_manual_vacuum_control", 15],
   ["room_manual_mop_control", 16],
 ]);
+const ROOM_HIDDEN_ROLES = new Set(["room_manual_status"]);
 
 const COMMON_FORM_SCHEMA = [
   {
@@ -377,7 +377,11 @@ class AdaptiveRoboVacsRoomCard extends AdaptiveRoboVacsCardBase {
     if (!areaId) return this._messageConfiguration("Select a room in the card editor.");
     const context = this._entryContext();
     if (context.error) return this._messageConfiguration(context.error);
-    const entities = context.entities.filter((item) => item.attrs.area_id === areaId);
+    const entities = context.entities.filter(
+      (item) =>
+        item.attrs.area_id === areaId &&
+        !ROOM_HIDDEN_ROLES.has(item.attrs[ROLE_ATTRIBUTE])
+    );
     const roomName = entities.find((item) => item.attrs.room)?.attrs.room || this._defaultTitle();
     const entityRows = this._targetEntityRows(entities, ROOM_ROLES, roomName);
     return entityRows.length

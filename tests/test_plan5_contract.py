@@ -53,7 +53,7 @@ class PlanFiveContractTests(unittest.TestCase):
         self.assertIn("async def async_validate_profile", adapter)
         self.assertIn("async def async_apply_profile", adapter)
 
-    def test_room_card_orders_profile_and_manual_controls(self) -> None:
+    def test_room_card_orders_profile_and_manual_controls_without_audit_status(self) -> None:
         served = (PACKAGE / "frontend" / "adaptive-robovacs-dashboard.js").read_bytes()
         standalone = (ROOT / "dashboard" / "adaptive-robovacs-dashboard.js").read_bytes()
         self.assertEqual(served, standalone)
@@ -66,9 +66,15 @@ class PlanFiveContractTests(unittest.TestCase):
             "room_manual_clean_control",
             "room_manual_vacuum_control",
             "room_manual_mop_control",
-            "room_manual_status",
         ):
             self.assertIn(role, text)
+        room_role_map = text.split("const ROOM_ROLES = new Map([", 1)[1].split(
+            "]);", 1
+        )[0]
+        self.assertNotIn("room_manual_status", room_role_map)
+        self.assertIn(
+            'ROOM_HIDDEN_ROLES = new Set(["room_manual_status"])', text
+        )
 
 
 if __name__ == "__main__":
