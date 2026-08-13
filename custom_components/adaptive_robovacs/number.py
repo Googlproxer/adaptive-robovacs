@@ -40,7 +40,7 @@ class _RobotNumber(_AdaptiveNumber):
     def __init__(self, coordinator, robot_entity_id: str) -> None:
         super().__init__(
             coordinator,
-            f"robot_{robot_entity_id}_minimum_battery",
+            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_minimum_battery",
             "minimum battery",
             "robot_control",
             robot_entity_id=robot_entity_id,
@@ -88,7 +88,7 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
         entities.extend(
             [
                 # Keep the established unique ID while the control becomes the
-                # room's single cleaning cadence in schema 5.
+                # room's single cleaning cadence in schema 6.
                 _RoomNumber(coordinator, room.area_id, "vacuum_interval", f"{room.name} cleaning cadence"),
                 _RoomNumber(coordinator, room.area_id, "expected_minutes", f"{room.name} expected duration"),
             ]

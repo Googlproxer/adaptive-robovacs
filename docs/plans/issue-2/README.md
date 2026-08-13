@@ -8,7 +8,7 @@ validated, released, installed through HACS, and verified in Home Assistant.
 ## Baseline
 
 Plans 1 through 3 are implemented. The remaining plans target the architecture
-deployed in integration version 1.4.3:
+deployed in integration version 1.4.4:
 
 - v1.1 introduced one global card, one card per vacuum, and one card per room;
 - v1.2 introduced independently inherited per-room daily windows;
@@ -27,7 +27,10 @@ deployed in integration version 1.4.3:
   initial state transition precedes Adaptive RoboVacs' watcher registration;
   and
 - v1.4.3 made adapter mopping verification consume the transient same-device
-  operation-selector options directly as well as the normalized profile.
+  operation-selector options directly as well as the normalized profile; and
+- v1.4.4 migrated durable robot identity to registry IDs, made duration
+  forecasts robot-specific, repaired offline held-job recovery, and hardened
+  Store validation and config-entry shutdown/removal.
 
 Pull request [#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3)
 introduced the typed Store codec and separated runtime service calls, job
@@ -40,7 +43,7 @@ refactored shape:
 - entity-facing data in `projections.py`; and
 - orchestration in `coordinator.py`.
 
-The current durable scheduler payload is Store schema v5. Each remaining plan
+The current durable scheduler payload is Store schema v6. Each remaining plan
 must migrate from the schema present when it is implemented rather than assume
 that it will receive a particular future schema number.
 

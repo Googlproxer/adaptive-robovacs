@@ -61,7 +61,10 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
     duration_operation = active["operation"] if active else candidate["operation"] if candidate else "vacuum"
     duration_passes = int(active.get("passes", 1)) if active else candidate["passes"] if candidate else 1
     duration_minutes, duration_sample_count = coordinator._effective_duration(
-        room, duration_operation, duration_passes, active_robot_id
+        room,
+        duration_operation,
+        duration_passes,
+        coordinator.robot_registry_id(active_robot_id) if active_robot_id else None,
     )
     last_cleaned = _as_datetime(detail.get("cleaning"))
     occurrence = coordinator.data.get("occurrences", {}).get(area_id)

@@ -35,6 +35,9 @@ class _Coordinator:
     def _cancel_recovery_timer(self, _robot_id: str) -> None:
         return None
 
+    def robot_registry_id(self, entity_id: str) -> str:
+        return {"vacuum.alpha": "registry-alpha"}.get(entity_id, entity_id)
+
 
 class JobLifecycleTests(unittest.TestCase):
     def test_active_rooms_retains_v1_single_room_checkpoints(self) -> None:
@@ -69,7 +72,7 @@ class JobLifecycleTests(unittest.TestCase):
                     "minutes": 24.5,
                     "operation": "vacuum",
                     "passes": 1,
-                    "robot": "vacuum.alpha",
+                    "robot": "registry-alpha",
                     "source": "state_transition",
                     "at": completed.isoformat(),
                 }

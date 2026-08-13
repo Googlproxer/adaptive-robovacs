@@ -177,12 +177,13 @@ class JobLifecycle:
             and measured > 0
         ):
             detail = coordinator._room_data(active["room"])
+            durable_robot_id = coordinator.robot_registry_id(robot_id)
             detail.setdefault("duration_samples", []).append(
                 {
                     "minutes": float(measured),
                     "operation": operation,
                     "passes": int(active.get("passes", 1)),
-                    "robot": robot_id,
+                    "robot": durable_robot_id,
                     "source": active.get("duration_source", "state_transition"),
                     "at": _iso(completion),
                 }

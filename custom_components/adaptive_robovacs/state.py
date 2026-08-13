@@ -31,7 +31,7 @@ from .const import (
 from .models import is_valid_daily_time
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 DAILY_WINDOW_VERSION = 1
 
 
@@ -63,6 +63,35 @@ def _integer(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _bounded_number(
+    value: object,
+    default: float,
+    name: str,
+    minimum: float,
+    maximum: float,
+) -> float:
+    """Decode one persisted bounded number without hiding corruption."""
+
+    try:
+        parsed = float(value if value is not None else default)
+    except (TypeError, ValueError) as err:
+        raise StateSchemaError(f"{name} must be a number") from err
+    if not minimum <= parsed <= maximum:
+        raise StateSchemaError(
+            f"{name} must be between {minimum:g} and {maximum:g}"
+        )
+    return parsed
+
+
+def _daily_time(value: object, default: str, name: str) -> str:
+    """Decode one required zero-padded daily time."""
+
+    candidate = default if value is None else value
+    if not is_valid_daily_time(candidate):
+        raise StateSchemaError(f"{name} must be a zero-padded HH:MM value")
+    return str(candidate)
 
 
 def _timestamp(value: object) -> datetime | None:
@@ -112,6 +141,110 @@ def _optional_pass_count(value: object) -> int | None:
     return parsed
 
 
+def migrate_runtime_robot_identity(
+    data: dict[str, Any],
+    current_entities: Mapping[str, str],
+    prior_entities: Mapping[str, str] | None = None,
+) -> bool:
+    """Migrate runtime robot keys to registry IDs and current entity IDs.
+
+    ``current_entities`` and ``prior_entities`` map registry ID to entity ID.
+    Settings and learned samples become registry-keyed, while active jobs and
+    holds remain current-entity-keyed in memory for authoritative observations.
+    """
+
+    changed = False
+    prior_entities = prior_entities or {}
+    aliases = data.setdefault("robot_entity_aliases", {})
+    key_to_registry = {
+        entity_id: registry_id
+        for registry_id, entity_id in current_entities.items()
+    }
+    key_to_registry.update(
+        {
+            entity_id: registry_id
+            for registry_id, entity_id in prior_entities.items()
+            if registry_id in current_entities
+        }
+    )
+    for registry_id, alias in tuple(aliases.items()):
+        if registry_id in current_entities and isinstance(alias, str):
+            key_to_registry[alias] = registry_id
+    for occurrence in data.get("occurrences", {}).values():
+        registry_id = occurrence.get("robot_registry_id")
+        legacy_entity_id = occurrence.get("robot_entity_id")
+        if registry_id in current_entities and isinstance(legacy_entity_id, str):
+            key_to_registry[legacy_entity_id] = registry_id
+
+    settings = data["settings"]["robots"]
+    unresolved_keys = [
+        key
+        for key in settings
+        if key not in current_entities and key not in key_to_registry
+    ]
+    unmatched_registries = [
+        registry_id
+        for registry_id, entity_id in current_entities.items()
+        if registry_id not in settings
+        and entity_id not in settings
+        and aliases.get(registry_id) not in settings
+    ]
+    if len(unresolved_keys) == len(unmatched_registries) == 1:
+        key_to_registry[unresolved_keys[0]] = unmatched_registries[0]
+
+    for registry_id, entity_id in current_entities.items():
+        if registry_id not in aliases:
+            legacy_keys = [
+                key
+                for key, mapped_registry in key_to_registry.items()
+                if mapped_registry == registry_id
+                and key != entity_id
+                and key in settings
+            ]
+            aliases[registry_id] = legacy_keys[0] if legacy_keys else entity_id
+            changed = True
+        key_to_registry[str(aliases[registry_id])] = registry_id
+
+    for key in tuple(settings):
+        registry_id = key_to_registry.get(key)
+        if registry_id is None or key == registry_id:
+            continue
+        if registry_id not in settings:
+            settings[registry_id] = settings[key]
+        settings.pop(key, None)
+        changed = True
+
+    for detail in data.get("rooms", {}).values():
+        for sample in detail.get("duration_samples", []):
+            old_key = sample.get("robot")
+            if (registry_id := key_to_registry.get(old_key)) is not None:
+                if old_key != registry_id:
+                    sample["robot"] = registry_id
+                    changed = True
+
+    for section in ("active", "robot_holds"):
+        current_values = data.get(section, {})
+        rebound: dict[str, Any] = {}
+        for key, value in current_values.items():
+            registry_id = (
+                key if key in current_entities else key_to_registry.get(key)
+            )
+            runtime_key = current_entities.get(registry_id, key)
+            if runtime_key not in rebound or rebound[runtime_key] is None:
+                rebound[runtime_key] = value
+            if runtime_key != key:
+                changed = True
+        data[section] = rebound
+
+    for occurrence in data.get("occurrences", {}).values():
+        registry_id = occurrence.get("robot_registry_id")
+        entity_id = current_entities.get(registry_id)
+        if entity_id and occurrence.get("robot_entity_id") != entity_id:
+            occurrence["robot_entity_id"] = entity_id
+            changed = True
+    return changed
+
+
 @dataclass(slots=True)
 class GlobalSettings:
     observe_only: bool = True
@@ -139,16 +272,36 @@ class GlobalSettings:
     def from_mapping(
         cls, value: Mapping[str, object], defaults: GlobalSettings
     ) -> GlobalSettings:
+        hall_start = _daily_time(
+            value.get("hall_start"), defaults.hall_start, "global hall_start"
+        )
+        hall_end = _daily_time(
+            value.get("hall_end"), defaults.hall_end, "global hall_end"
+        )
+        unresolved_start = _daily_time(
+            value.get("unresolved_start"),
+            defaults.unresolved_start,
+            "global unresolved_start",
+        )
+        unresolved_end = _daily_time(
+            value.get("unresolved_end"),
+            defaults.unresolved_end,
+            "global unresolved_end",
+        )
         return cls(
             observe_only=bool(value.get("observe_only", defaults.observe_only)),
             party_mode=bool(value.get("party_mode", defaults.party_mode)),
-            forecast_confidence=_number(
-                value.get("forecast_confidence"), defaults.forecast_confidence
+            forecast_confidence=_bounded_number(
+                value.get("forecast_confidence"),
+                defaults.forecast_confidence,
+                "global forecast_confidence",
+                50,
+                95,
             ),
-            hall_start=str(value.get("hall_start", defaults.hall_start)),
-            hall_end=str(value.get("hall_end", defaults.hall_end)),
-            unresolved_start=str(value.get("unresolved_start", defaults.unresolved_start)),
-            unresolved_end=str(value.get("unresolved_end", defaults.unresolved_end)),
+            hall_start=hall_start,
+            hall_end=hall_end,
+            unresolved_start=unresolved_start,
+            unresolved_end=unresolved_end,
         )
 
 
@@ -217,11 +370,20 @@ class RoomSettings:
         raw_end = value.get("desired_window_end", window.get("end"))
         return cls(
             enabled=bool(value.get("enabled", default.enabled)),
-            cleaning_interval=_number(
+            cleaning_interval=_bounded_number(
                 value.get("cleaning_interval", value.get("vacuum_interval")),
                 default.cleaning_interval,
+                "room cleaning_interval",
+                12,
+                336,
             ),
-            expected_minutes=_number(value.get("expected_minutes"), default.expected_minutes),
+            expected_minutes=_bounded_number(
+                value.get("expected_minutes"),
+                default.expected_minutes,
+                "room expected_minutes",
+                5,
+                180,
+            ),
             carpet=bool(value.get("carpet", default.carpet)),
             ignore_desired_window=bool(
                 value.get("ignore_desired_window", default.ignore_desired_window)
@@ -270,7 +432,7 @@ class RoomSettings:
         return {
             "enabled": self.enabled,
             "cleaning_interval": self.cleaning_interval,
-            # Compatibility aliases retain the surviving entity IDs during v5.
+            # Compatibility aliases retain the surviving entity IDs during v6.
             "vacuum_interval": self.cleaning_interval,
             "mop_interval": self.cleaning_interval,
             "expected_minutes": self.expected_minutes,
@@ -318,7 +480,13 @@ class RobotSettings:
         )
         return cls(
             enabled=bool(value.get("enabled", default.enabled)),
-            minimum_battery=_number(value.get("minimum_battery"), default.minimum_battery),
+            minimum_battery=_bounded_number(
+                value.get("minimum_battery"),
+                default.minimum_battery,
+                "robot minimum_battery",
+                20,
+                100,
+            ),
             cleaning_program=program,
             double_pass=bool(value.get("double_pass", default.double_pass)),
             mop_double_pass=bool(value.get("mop_double_pass", default.mop_double_pass)),
@@ -851,6 +1019,7 @@ class SchedulerState:
     global_settings: GlobalSettings
     room_settings: dict[str, RoomSettings] = field(default_factory=dict)
     robot_settings: dict[str, RobotSettings] = field(default_factory=dict)
+    robot_entity_aliases: dict[str, str] = field(default_factory=dict)
     room_history: dict[str, RoomHistory] = field(default_factory=dict)
     active_jobs: dict[str, ActiveJob | None] = field(default_factory=dict)
     robot_holds: dict[str, RobotHold] = field(default_factory=dict)
@@ -869,7 +1038,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v5 or convert older shapes, returning whether a save is required."""
+        """Load v6 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -877,7 +1046,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4}:
+        if schema_version in {2, 3, 4, 5}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -941,6 +1110,13 @@ class SchedulerState:
                 if isinstance(area_id, str) and isinstance(value, Mapping)
                 and (occurrence := CleaningOccurrence.from_mapping(value)) is not None
             },
+            robot_entity_aliases={
+                key: alias
+                for key, alias in _mapping_or_empty(
+                    data.get("robot_entity_aliases")
+                ).items()
+                if isinstance(key, str) and isinstance(alias, str)
+            },
             water_confirmations={
                 occurrence_id: confirmation
                 for occurrence_id, value in raw_confirmations.items()
@@ -963,6 +1139,11 @@ class SchedulerState:
         raw_global = _mapping(data.get("global"), "global")
         raw_room_settings = _mapping(data.get("room_settings"), "room_settings")
         raw_robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
+        raw_robot_aliases = (
+            _mapping(data.get("robot_entity_aliases"), "robot_entity_aliases")
+            if data.get("schema_version") == SCHEMA_VERSION
+            else _mapping_or_empty(data.get("robot_entity_aliases"))
+        )
         raw_history = _mapping(data.get("room_history"), "room_history")
         raw_active = _mapping(data.get("active_jobs"), "active_jobs")
         raw_holds = _mapping(data.get("robot_holds"), "robot_holds")
@@ -1012,6 +1193,11 @@ class SchedulerState:
                 for area_id, value in raw_occurrences.items()
                 if isinstance(area_id, str) and isinstance(value, Mapping)
                 and (occurrence := CleaningOccurrence.from_mapping(value)) is not None
+            },
+            robot_entity_aliases={
+                key: alias
+                for key, alias in raw_robot_aliases.items()
+                if isinstance(key, str) and isinstance(alias, str)
             },
             water_confirmations={
                 occurrence_id: confirmation
@@ -1067,6 +1253,7 @@ class SchedulerState:
                 area_id: occurrence.to_store()
                 for area_id, occurrence in self.occurrences.items()
             },
+            "robot_entity_aliases": dict(self.robot_entity_aliases),
             "water_confirmations": {
                 occurrence_id: confirmation.to_store()
                 for occurrence_id, confirmation in self.water_confirmations.items()
@@ -1081,7 +1268,7 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v5 codec, and platform entities use
+        persistent I/O stays on the typed v6 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 
@@ -1146,6 +1333,7 @@ class SchedulerState:
                 area_id: occurrence.to_store()
                 for area_id, occurrence in self.occurrences.items()
             },
+            "robot_entity_aliases": dict(self.robot_entity_aliases),
             "water_confirmations": {
                 occurrence_id: confirmation.to_store()
                 for occurrence_id, confirmation in self.water_confirmations.items()

@@ -40,7 +40,7 @@ class _RobotSwitch(_AdaptiveSwitch):
     def __init__(self, coordinator, robot_entity_id: str, key: str, label: str) -> None:
         super().__init__(
             coordinator,
-            f"robot_{robot_entity_id}_{key}",
+            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_{key}",
             label,
             "robot_control",
             robot_entity_id=robot_entity_id,

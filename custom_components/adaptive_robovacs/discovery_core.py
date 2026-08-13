@@ -20,7 +20,7 @@ from .const import (
     LABEL_EXCLUDE,
     LABEL_RADAR,
 )
-from .models import AdapterCapabilities
+from .models import AdapterCapabilities, profile_control_kind
 
 
 @dataclass(slots=True)
@@ -247,46 +247,30 @@ def _find_profile(
             continue
 
         options = _state_options(hass, entry.entity_id)
-        normalised_options = {_normalised_label(option) for option in options}
         entity_labels = _labels_for(getattr(entry, "labels", None), labels)
+        attributes = state.attributes if state else {}
+        translation_key = (
+            getattr(entry, "translation_key", None)
+            or attributes.get("translation_key")
+            or attributes.get("entity_description_key")
+        )
+        kind = profile_control_kind(translation_key, options, entity_labels)
 
-        if (
-            not profile.passes_select_entity_id
-            and (
-                {"one-pass", "two-pass"}.issubset(normalised_options)
-                or {"single-pass", "double-pass"}.issubset(normalised_options)
-                or "robovac-double-pass" in entity_labels
-            )
-        ):
+        if kind == "passes" and not profile.passes_select_entity_id:
             profile.passes_select_entity_id = entry.entity_id
             profile.passes_options = options
             continue
-        if not profile.mop_intensity_select_entity_id and (
-            {"low", "medium", "high"}.issubset(normalised_options)
-            and any("water" in option or "mop" in option for option in normalised_options)
-        ):
+        if kind == "mop_intensity" and not profile.mop_intensity_select_entity_id:
             profile.mop_intensity_select_entity_id = entry.entity_id
             profile.mop_intensity_options = options
             continue
-        if not profile.mode_select_entity_id and (
-            "vacuum" in normalised_options
-            and any(option in {"mop", "mop-only"} for option in normalised_options)
-        ):
+        if kind == "mode" and not profile.mode_select_entity_id:
             profile.mode_select_entity_id = entry.entity_id
             profile.mode_options = options
             continue
-        if not profile.mop_mode_select_entity_id and any(
-            "mop" in option or "deep" in option for option in normalised_options
-        ):
+        if kind == "mop_mode" and not profile.mop_mode_select_entity_id:
             profile.mop_mode_select_entity_id = entry.entity_id
             profile.mop_mode_options = options
-            continue
-        if not profile.mode_select_entity_id and any(
-            option in {"vacuum", "vac-and-mop", "mop"}
-            for option in normalised_options
-        ):
-            profile.mode_select_entity_id = entry.entity_id
-            profile.mode_options = options
     return profile
 
 

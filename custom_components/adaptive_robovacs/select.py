@@ -24,6 +24,7 @@ PROGRAM_VALUES = {
     "Mop then vacuum": "mop_then_vacuum",
 }
 PROGRAM_LABELS = {value: label for label, value in PROGRAM_VALUES.items()}
+NOT_CONFIGURED_OPTION = "Not configured"
 
 
 class _TimeSelect(AdaptiveEntity, SelectEntity):
@@ -99,7 +100,7 @@ class _RoomPassSelect(AdaptiveEntity, SelectEntity):
 
 class _RobotProgramSelect(AdaptiveEntity, SelectEntity):
     def __init__(self, coordinator, robot_entity_id: str) -> None:
-        super().__init__(coordinator, f"robot_{robot_entity_id}_cleaning_program",
+        super().__init__(coordinator, f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_cleaning_program",
                          "cleaning program", "robot_control",
                          robot_entity_id=robot_entity_id,
                          robot_name_suffix="cleaning program")
@@ -161,9 +162,13 @@ class _RoomProgramSelect(AdaptiveEntity, SelectEntity):
 
 class _RobotSelect(AdaptiveEntity, SelectEntity):
     def __init__(self, coordinator, robot_entity_id: str, key: str, options: tuple[str, ...], label: str) -> None:
+        saved = coordinator.robot_state(robot_entity_id)["settings"].get(key)
+        visible_options = [NOT_CONFIGURED_OPTION, *options]
+        if isinstance(saved, str) and saved and saved not in visible_options:
+            visible_options.append(saved)
         super().__init__(
             coordinator,
-            f"robot_{robot_entity_id}_{key}",
+            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_{key}",
             label,
             "robot_control",
             robot_entity_id=robot_entity_id,
@@ -171,15 +176,19 @@ class _RobotSelect(AdaptiveEntity, SelectEntity):
         )
         self.robot_entity_id = robot_entity_id
         self.key = key
-        self._attr_options = options
+        self._attr_options = tuple(visible_options)
 
     @property
     def current_option(self) -> str | None:
         setting = self.coordinator.robot_state(self.robot_entity_id)["settings"].get(self.key)
-        return setting if setting in self.options else (self.options[0] if self.options else None)
+        return setting if setting in self.options else NOT_CONFIGURED_OPTION
 
     async def async_select_option(self, option: str) -> None:
-        await self.coordinator.async_set_robot_setting(self.robot_entity_id, self.key, option)
+        await self.coordinator.async_set_robot_setting(
+            self.robot_entity_id,
+            self.key,
+            None if option == NOT_CONFIGURED_OPTION else option,
+        )
 
 
 def _entities(coordinator) -> list[AdaptiveEntity]:

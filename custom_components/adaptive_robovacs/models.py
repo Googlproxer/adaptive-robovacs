@@ -432,6 +432,56 @@ def offline_held_recovery_outcome(
     return "held"
 
 
+def profile_control_kind(
+    translation_key: str | None,
+    options: Iterable[str],
+    labels: Iterable[str] = (),
+) -> str | None:
+    """Classify a same-device profile select from stable metadata first."""
+
+    key = (translation_key or "").strip().lower().replace("-", "_")
+    metadata_kinds = {
+        "mop_intensity": "mop_intensity",
+        "water_flow": "mop_intensity",
+        "water_level": "mop_intensity",
+        "mop_mode": "mop_mode",
+        "cleaning_mode": "mode",
+        "clean_mode": "mode",
+        "operation_mode": "mode",
+        "cleaning_passes": "passes",
+        "pass_count": "passes",
+    }
+    if key in metadata_kinds:
+        return metadata_kinds[key]
+
+    normalised = {
+        str(option).strip().lower().replace(" ", "-").replace("_", "-")
+        for option in options
+    }
+    normalised_labels = {
+        str(label).strip().lower().replace(" ", "-").replace("_", "-")
+        for label in labels
+    }
+    if (
+        {"one-pass", "two-pass"}.issubset(normalised)
+        or {"single-pass", "double-pass"}.issubset(normalised)
+        or "robovac-double-pass" in normalised_labels
+    ):
+        return "passes"
+    if (
+        {"low", "medium", "high"}.issubset(normalised)
+        and any("water" in option or "mop" in option for option in normalised)
+    ):
+        return "mop_intensity"
+    if "vacuum" in normalised and normalised.intersection({"mop", "mop-only"}):
+        return "mode"
+    if any("mop" in option or "deep" in option for option in normalised):
+        return "mop_mode"
+    if normalised.intersection({"vacuum", "vac-and-mop", "mop"}):
+        return "mode"
+    return None
+
+
 def rebase_due_times(
     due_times: Mapping[str, datetime], cooldown_until: datetime
 ) -> dict[str, datetime]:

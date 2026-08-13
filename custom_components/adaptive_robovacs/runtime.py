@@ -208,6 +208,8 @@ class HomeAssistantRuntime:
 
         coordinator = self._coordinator
         room: DiscoveredRoom = candidate["room"]
+        if coordinator._closing:
+            return False, "coordinator shutting down"
         active = {
             "room": room.area_id,
             "operation": candidate["operation"],
@@ -229,6 +231,8 @@ class HomeAssistantRuntime:
         context = self._adapter_context(robot)
         request = self._request(robot, candidate)
         try:
+            if coordinator._closing:
+                return False, "coordinator shutting down"
             preflight = await adapter.async_preflight(
                 coordinator.hass, context, request
             )
@@ -264,6 +268,8 @@ class HomeAssistantRuntime:
             )
             return False, fault_summary(preflight.code)
         try:
+            if coordinator._closing:
+                return False, "coordinator shutting down"
             async with asyncio.timeout(SERVICE_CALL_TIMEOUT_SECONDS):
                 await self.async_apply_profile(
                     robot, candidate["operation"], int(candidate["passes"])
@@ -295,6 +301,10 @@ class HomeAssistantRuntime:
             )
         )
         try:
+            if coordinator._closing:
+                coordinator.data["active"][robot.entity_id] = None
+                await coordinator._async_save()
+                return False, "coordinator shutting down"
             async with asyncio.timeout(SERVICE_CALL_TIMEOUT_SECONDS):
                 result = await adapter.async_dispatch(
                     coordinator.hass, context, request

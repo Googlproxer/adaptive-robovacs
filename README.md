@@ -96,6 +96,14 @@ restart, a held docked job is treated as a completion only if Home Assistant
 was offline for at least its expected clean
 duration; otherwise it is treated as that physical cancellation.
 
+From v1.4.4, durable robot settings, active-job checkpoints, holds, and learned
+durations use the vacuum entity registry ID. Renaming a vacuum entity therefore
+keeps its scheduler configuration and in-progress recovery state. The original
+entity-ID fragment is retained only to preserve existing Adaptive RoboVacs
+entity unique IDs and Home Assistant history. Store schema v6 performs this
+migration during discovery; legacy identities that cannot be matched safely are
+left unattached rather than assigned to the wrong robot.
+
 ## Releases and upgrades
 
 Production updates are published as full GitHub Releases with semantic tags

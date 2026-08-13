@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
+from copy import deepcopy
 from datetime import datetime, timedelta
 import hashlib
 import logging
@@ -70,7 +71,7 @@ from .models import (
     unresolved_occupancy_allowed,
 )
 from .projections import robot_state, room_state
-from .state import SchedulerState, StateSchemaError
+from .state import SchedulerState, StateSchemaError, migrate_runtime_robot_identity
 from .runtime import HomeAssistantRuntime
 from .repairs_manager import (
     async_create_scheduler_halted_issue,
@@ -177,6 +178,9 @@ class AdaptiveRoboVacCoordinator:
         self._recovery_timers: dict[str, Callable[[], None]] = {}
         self._start_confirmation_timers: dict[str, Callable[[], None]] = {}
         self._water_confirmation_timers: dict[str, Callable[[], None]] = {}
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._closing = False
+        self._identity_migrated = False
         self.jobs = JobLifecycle(self)
         self.runtime = HomeAssistantRuntime(self)
 
@@ -199,10 +203,10 @@ class AdaptiveRoboVacCoordinator:
             )
         else:
             self.data = self.state.to_runtime_data()
-            if migrated:
-                await self._async_save()
 
         await self.async_refresh_discovery()
+        if migrated or self._identity_migrated:
+            await self._async_save()
         if self.data.get("scheduler_fault"):
             async_create_scheduler_halted_issue(self)
         await self._async_recover_active_jobs()
@@ -227,7 +231,7 @@ class AdaptiveRoboVacCoordinator:
 
         @callback
         def refresh_late_vendor_entities(_timestamp: datetime) -> None:
-            self.hass.async_create_task(
+            self._async_create_task(
                 self.async_evaluate(
                     dry_run=True, reason="post-start-capability-refresh"
                 )
@@ -242,9 +246,9 @@ class AdaptiveRoboVacCoordinator:
         )
 
     async def async_shutdown(self) -> None:
-        """Persist and remove event listeners."""
+        """Stop callbacks, drain coordinator work, and persist once."""
 
-        await self._async_save()
+        self._closing = True
         while self._recovery_timers:
             self._recovery_timers.popitem()[1]()
         while self._start_confirmation_timers:
@@ -253,6 +257,43 @@ class AdaptiveRoboVacCoordinator:
             self._water_confirmation_timers.popitem()[1]()
         while self._unsubscribers:
             self._unsubscribers.pop()()
+        current = asyncio.current_task()
+        tasks = [task for task in self._tasks if task is not current and not task.done()]
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=10)
+            for task in pending:
+                task.cancel("Adaptive RoboVacs config entry unloading")
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        async with self._lock:
+            await self._async_save()
+
+    def begin_shutdown(self) -> None:
+        """Gate callbacks before Home Assistant starts unloading platforms."""
+
+        self._closing = True
+
+    def cancel_shutdown(self) -> None:
+        """Resume normal work when platform unload is rejected."""
+
+        self._closing = False
+
+    def _async_create_task(
+        self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
+    ) -> asyncio.Task[Any] | None:
+        """Create one config-entry-owned task unless shutdown has begun."""
+
+        if self._closing:
+            coro.close()
+            return None
+        task = self.entry.async_create_task(
+            self.hass,
+            coro,
+            name=name or f"{DOMAIN}:{self.entry.entry_id}",
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     def async_add_listener(self, listener: EntityListener) -> Callable[[], None]:
         """Register a platform entity update listener."""
@@ -337,7 +378,7 @@ class AdaptiveRoboVacCoordinator:
         @callback
         def expire(_timestamp: datetime) -> None:
             self._water_confirmation_timers.pop(request_id, None)
-            self.hass.async_create_task(self._async_expire_water_confirmation(request_id))
+            self._async_create_task(self._async_expire_water_confirmation(request_id))
 
         self._water_confirmation_timers[request_id] = async_track_point_in_utc_time(
             self.hass, expire, expires
@@ -357,7 +398,7 @@ class AdaptiveRoboVacCoordinator:
     def _on_mobile_notification_action(self, event: Event) -> None:
         action = event.data.get("action")
         if isinstance(action, str):
-            self.hass.async_create_task(
+            self._async_create_task(
                 self._async_handle_water_confirmation(action=action)
             )
 
@@ -365,7 +406,7 @@ class AdaptiveRoboVacCoordinator:
     def _on_mobile_notification_cleared(self, event: Event) -> None:
         request_id = event.data.get("adaptive_robovacs_request_id")
         tag = event.data.get("tag")
-        self.hass.async_create_task(
+        self._async_create_task(
             self._async_handle_water_confirmation(
                 request_id=str(request_id) if request_id else None,
                 tag=str(tag) if tag else None,
@@ -413,7 +454,7 @@ class AdaptiveRoboVacCoordinator:
             await self._async_save()
         if clear_tag:
             await self._async_clear_mobile_notification(clear_tag)
-        self.hass.async_create_task(
+        self._async_create_task(
             self.async_evaluate(reason="water-confirmation-expired")
         )
 
@@ -473,14 +514,27 @@ class AdaptiveRoboVacCoordinator:
             await self._async_save()
         if clear_tag:
             await self._async_clear_mobile_notification(clear_tag)
-        self.hass.async_create_task(
+        self._async_create_task(
             self.async_evaluate(reason=f"water-confirmation-{result}")
         )
 
     async def _async_save(self) -> None:
         if self._storage_safe_mode:
             return
-        self.state, _ = SchedulerState.from_store(self.data, self.entry.data)
+        durable = deepcopy(self.data)
+        entity_to_registry = {
+            robot.entity_id: robot.registry_id
+            for robot in self.discovery.robots.values()
+        }
+        for section in ("active", "robot_holds"):
+            runtime_values = durable.get(section, {})
+            stable_values: dict[str, Any] = {}
+            for key, value in runtime_values.items():
+                stable_key = entity_to_registry.get(key, key)
+                if stable_key not in stable_values or stable_values[stable_key] is None:
+                    stable_values[stable_key] = value
+            durable[section] = stable_values
+        self.state, _ = SchedulerState.from_store(durable, self.entry.data)
         await self.store.async_save(self.state.to_store())
 
     async def async_refresh_discovery(self) -> None:
@@ -488,6 +542,10 @@ class AdaptiveRoboVacCoordinator:
 
         prior_discovery = self.discovery
         self.discovery = await async_discover(self.hass)
+        self._identity_migrated = (
+            self._migrate_runtime_robot_identity(prior_discovery)
+            or self._identity_migrated
+        )
 
         for room in self.discovery.rooms.values():
             detail = self._room_data(room.area_id)
@@ -561,6 +619,23 @@ class AdaptiveRoboVacCoordinator:
         async_sync_cleaning_program_issues(self)
         self._notify_listeners()
 
+    def _migrate_runtime_robot_identity(
+        self, prior_discovery: DiscoveryResult
+    ) -> bool:
+        """Bind stable robot keys to current entity IDs without losing aliases."""
+
+        return migrate_runtime_robot_identity(
+            self.data,
+            {
+                robot.registry_id: robot.entity_id
+                for robot in self.discovery.robots.values()
+            },
+            {
+                robot.registry_id: robot.entity_id
+                for robot in prior_discovery.robots.values()
+            },
+        )
+
     def _room_data(self, area_id: str) -> dict[str, Any]:
         return self.data["rooms"].setdefault(area_id, _blank_room())
 
@@ -612,7 +687,7 @@ class AdaptiveRoboVacCoordinator:
 
     def _robot_settings(self, robot: DiscoveredRobot) -> dict[str, Any]:
         settings = self.data["settings"]["robots"].setdefault(
-            robot.entity_id,
+            robot.registry_id,
             {
                 "enabled": True,
                 "minimum_battery": DEFAULT_MINIMUM_BATTERY,
@@ -639,6 +714,24 @@ class AdaptiveRoboVacCoordinator:
         settings.setdefault("mop_double_pass", False)
         settings["mopping_enabled"] = settings["cleaning_program"] != "vacuum_only"
         return settings
+
+    def robot_unique_fragment(self, entity_id: str) -> str:
+        """Return the original entity-ID fragment retained for stable unique IDs."""
+
+        robot = self.discovery.robots.get(entity_id)
+        if robot is None:
+            return entity_id
+        return str(
+            self.data.get("robot_entity_aliases", {}).get(
+                robot.registry_id, robot.entity_id
+            )
+        )
+
+    def robot_registry_id(self, entity_id: str) -> str:
+        """Resolve a current runtime entity ID to durable registry identity."""
+
+        robot = self.discovery.robots.get(entity_id)
+        return robot.registry_id if robot else entity_id
 
     @property
     def observe_only(self) -> bool:
@@ -930,7 +1023,7 @@ class AdaptiveRoboVacCoordinator:
         @callback
         def check_start(_timestamp: datetime) -> None:
             self._start_confirmation_timers.pop(robot_id, None)
-            self.hass.async_create_task(
+            self._async_create_task(
                 self.async_evaluate(
                     dry_run=True, reason=f"start-confirmation:{robot_id}"
                 )
@@ -1096,6 +1189,38 @@ class AdaptiveRoboVacCoordinator:
 
             action = self._reconcile_robot_hold(entity_id, state_text, active, now)
             if action is not None:
+                hold = self.data["robot_holds"].get(entity_id) or hold or {}
+                outcome = offline_held_recovery_outcome(
+                    state_text,
+                    str(hold.get("phase")),
+                    _as_datetime(active.get("last_observed_at"))
+                    if active
+                    else _as_datetime(hold.get("last_observed_at")),
+                    tracked_expected_minutes,
+                    now,
+                )
+                if outcome == "complete" and active:
+                    expected_end = _as_datetime(active.get("expected_end"))
+                    if expected_end:
+                        self._complete_job(
+                            entity_id,
+                            active,
+                            expected_end,
+                            "recovered_expected_end",
+                        )
+                        self.data["robot_holds"].pop(entity_id, None)
+                        continue
+                if outcome == "cancelled":
+                    if active:
+                        self._cancel_job(
+                            entity_id,
+                            active,
+                            now,
+                            "recovered_physical_cancellation",
+                        )
+                    self._apply_robot_cancellation_deferral(entity_id, now)
+                    self.data["robot_holds"].pop(entity_id, None)
+                    continue
                 if action == "held":
                     if active:
                         self._hold_active_job(entity_id, active, state_text, now)
@@ -1123,25 +1248,6 @@ class AdaptiveRoboVacCoordinator:
                         self._complete_job(entity_id, active, completion, "observed")
                     self.data["robot_holds"].pop(entity_id, None)
                     continue
-                outcome = offline_held_recovery_outcome(
-                    state_text,
-                    str(hold.get("phase")),
-                    _as_datetime(active.get("last_observed_at")) if active else _as_datetime(hold.get("last_observed_at")),
-                    tracked_expected_minutes,
-                    now,
-                )
-                if outcome == "complete" and active:
-                    expected_end = _as_datetime(active.get("expected_end"))
-                    if expected_end:
-                        self._complete_job(entity_id, active, expected_end, "recovered_expected_end")
-                        self.data["robot_holds"].pop(entity_id, None)
-                elif outcome == "cancelled":
-                    if active:
-                        self._cancel_job(entity_id, active, now, "recovered_physical_cancellation")
-                    self._apply_robot_cancellation_deferral(entity_id, now)
-                    self.data["robot_holds"].pop(entity_id, None)
-                continue
-
             if not active:
                 continue
             if (
@@ -1369,7 +1475,7 @@ class AdaptiveRoboVacCoordinator:
 
         self._cancel_recovery_timer(robot_id)
         if expected_end <= _now():
-            self.hass.async_create_task(
+            self._async_create_task(
                 self.async_evaluate(dry_run=False, reason=f"recovery-end:{robot_id}")
             )
             return
@@ -1377,7 +1483,7 @@ class AdaptiveRoboVacCoordinator:
         @callback
         def reconcile_at_expected_end(_when: datetime) -> None:
             self._recovery_timers.pop(robot_id, None)
-            self.hass.async_create_task(
+            self._async_create_task(
                 self.async_evaluate(dry_run=False, reason=f"recovery-end:{robot_id}")
             )
 
@@ -1387,7 +1493,7 @@ class AdaptiveRoboVacCoordinator:
 
     @callback
     def _on_home_assistant_started(self, _event: Event) -> None:
-        self.hass.async_create_task(self.async_evaluate(dry_run=True, reason="ha_started"))
+        self._async_create_task(self.async_evaluate(dry_run=True, reason="ha_started"))
 
     @callback
     def _on_call_service(self, event: Event) -> None:
@@ -1396,7 +1502,7 @@ class AdaptiveRoboVacCoordinator:
         if event.data.get("domain") != "vacuum":
             return
         if event.data.get("service") == "clean_area":
-            self.hass.async_create_task(self._async_track_manual_service_call(event))
+            self._async_create_task(self._async_track_manual_service_call(event))
 
     async def _async_track_manual_service_call(self, event: Event) -> None:
         """Persist a manual checkpoint before the vacuum service begins work."""
@@ -1438,7 +1544,12 @@ class AdaptiveRoboVacCoordinator:
                 return
 
             expected_minutes = sum(
-                self._effective_duration(room, "vacuum", 1, request.robot_id)[0]
+                self._effective_duration(
+                    room,
+                    "vacuum",
+                    1,
+                    self.robot_registry_id(request.robot_id),
+                )[0]
                 for room in rooms
                 if room is not None
             )
@@ -1470,7 +1581,7 @@ class AdaptiveRoboVacCoordinator:
             )
             await self._async_save()
             self._notify_listeners()
-            self.hass.async_create_task(
+            self._async_create_task(
                 self.async_evaluate(dry_run=True, reason=f"manual-ha:{request.robot_id}")
             )
 
@@ -1490,7 +1601,7 @@ class AdaptiveRoboVacCoordinator:
                 if entity_id in self.discovery.robots
                 else None
             )
-            self.hass.async_create_task(
+            self._async_create_task(
                 self.async_evaluate(
                     dry_run=False, reason=f"state:{entity_id}", transition=transition
                 )
@@ -1730,14 +1841,14 @@ class AdaptiveRoboVacCoordinator:
                 return None, "occurrence is complete"
             operation = str(stages[stage_index].get("operation", "vacuum"))
             passes = int(stages[stage_index].get("passes", 1))
-        duration_minutes, duration_sample_count = self._effective_duration(room, operation, passes)
+        duration_minutes, duration_sample_count = self._effective_duration(
+            room, operation, passes
+        )
         forecast = (
             Forecast(True, 0.0, "unresolved occupancy desired-window policy")
             if unresolved_window_allowed
-            else self._forecast(room, now, duration_minutes)
+            else Forecast(True, 0.0, "awaiting robot-specific vacancy forecast")
         )
-        if not forecast.allowed:
-            return None, forecast.reason
         return {
             "room": room,
             "operation": operation,
@@ -1748,6 +1859,8 @@ class AdaptiveRoboVacCoordinator:
             "duration_sample_count": duration_sample_count,
             "passes": passes,
             "occurrence": occurrence,
+            "evaluated_at": now,
+            "unresolved_window_allowed": unresolved_window_allowed,
         }, "ready"
 
     def _candidate_for_robot(
@@ -1770,14 +1883,27 @@ class AdaptiveRoboVacCoordinator:
             if not robot.adapter_capabilities.supports(operation, passes):
                 return None
             duration, count = self._effective_duration(
-                room, operation, passes, robot.entity_id
+                room, operation, passes, robot.registry_id
             )
+            forecast = (
+                Forecast(True, 0.0, "unresolved occupancy desired-window policy")
+                if candidate.get("unresolved_window_allowed")
+                else self._forecast(
+                    room,
+                    candidate.get("evaluated_at") or _now(),
+                    duration,
+                )
+            )
+            if not forecast.allowed:
+                return None
             return {
                 **candidate,
                 "operation": operation,
                 "passes": passes,
                 "duration_minutes": duration,
                 "duration_sample_count": count,
+                "confidence": forecast.confidence,
+                "reason": forecast.reason,
                 "occurrence_id": occurrence.get("occurrence_id"),
                 "stage_index": stage_index,
                 "program": occurrence.get("program"),
@@ -1810,13 +1936,28 @@ class AdaptiveRoboVacCoordinator:
                            "reason": None, "started_at": None, "completed_at": None})
         operation = str(stages[0]["operation"])
         passes = int(stages[0]["passes"])
-        duration, count = self._effective_duration(room, operation, passes, robot.entity_id)
+        duration, count = self._effective_duration(
+            room, operation, passes, robot.registry_id
+        )
+        forecast = (
+            Forecast(True, 0.0, "unresolved occupancy desired-window policy")
+            if candidate.get("unresolved_window_allowed")
+            else self._forecast(
+                room,
+                candidate.get("evaluated_at") or _now(),
+                duration,
+            )
+        )
+        if not forecast.allowed:
+            return None
         return {
             **candidate,
             "operation": operation,
             "passes": passes,
             "duration_minutes": duration,
             "duration_sample_count": count,
+            "confidence": forecast.confidence,
+            "reason": forecast.reason,
             "program": program,
             "new_stages": stages,
             "stage_index": 0,
@@ -1955,7 +2096,7 @@ class AdaptiveRoboVacCoordinator:
                 now,
             )
             await self._async_save()
-            self.hass.async_create_task(
+            self._async_create_task(
                 self.async_evaluate(reason="mop-stage-skipped-carpet")
             )
             return None, f"skipped mopping {room.name}: room excludes mopping"
@@ -1976,7 +2117,7 @@ class AdaptiveRoboVacCoordinator:
             await self._async_notify_mop_skipped(
                 room, robot, water.reason, occurrence_snapshot, now
             )
-            self.hass.async_create_task(
+            self._async_create_task(
                 self.async_evaluate(reason="mop-stage-skipped-no-water")
             )
             return None, f"skipped mopping {room.name}: water unavailable"
@@ -2000,7 +2141,7 @@ class AdaptiveRoboVacCoordinator:
                     now,
                 )
                 await self._async_save()
-                self.hass.async_create_task(
+                self._async_create_task(
                     self.async_evaluate(reason="water-confirmation-expired")
                 )
                 return None, "mopping cancelled: water confirmation expired"
@@ -2057,7 +2198,7 @@ class AdaptiveRoboVacCoordinator:
                 now,
             )
             await self._async_save()
-            self.hass.async_create_task(
+            self._async_create_task(
                 self.async_evaluate(reason="water-confirmation-unreachable")
             )
             return None, "mopping cancelled: no notification target"
@@ -2093,7 +2234,7 @@ class AdaptiveRoboVacCoordinator:
         )
         await self._async_save()
         await self._async_notify_mop_skipped(room, robot, reason, snapshot, now)
-        self.hass.async_create_task(
+        self._async_create_task(
             self.async_evaluate(reason="mop-final-preflight-skipped")
         )
 
@@ -2105,6 +2246,8 @@ class AdaptiveRoboVacCoordinator:
     async def _async_dispatch(
         self, robot: DiscoveredRobot, candidate: dict[str, Any], now: datetime
     ) -> tuple[bool, str]:
+        if self._closing:
+            return False, "coordinator shutting down"
         return await self.runtime.async_dispatch(robot, candidate, now)
 
     async def _async_reconcile_jobs(
@@ -2365,7 +2508,17 @@ class AdaptiveRoboVacCoordinator:
     ) -> dict[str, Any]:
         """Refresh state, publish a safe preview, and optionally dispatch work."""
 
+        if self._closing:
+            return {
+                **self.data.get("last_preview", {}),
+                "dispatches": ["coordinator shutting down"],
+            }
         async with self._lock:
+            if self._closing:
+                return {
+                    **self.data.get("last_preview", {}),
+                    "dispatches": ["coordinator shutting down"],
+                }
             now = _now()
             await self.async_refresh_discovery()
             self._observe_occupancy(now)
@@ -2463,13 +2616,43 @@ class AdaptiveRoboVacCoordinator:
             dispatches: list[str] = []
             if (
                 not dry_run
+                and not self._closing
                 and not self.observe_only
                 and not self.party_mode
                 and not self.data.get("scheduler_fault")
             ):
                 for robot, candidate in assignments:
+                    if self._closing:
+                        break
+                    # Earlier assignments may have awaited service calls. Recheck
+                    # every room and robot gate before creating an occurrence or
+                    # sending a water-confirmation notification.
+                    prepare_now = _now()
+                    self._observe_occupancy(prepare_now)
+                    prepare_candidate, prepare_reason = self._room_candidate(
+                        candidate["room"], prepare_now
+                    )
+                    robot_is_ready, robot_reason = self._robot_ready(robot)
+                    prepare_resolved = (
+                        self._candidate_for_robot(prepare_candidate, robot)
+                        if prepare_candidate and robot_is_ready
+                        else None
+                    )
+                    if prepare_resolved is None:
+                        wait_reason = (
+                            prepare_reason
+                            if not prepare_candidate
+                            else robot_reason
+                            if not robot_is_ready
+                            else "cleaning program or vacancy forecast is no longer compatible"
+                        )
+                        dispatches.append(
+                            f"waiting for {candidate['room'].name}: {wait_reason}"
+                        )
+                        continue
+                    candidate = prepare_resolved
                     prepared, preparation_message = await self._async_prepare_occurrence(
-                        robot, candidate, now
+                        robot, candidate, prepare_now
                     )
                     if prepared is None:
                         if preparation_message:

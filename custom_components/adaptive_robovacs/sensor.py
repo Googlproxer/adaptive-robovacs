@@ -46,7 +46,7 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
     def __init__(self, coordinator, robot_entity_id: str) -> None:
         super().__init__(
             coordinator,
-            f"robot_{robot_entity_id}_status",
+            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_status",
             "status",
             "robot_status",
             robot_entity_id=robot_entity_id,

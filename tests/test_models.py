@@ -377,5 +377,26 @@ class ActiveJobHoldTests(unittest.TestCase):
             "held",
         )
 
+    def test_profile_control_metadata_precedes_option_heuristics(self) -> None:
+        self.assertEqual(
+            models.profile_control_kind(
+                "mop_intensity", ("off", "light", "medium", "high", "custom")
+            ),
+            "mop_intensity",
+        )
+        self.assertEqual(
+            models.profile_control_kind("mop_mode", ("standard", "deep")),
+            "mop_mode",
+        )
+        self.assertEqual(
+            models.profile_control_kind("cleaning_mode", ("silent", "turbo")),
+            "mode",
+        )
+
+    def test_profile_control_fallback_rejects_unrelated_selects(self) -> None:
+        self.assertIsNone(
+            models.profile_control_kind(None, ("enabled", "disabled", "automatic"))
+        )
+
 if __name__ == "__main__":
     unittest.main()

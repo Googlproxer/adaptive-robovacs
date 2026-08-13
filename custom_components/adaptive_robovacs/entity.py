@@ -36,14 +36,32 @@ class AdaptiveEntity(Entity):
         self._role = role
         self._area_id = area_id
         self._robot_entity_id = robot_entity_id
+        robot = (
+            coordinator.discovery.robots.get(robot_entity_id)
+            if robot_entity_id
+            else None
+        )
+        self._robot_registry_id = robot.registry_id if robot else None
         self._robot_name_suffix = robot_name_suffix
+
+    def _resolve_robot_entity_id(self) -> str | None:
+        """Follow a vacuum entity rename through its stable registry entry."""
+
+        if self._robot_registry_id:
+            robot = self.coordinator.robot_for_registry_id(self._robot_registry_id)
+            if robot:
+                self._robot_entity_id = robot.entity_id
+                if hasattr(self, "robot_entity_id"):
+                    self.robot_entity_id = robot.entity_id
+        return self._robot_entity_id
 
     @property
     def name(self) -> str | None:
         """Keep robot-owned entity labels aligned with the live robot name."""
 
         if self._robot_entity_id and self._robot_name_suffix:
-            robot = self.coordinator.discovery.robots.get(self._robot_entity_id)
+            entity_id = self._resolve_robot_entity_id()
+            robot = self.coordinator.discovery.robots.get(entity_id)
             robot_name = robot.name if robot else self._robot_entity_id
             return f"{robot_name} {self._robot_name_suffix}"
         return self._attr_name
@@ -65,10 +83,8 @@ class AdaptiveEntity(Entity):
 
         if self._area_id and self._area_id not in self.coordinator.discovery.rooms:
             return
-        if (
-            self._robot_entity_id
-            and self._robot_entity_id not in self.coordinator.discovery.robots
-        ):
+        self._resolve_robot_entity_id()
+        if self._robot_entity_id and self._robot_entity_id not in self.coordinator.discovery.robots:
             return
         self.async_write_ha_state()
 
@@ -83,6 +99,7 @@ class AdaptiveEntity(Entity):
         if self._area_id:
             attributes["area_id"] = self._area_id
         if self._robot_entity_id:
+            self._resolve_robot_entity_id()
             attributes["robot_entity_id"] = self._robot_entity_id
         return attributes
 
