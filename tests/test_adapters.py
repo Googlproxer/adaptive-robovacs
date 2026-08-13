@@ -196,6 +196,37 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities.fan_speed_options, ("quiet", "max"))
         self.assertIsNone(diagnostic)
 
+    async def test_same_device_operation_options_verify_mopping(self) -> None:
+        context = self._context("roborock", send_command=True)
+        context = base.AdapterMatchContext(
+            entity_id=context.entity_id,
+            platform=context.platform,
+            supports_area_clean=context.supports_area_clean,
+            supports_send_command=context.supports_send_command,
+            profile=context.profile,
+            fan_speed_options=context.fan_speed_options,
+            entities=(
+                base.AdapterEntityEvidence(
+                    entity_id="select.test_cleaning_mode",
+                    domain="select",
+                    platform="roborock",
+                    translation_key="cleaning_mode",
+                    device_class=None,
+                    state="vac_and_mop",
+                    options=("vac_and_mop", "vacuum", "mop", "customized"),
+                ),
+            ),
+        )
+        _adapter, capabilities, _diagnostic = await registry.async_resolve_adapter(
+            None, context
+        )
+        self.assertEqual(
+            capabilities.supported_operations, frozenset({"vacuum", "mop"})
+        )
+        self.assertEqual(
+            capabilities.water_readiness.status, "confirmation_required"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

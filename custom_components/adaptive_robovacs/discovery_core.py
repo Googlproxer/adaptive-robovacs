@@ -188,9 +188,30 @@ def _adapter_evidence(
                     or getattr(entry, "original_device_class", None)
                 ),
                 state=state.state if state else None,
+                options=tuple(
+                    str(option) for option in attributes.get("options", [])
+                ),
             )
         )
     return tuple(evidence)
+
+
+def _verified_operation_mode(
+    evidence: tuple[AdapterEntityEvidence, ...],
+) -> AdapterEntityEvidence | None:
+    """Return one explicit same-device selector for vacuum and mop operations."""
+
+    for item in evidence:
+        options = {_normalised_label(option) for option in item.options}
+        if (
+            item.domain == "select"
+            and options.intersection({"vacuum", "vacuum-only"})
+            and options.intersection(
+                {"mop", "mop-only", "vac-and-mop", "vacuum-and-mop"}
+            )
+        ):
+            return item
+    return None
 
 
 def _find_profile(
@@ -302,6 +323,9 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
         adapter_entities = _adapter_evidence(
             hass, entries_by_device.get(entry.device_id, [])
         )
+        if operation_mode := _verified_operation_mode(adapter_entities):
+            profile.mode_select_entity_id = operation_mode.entity_id
+            profile.mode_options = operation_mode.options
         context = AdapterMatchContext(
             entity_id=entry.entity_id,
             platform=platform,

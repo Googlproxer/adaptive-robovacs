@@ -74,6 +74,9 @@ class WaterMoppingContractTests(unittest.TestCase):
         self.assertIn('if evidence.domain == "select"', coordinator)
         self.assertIn('reason="post-start-capability-refresh"', coordinator)
         self.assertIn("_now() + timedelta(seconds=30)", coordinator)
+        discovery = (PACKAGE / "discovery_core.py").read_text(encoding="utf-8")
+        self.assertIn("def _verified_operation_mode(", discovery)
+        self.assertIn("profile.mode_select_entity_id = operation_mode.entity_id", discovery)
 
     def test_frontend_copies_are_identical_with_new_room_roles(self) -> None:
         served = (PACKAGE / "frontend" / "adaptive-robovacs-dashboard.js").read_bytes()

@@ -19,6 +19,7 @@ class AdapterEntityEvidence:
     translation_key: str | None
     device_class: str | None
     state: str | None
+    options: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,6 +13,25 @@ from ..models import (
 from .base import AdapterMatchContext, VacuumAdapter
 
 
+def evidence_supports_mopping(context: AdapterMatchContext) -> bool:
+    """Verify an explicit same-device operation selector from transient evidence."""
+
+    if context.profile.supports_mopping:
+        return True
+    for evidence in context.entities:
+        if evidence.domain != "select":
+            continue
+        options = {
+            str(option).strip().lower().replace("_", "-").replace(" ", "-")
+            for option in evidence.options
+        }
+        if options.intersection({"vacuum", "vacuum-only"}) and options.intersection(
+            {"mop", "mop-only", "vac-and-mop", "vacuum-and-mop"}
+        ):
+            return True
+    return False
+
+
 class GenericVacuumAdapter(VacuumAdapter):
     """Fallback adapter using only standard Home Assistant actions."""
 
@@ -29,7 +48,7 @@ class GenericVacuumAdapter(VacuumAdapter):
             passes.add(2)
         operations = {"vacuum"}
         water = WaterReadiness.unsupported()
-        if context.profile.supports_mopping:
+        if evidence_supports_mopping(context):
             operations.add("mop")
             water = WaterReadiness.confirmation_required()
         return AdapterCapabilities(

@@ -235,7 +235,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
             pass_counts.add(2)
             native_pass_counts.add(2)
         water, watched = resolve_roborock_water_readiness(
-            context.entities, context.profile.supports_mopping
+            context.entities, "mop" in generic.supported_operations
         )
         return AdapterCapabilities(
             adapter_id=self.adapter_id,
