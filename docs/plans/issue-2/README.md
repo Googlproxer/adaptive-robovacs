@@ -8,7 +8,7 @@ validated, released, installed through HACS, and verified in Home Assistant.
 ## Baseline
 
 Plans 1 through 3 are implemented. The remaining plans target the architecture
-deployed in integration version 1.4.1:
+deployed in integration version 1.4.2:
 
 - v1.1 introduced one global card, one card per vacuum, and one card per room;
 - v1.2 introduced independently inherited per-room daily windows;
@@ -22,7 +22,9 @@ deployed in integration version 1.4.1:
   vacuum/mop pass settings, authoritative Roborock water checks, and explicit
   one-hour water confirmation for mop-capable robots without telemetry; and
 - v1.4.1 made program controls and late-loading vendor capabilities refresh
-  correctly after Home Assistant startup.
+  dynamically; and
+- v1.4.2 added a bounded post-start discovery refresh for vendor entities whose
+  initial state transition precedes Adaptive RoboVacs' watcher registration.
 
 Pull request [#3](https://github.com/Googlproxer/adaptive-robovacs/pull/3)
 introduced the typed Store codec and separated runtime service calls, job
@@ -45,7 +47,7 @@ that it will receive a particular future schema number.
 | --- | --- | --- |
 | Per-room cleaning windows | One repeating daily interval; weekday/weekend schedules are deferred | [Implemented in v1.2.0](01-per-room-cleaning-windows.md) |
 | Multipass support | Implemented for v1.3.0: generic/vendor adapter contract, Roborock mapped native two-pass cross-hatching, dashboard diagnostics, and actionable Home Assistant Repairs; corrected through v1.3.2 | [Implemented plan](02-room-multipass.md) |
-| Mopping when water is available | Implemented in v1.4.0 and corrected in v1.4.1: telemetry-backed live readiness, ordered stages, one cadence, and explicit one-hour all-user confirmation when water telemetry is absent | [Implemented plan](03-water-aware-mopping.md) |
+| Mopping when water is available | Implemented in v1.4.0 and corrected through v1.4.2: telemetry-backed live readiness, ordered stages, one cadence, and explicit one-hour all-user confirmation when water telemetry is absent | [Implemented plan](03-water-aware-mopping.md) |
 | Cross occupancy detection via room list | Symmetric adjacency: occupancy in either room blocks the other | [Adjacent-room occupancy blockers](04-cross-room-occupancy.md) |
 | Power level settings per room | Robot-owned program/profile defaults with per-room overrides for program, fan speed, modes, intensity, and independent vacuum/mop passes | [Robot defaults and per-room cleaning profiles](05-room-power-levels.md) |
 | Confirm with message before bedrooms | Assign one user and phone to each bedroom and send an actionable notification for each run | [Bedroom confirmation](06-bedroom-confirmation.md) |

@@ -225,6 +225,22 @@ class AdaptiveRoboVacCoordinator:
         await self._async_restore_water_confirmations()
         await self.async_evaluate(dry_run=True, reason="startup")
 
+        @callback
+        def refresh_late_vendor_entities(_timestamp: datetime) -> None:
+            self.hass.async_create_task(
+                self.async_evaluate(
+                    dry_run=True, reason="post-start-capability-refresh"
+                )
+            )
+
+        self._unsubscribers.append(
+            async_track_point_in_utc_time(
+                self.hass,
+                refresh_late_vendor_entities,
+                _now() + timedelta(seconds=30),
+            )
+        )
+
     async def async_shutdown(self) -> None:
         """Persist and remove event listeners."""
 

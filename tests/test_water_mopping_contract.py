@@ -72,6 +72,8 @@ class WaterMoppingContractTests(unittest.TestCase):
         ):
             self.assertIn(f"robot.profile.{field}", coordinator)
         self.assertIn('if evidence.domain == "select"', coordinator)
+        self.assertIn('reason="post-start-capability-refresh"', coordinator)
+        self.assertIn("_now() + timedelta(seconds=30)", coordinator)
 
     def test_frontend_copies_are_identical_with_new_room_roles(self) -> None:
         served = (PACKAGE / "frontend" / "adaptive-robovacs-dashboard.js").read_bytes()
