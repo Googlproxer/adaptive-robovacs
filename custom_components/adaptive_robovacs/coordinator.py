@@ -242,8 +242,7 @@ class AdaptiveRoboVacCoordinator:
     async def async_refresh_discovery(self) -> None:
         """Refresh registry state and reset only changed room occupancy models."""
 
-        prior_rooms = set(self.discovery.rooms)
-        prior_robots = set(self.discovery.robots)
+        prior_discovery = self.discovery
         self.discovery = await async_discover(self.hass)
 
         for room in self.discovery.rooms.values():
@@ -273,7 +272,7 @@ class AdaptiveRoboVacCoordinator:
             if robot.profile.cleaning_time_entity_id:
                 self._watch_entity_ids.add(robot.profile.cleaning_time_entity_id)
 
-        if prior_rooms != set(self.discovery.rooms) or prior_robots != set(self.discovery.robots):
+        if prior_discovery != self.discovery:
             async_dispatcher_send(self.hass, SIGNAL_DISCOVERY_UPDATED, self.entry.entry_id)
         async_sync_two_pass_issues(self)
         self._notify_listeners()

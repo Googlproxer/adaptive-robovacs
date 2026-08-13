@@ -6,6 +6,7 @@ import unittest
 
 ENTITY_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "entity.py"
 DISCOVERY_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "discovery_core.py"
+COORDINATOR_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "coordinator.py"
 DASHBOARD_PATH = (
     Path(__file__).parents[1]
     / "custom_components"
@@ -59,6 +60,12 @@ class DynamicDiscoveryContractTests(unittest.TestCase):
         self.assertIn("robot_name_suffix", entity_source)
         self.assertIn("robot.name if robot else self._robot_entity_id", entity_source)
         self.assertIn("device.name_by_user", discovery_source)
+
+    def test_capability_changes_trigger_dynamic_entity_discovery(self) -> None:
+        source = COORDINATOR_PATH.read_text(encoding="utf-8")
+        self.assertIn("prior_discovery = self.discovery", source)
+        self.assertIn("if prior_discovery != self.discovery:", source)
+        self.assertNotIn("prior_robots = set(self.discovery.robots)", source)
 
 
 if __name__ == "__main__":
