@@ -183,6 +183,7 @@ class _RobotSelect(AdaptiveEntity, SelectEntity):
                 "mode": robot.adapter_capabilities.mode_options,
                 "mop_mode": robot.adapter_capabilities.mop_mode_options,
                 "mop_intensity": robot.adapter_capabilities.mop_intensity_options,
+                "cleaning_depth": robot.adapter_capabilities.cleaning_depth_options,
             }[self.key]
         else:
             options = self._fallback_options
@@ -232,6 +233,7 @@ class _RoomProfileSelect(AdaptiveEntity, SelectEntity):
                 "mode": robot.adapter_capabilities.mode_options,
                 "mop_mode": robot.adapter_capabilities.mop_mode_options,
                 "mop_intensity": robot.adapter_capabilities.mop_intensity_options,
+                "cleaning_depth": robot.adapter_capabilities.cleaning_depth_options,
             }[self.key]
             for option in options:
                 if option not in values:
@@ -290,6 +292,16 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
             entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_mode", profile.mop_mode_options, "mop mode"))
         if profile.mop_intensity_select_entity_id and profile.mop_intensity_options:
             entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_intensity", profile.mop_intensity_options, "mop intensity"))
+        if robot.adapter_capabilities.cleaning_depth_options:
+            entities.append(
+                _RobotSelect(
+                    coordinator,
+                    robot.entity_id,
+                    "cleaning_depth",
+                    robot.adapter_capabilities.cleaning_depth_options,
+                    "cleaning depth",
+                )
+            )
     for room in coordinator.discovery.rooms.values():
         supports_mopping = any(
             robot.floor_id == room.floor_id
@@ -334,6 +346,7 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
             ("mode", "mode"),
             ("mop_mode", "mop mode"),
             ("mop_intensity", "mop intensity"),
+            ("cleaning_depth", "cleaning depth"),
         ):
             profile_select = _RoomProfileSelect(
                 coordinator, room.area_id, room.name, key, label

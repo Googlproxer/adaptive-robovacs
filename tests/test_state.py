@@ -207,6 +207,7 @@ class SchedulerStateTests(unittest.TestCase):
         study_settings.pass_count = 2
         study_settings.fan_speed = "max"
         study_settings.mop_mode = "deep"
+        study_settings.cleaning_depth = "fine"
         state.ensure_room("kitchen", is_bedroom=False)
         state.room_history["study"] = RoomHistory(
             vacuum_completed_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
@@ -285,6 +286,7 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertEqual(restored.room_settings["study"].pass_count, 2)
         self.assertEqual(restored.room_settings["study"].fan_speed, "max")
         self.assertEqual(restored.room_settings["study"].mop_mode, "deep")
+        self.assertEqual(restored.room_settings["study"].cleaning_depth, "fine")
         self.assertEqual(restored.scheduler_fault.robot_registry_id, "registry-robot")
         self.assertEqual(restored.occurrences["study"].current_stage, 1)
         self.assertEqual(restored.occurrences["study"].stages[0].status, "completed")
@@ -326,7 +328,7 @@ class SchedulerStateTests(unittest.TestCase):
         state.ensure_room("study", is_bedroom=False)
         payload = state.to_store()
         payload["schema_version"] = 6
-        for key in ("fan_speed", "mode", "mop_mode", "mop_intensity"):
+        for key in ("fan_speed", "mode", "mop_mode", "mop_intensity", "cleaning_depth"):
             payload["room_settings"]["study"].pop(key)
 
         restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)

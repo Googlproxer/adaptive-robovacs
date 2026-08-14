@@ -124,6 +124,16 @@ class VacuumAdapter(ABC):
                 "profile_option_unsupported",
                 "A saved fan speed is no longer supported.",
             )
+        cleaning_depth = values.get("cleaning_depth")
+        if (
+            cleaning_depth is not None
+            and cleaning_depth not in capabilities.cleaning_depth_options
+        ):
+            return AdapterDispatchResult(
+                "unsupported",
+                "profile_option_unsupported",
+                "A saved cleaning depth is no longer supported.",
+            )
         if (
             context.profile.passes_select_entity_id
             and request.passes

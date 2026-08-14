@@ -128,7 +128,7 @@ class RoborockMappingTests(unittest.TestCase):
 
     def test_q10_custom_payload_encodes_two_pass_vacuum_profile(self) -> None:
         encoded = roborock.build_q10_customer_clean_payload(
-            (6, 10), fan_level=4, clean_count=2
+            (6, 10), fan_level=4, clean_count=2, clean_line=1
         )
         self.assertEqual(
             base64.b64decode(encoded),
@@ -145,7 +145,7 @@ class RoborockMappingTests(unittest.TestCase):
     def test_q10_custom_payload_rejects_non_byte_mapping_target(self) -> None:
         with self.assertRaises(roborock.Q10CustomCleanError) as raised:
             roborock.build_q10_customer_clean_payload(
-                (256,), fan_level=4, clean_count=2
+                (256,), fan_level=4, clean_count=2, clean_line=1
             )
         self.assertEqual(raised.exception.code, "area_mapping_ambiguous")
 
@@ -272,9 +272,10 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(capabilities.vacuum_pass_counts, frozenset({1, 2}))
-        self.assertEqual(capabilities.native_vacuum_pass_counts, frozenset({2}))
+        self.assertEqual(capabilities.native_vacuum_pass_counts, frozenset({1, 2}))
         self.assertEqual(capabilities.mop_pass_counts, frozenset({1}))
         self.assertEqual(capabilities.native_mop_pass_counts, frozenset())
+        self.assertEqual(capabilities.cleaning_depth_options, ("fast", "daily", "fine"))
         self.assertIsNone(diagnostic)
 
     def _q10_context(self) -> base.AdapterMatchContext:
@@ -396,7 +397,11 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             hass, self._q10_context()
         )
         request = roborock.AdapterDispatchRequest(
-            "vacuum.test", ("test_room",), "vacuum", 2, {"fan_speed": "max"}
+            "vacuum.test",
+            ("test_room",),
+            "vacuum",
+            2,
+            {"fan_speed": "max", "cleaning_depth": "fine"},
         )
 
         self.assertTrue((await adapter.async_validate_profile(
@@ -406,7 +411,7 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.accepted)
         self.assertTrue(result.native_attempted)
-        self.assertEqual(capabilities.native_vacuum_pass_counts, frozenset({2}))
+        self.assertEqual(capabilities.native_vacuum_pass_counts, frozenset({1, 2}))
         service_call.assert_has_awaits(
             [
                 call(
@@ -417,7 +422,92 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
                         "command": "dpCommon",
                         "params": {
                             "62": roborock.build_q10_customer_clean_payload(
-                                (6,), fan_level=4, clean_count=2
+                                (6,), fan_level=4, clean_count=2, clean_line=2
+                            )
+                        },
+                    },
+                    blocking=True,
+                ),
+                call(
+                    "select",
+                    "select_option",
+                    {"entity_id": "select.test_cleaning_mode", "option": "customized"},
+                    blocking=True,
+                ),
+                call(
+                    "vacuum",
+                    "send_command",
+                    {
+                        "entity_id": "vacuum.test",
+                        "command": "dpStartClean",
+                        "params": {"cmd": 2, "clean_paramters": [6]},
+                    },
+                    blocking=True,
+                ),
+            ]
+        )
+        self.assertEqual(service_call.await_count, 3)
+        sleep.assert_awaited_once_with(roborock.Q10_CUSTOM_CLEAN_SETTLE_SECONDS)
+
+    async def test_q10_single_pass_depth_uses_a_custom_profile(self) -> None:
+        original_async_get = roborock.er.async_get
+        original_sleep = roborock.asyncio.sleep
+        registry_entry = types.SimpleNamespace(
+            options={
+                "vacuum": {
+                    "area_mapping": {"test_room": ["6"]},
+                    "last_seen_segments": [{"id": "6"}],
+                }
+            }
+        )
+        roborock.er.async_get = lambda _hass: types.SimpleNamespace(
+            async_get=lambda _entity_id: registry_entry
+        )
+        sleep = AsyncMock()
+        roborock.asyncio.sleep = sleep
+        self.addCleanup(setattr, roborock.er, "async_get", original_async_get)
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
+        service_call = AsyncMock()
+        states = {
+            "select.test_cleaning_mode": types.SimpleNamespace(
+                state="vacuum", attributes={"options": ["vacuum", "customized"]}
+            ),
+            "vacuum.test": types.SimpleNamespace(
+                state="docked", attributes={"fan_speed": "max"}
+            ),
+        }
+        hass = types.SimpleNamespace(
+            states=types.SimpleNamespace(get=states.get),
+            services=types.SimpleNamespace(async_call=service_call),
+        )
+        adapter, _capabilities, _diagnostic = await registry.async_resolve_adapter(
+            hass, self._q10_context()
+        )
+        request = roborock.AdapterDispatchRequest(
+            "vacuum.test",
+            ("test_room",),
+            "vacuum",
+            1,
+            {"fan_speed": "max", "cleaning_depth": "fine"},
+        )
+
+        self.assertTrue(
+            (await adapter.async_validate_profile(hass, self._q10_context(), request)).ready
+        )
+        result = await adapter.async_dispatch(hass, self._q10_context(), request)
+
+        self.assertTrue(result.accepted)
+        service_call.assert_has_awaits(
+            [
+                call(
+                    "vacuum",
+                    "send_command",
+                    {
+                        "entity_id": "vacuum.test",
+                        "command": "dpCommon",
+                        "params": {
+                            "62": roborock.build_q10_customer_clean_payload(
+                                (6,), fan_level=4, clean_count=1, clean_line=2
                             )
                         },
                     },

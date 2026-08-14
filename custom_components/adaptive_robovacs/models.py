@@ -137,6 +137,7 @@ class AdapterCapabilities:
     mode_options: tuple[str, ...] = ()
     mop_mode_options: tuple[str, ...] = ()
     mop_intensity_options: tuple[str, ...] = ()
+    cleaning_depth_options: tuple[str, ...] = ()
     water_readiness: WaterReadiness | str = WaterReadiness.unsupported()
     vacuum_pass_counts: frozenset[int] = frozenset()
     mop_pass_counts: frozenset[int] = frozenset()
@@ -223,7 +224,13 @@ class AdapterDispatchResult:
         return self.status == "blocked"
 
 
-PROFILE_SETTING_KEYS = ("fan_speed", "mode", "mop_mode", "mop_intensity")
+PROFILE_SETTING_KEYS = (
+    "fan_speed",
+    "mode",
+    "mop_mode",
+    "mop_intensity",
+    "cleaning_depth",
+)
 type CleaningProgram = Literal[
     "vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"
 ]
@@ -237,6 +244,7 @@ class RequestedCleaningProfile:
     mode: str | None = None
     mop_mode: str | None = None
     mop_intensity: str | None = None
+    cleaning_depth: str | None = None
 
     def to_mapping(self) -> dict[str, str | None]:
         return {
@@ -244,6 +252,7 @@ class RequestedCleaningProfile:
             "mode": self.mode,
             "mop_mode": self.mop_mode,
             "mop_intensity": self.mop_intensity,
+            "cleaning_depth": self.cleaning_depth,
         }
 
 
@@ -256,6 +265,7 @@ class ResolvedCleaningProfile:
     mode: str | None = None
     mop_mode: str | None = None
     mop_intensity: str | None = None
+    cleaning_depth: str | None = None
 
     def to_mapping(self) -> dict[str, str | None]:
         """Return a Store- and adapter-safe snapshot."""
@@ -266,6 +276,7 @@ class ResolvedCleaningProfile:
             "mode": self.mode,
             "mop_mode": self.mop_mode,
             "mop_intensity": self.mop_intensity,
+            "cleaning_depth": self.cleaning_depth,
         }
 
 
@@ -343,6 +354,7 @@ def resolve_cleaning_profile(
         "mode": capabilities.mode_options,
         "mop_mode": capabilities.mop_mode_options,
         "mop_intensity": capabilities.mop_intensity_options,
+        "cleaning_depth": capabilities.cleaning_depth_options,
     }
     requested = requested_cleaning_profile(room_settings, robot_settings)
     values = {key: getattr(requested, key) for key in PROFILE_SETTING_KEYS}
@@ -351,10 +363,17 @@ def resolve_cleaning_profile(
         if operation == "mop"
         else ("fan_speed", "mode")
     )
+    depth_applicable = operation == "vacuum" and bool(
+        capabilities.cleaning_depth_options
+    )
+    if depth_applicable:
+        applicable_keys += ("cleaning_depth",)
     for key in applicable_keys:
         value = values[key]
         if value is not None and value not in option_sets[key]:
             return None
+    if not depth_applicable and values["cleaning_depth"] is not None:
+        return None
 
     operation_mode = _operation_mode_option(capabilities.mode_options, operation)
     explicit_modes = {
@@ -411,6 +430,7 @@ def resolve_cleaning_profile(
         mode=mode,
         mop_mode=mop_mode,
         mop_intensity=(values["mop_intensity"] if operation == "mop" else None),
+        cleaning_depth=(values["cleaning_depth"] if depth_applicable else None),
     )
 
 
@@ -424,6 +444,7 @@ def cleaning_profile_is_supported(
         "mode": capabilities.mode_options,
         "mop_mode": capabilities.mop_mode_options,
         "mop_intensity": capabilities.mop_intensity_options,
+        "cleaning_depth": capabilities.cleaning_depth_options,
     }
     if not all(
         value is None or isinstance(value, str) and value in option_sets[key]

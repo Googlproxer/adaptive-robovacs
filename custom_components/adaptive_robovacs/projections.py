@@ -136,7 +136,10 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
                 robot.adapter_capabilities,
             )
             profile = resolve_cleaning_profile(
-                operation, settings, robot_settings, robot.adapter_capabilities
+                operation,
+                settings,
+                robot_settings,
+                robot.adapter_capabilities,
             )
             if passes is None or profile is None:
                 compatible = False
@@ -199,6 +202,7 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "mode": settings.get("mode"),
         "mop_mode": settings.get("mop_mode"),
         "mop_intensity": settings.get("mop_intensity"),
+        "cleaning_depth": settings.get("cleaning_depth"),
         "effective_profiles": effective_profiles,
         "latest_manual_request": latest_manual,
         "occupancy": detail["occupancy"],
@@ -291,6 +295,9 @@ def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict
             ),
             "vacuum_pass_counts": sorted(robot.adapter_capabilities.vacuum_pass_counts),
             "mop_pass_counts": sorted(robot.adapter_capabilities.mop_pass_counts),
+            "cleaning_depth_options": list(
+                robot.adapter_capabilities.cleaning_depth_options
+            ),
             "supported_operations": sorted(
                 robot.adapter_capabilities.supported_operations
             ),

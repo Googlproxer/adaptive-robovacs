@@ -85,9 +85,16 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             "fan_speed": state["settings"].get("fan_speed"),
             "mop_mode": state["settings"].get("mop_mode"),
             "mop_intensity": state["settings"].get("mop_intensity"),
+            "cleaning_depth": state["settings"].get("cleaning_depth"),
             "configured_profile_defaults": {
                 key: state["settings"].get(key)
-                for key in ("fan_speed", "mode", "mop_mode", "mop_intensity")
+                for key in (
+                    "fan_speed",
+                    "mode",
+                    "mop_mode",
+                    "mop_intensity",
+                    "cleaning_depth",
+                )
             },
             "observed_profile": state["observed_profile"],
             "adapter_id": state["adapter_id"],
@@ -170,6 +177,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "mode": state["mode"],
             "mop_mode": state["mop_mode"],
             "mop_intensity": state["mop_intensity"],
+            "cleaning_depth": state["cleaning_depth"],
             "effective_profiles": state["effective_profiles"],
             "latest_manual_request": state["latest_manual_request"],
             "effective_pass_count": (

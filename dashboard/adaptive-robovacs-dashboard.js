@@ -25,12 +25,13 @@ const ROOM_ROLES = new Map([
   ["room_mode_control", 8],
   ["room_mop_mode_control", 9],
   ["room_mop_intensity_control", 10],
-  ["room_window_start_control", 11],
-  ["room_window_end_control", 12],
-  ["room_control", 13],
-  ["room_manual_clean_control", 14],
-  ["room_manual_vacuum_control", 15],
-  ["room_manual_mop_control", 16],
+  ["room_cleaning_depth_control", 11],
+  ["room_window_start_control", 12],
+  ["room_window_end_control", 13],
+  ["room_control", 14],
+  ["room_manual_clean_control", 15],
+  ["room_manual_vacuum_control", 16],
+  ["room_manual_mop_control", 17],
 ]);
 const ROOM_HIDDEN_ROLES = new Set(["room_manual_status"]);
 

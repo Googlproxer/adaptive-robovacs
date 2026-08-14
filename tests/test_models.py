@@ -255,6 +255,8 @@ class CleaningProfileTests(unittest.TestCase):
             mode_options=("vacuum", "mop"),
             mop_mode_options=("standard", "deep"),
             mop_intensity_options=("low", "high"),
+            cleaning_depth_options=("fast", "daily", "fine"),
+            native_vacuum_pass_counts=frozenset({2}),
         )
 
     def test_room_values_replace_robot_defaults_and_are_exact(self) -> None:
@@ -278,6 +280,7 @@ class CleaningProfileTests(unittest.TestCase):
                 "mode": "mop",
                 "mop_mode": "deep",
                 "mop_intensity": "high",
+                "cleaning_depth": None,
             },
         )
 
@@ -312,6 +315,7 @@ class CleaningProfileTests(unittest.TestCase):
                 "mode": "vacuum",
                 "mop_mode": None,
                 "mop_intensity": None,
+                "cleaning_depth": None,
             },
         )
 
@@ -351,6 +355,17 @@ class CleaningProfileTests(unittest.TestCase):
         self.assertTrue(
             models.cleaning_profile_is_supported(profile, self.capabilities)
         )
+
+    def test_q10_cleaning_depth_resolves_for_eligible_vacuum_profiles(self) -> None:
+        resolved = models.resolve_cleaning_profile(
+            "vacuum",
+            {"fan_speed": "max", "cleaning_depth": "fine"},
+            {"mode": "vacuum"},
+            self.capabilities,
+        )
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.cleaning_depth, "fine")
 
 
 class RecoveryTransitionTests(unittest.TestCase):

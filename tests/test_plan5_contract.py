@@ -63,6 +63,7 @@ class PlanFiveContractTests(unittest.TestCase):
             "room_mode_control",
             "room_mop_mode_control",
             "room_mop_intensity_control",
+            "room_cleaning_depth_control",
             "room_manual_clean_control",
             "room_manual_vacuum_control",
             "room_manual_mop_control",

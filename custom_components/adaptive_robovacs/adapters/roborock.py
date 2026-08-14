@@ -52,6 +52,11 @@ Q10_VACUUM_CLEAN_TYPE = 2
 Q10_WATER_OFF = 0
 Q10_DAILY_CLEAN_LINE = 1
 Q10_CUSTOM_CLEAN_SETTLE_SECONDS = 1.2
+Q10_CLEANING_DEPTH_LINES = {
+    "fast": 0,
+    "daily": Q10_DAILY_CLEAN_LINE,
+    "fine": 2,
+}
 Q10_FAN_LEVELS = {
     "quiet": 1,
     "balanced": 2,
@@ -65,6 +70,7 @@ class Q10CustomCleanProfile:
     """Validated Q10 custom-clean settings for one immediate room start."""
 
     fan_level: int
+    clean_line: int
     mode_entity_id: str
 
 
@@ -321,7 +327,7 @@ def q10_customized_mode_entity(context: AdapterMatchContext) -> str | None:
 
 
 def build_q10_customer_clean_payload(
-    targets: Sequence[int], *, fan_level: int, clean_count: int
+    targets: Sequence[int], *, fan_level: int, clean_count: int, clean_line: int
 ) -> str:
     """Encode a Q10 customer-clean room profile without retaining room IDs."""
 
@@ -340,6 +346,11 @@ def build_q10_customer_clean_payload(
             "adapter_request_unsupported",
             "The requested Q10 custom clean count is not supported.",
         )
+    if clean_line not in set(Q10_CLEANING_DEPTH_LINES.values()):
+        raise Q10CustomCleanError(
+            "profile_option_unsupported",
+            "The selected cleaning depth is not supported for Q10 custom cleaning.",
+        )
     payload: list[int] = [len(targets)]
     for target in targets:
         if isinstance(target, bool) or not isinstance(target, int) or not 1 <= target <= 255:
@@ -354,7 +365,7 @@ def build_q10_customer_clean_payload(
                 Q10_WATER_OFF,
                 Q10_VACUUM_CLEAN_TYPE,
                 clean_count,
-                Q10_DAILY_CLEAN_LINE,
+                clean_line,
             )
         )
     return base64.b64encode(bytes(payload)).decode("ascii")
@@ -408,14 +419,28 @@ def resolve_q10_custom_clean_profile(
             "profile_option_unsupported",
             "The selected fan speed is not supported for Q10 custom cleaning.",
         )
-    return Q10CustomCleanProfile(Q10_FAN_LEVELS[fan_speed], mode_entity_id)
+    cleaning_depth = request.cleaning_profile.get("cleaning_depth")
+    if cleaning_depth is None:
+        clean_line = Q10_DAILY_CLEAN_LINE
+    elif isinstance(cleaning_depth, str) and cleaning_depth in Q10_CLEANING_DEPTH_LINES:
+        clean_line = Q10_CLEANING_DEPTH_LINES[cleaning_depth]
+    else:
+        raise Q10CustomCleanError(
+            "profile_option_unsupported",
+            "The selected cleaning depth is not supported for Q10 custom cleaning.",
+        )
+    return Q10CustomCleanProfile(
+        fan_level=Q10_FAN_LEVELS[fan_speed],
+        clean_line=clean_line,
+        mode_entity_id=mode_entity_id,
+    )
 
 
 class RoborockVacuumAdapter(VacuumAdapter):
     """Enhance compatible Roborock vacuums with native cross-hatching."""
 
     adapter_id = "roborock"
-    schema_version = 4
+    schema_version = 5
     priority = 100
     platforms = frozenset({"roborock"})
 
@@ -432,6 +457,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
         mop_pass_counts = set(generic.mop_pass_counts)
         native_vacuum_pass_counts: set[int] = set()
         native_mop_pass_counts: set[int] = set()
+        cleaning_depth_options: tuple[str, ...] = ()
 
         if is_q10:
             # The Q10 command family cannot use the portable/legacy repeat
@@ -444,7 +470,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 and q10_customized_mode_entity(context)
             ):
                 vacuum_pass_counts.add(2)
+                native_vacuum_pass_counts.add(1)
                 native_vacuum_pass_counts.add(2)
+                cleaning_depth_options = tuple(Q10_CLEANING_DEPTH_LINES)
         elif (
             context.supports_area_clean
             and context.supports_send_command
@@ -470,6 +498,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
             mode_options=generic.mode_options,
             mop_mode_options=generic.mop_mode_options,
             mop_intensity_options=generic.mop_intensity_options,
+            cleaning_depth_options=cleaning_depth_options,
             water_readiness=water,
             vacuum_pass_counts=frozenset(vacuum_pass_counts),
             mop_pass_counts=frozenset(mop_pass_counts),
@@ -489,8 +518,15 @@ class RoborockVacuumAdapter(VacuumAdapter):
     def _is_q10_request(
         self, hass: Any, context: AdapterMatchContext, request: AdapterDispatchRequest
     ) -> bool:
-        return request.passes == 2 and is_roborock_q10_protocol(
-            self._vacuum_options(hass, context.entity_id)
+        return (
+            request.operation == "vacuum"
+            and is_roborock_q10_protocol(
+                self._vacuum_options(hass, context.entity_id)
+            )
+            and (
+                request.passes == 2
+                or request.cleaning_profile.get("cleaning_depth") is not None
+            )
         )
 
     async def async_validate_profile(
@@ -548,7 +584,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
                     "water_confirmation_required",
                     "Water confirmation is required before mopping.",
                 )
-        if request.passes == 2:
+        if request.passes == 2 or self._is_q10_request(hass, context, request):
             try:
                 resolve_roborock_area_mapping(
                     self._vacuum_options(hass, request.robot_entity_id), request.area_ids
@@ -566,16 +602,17 @@ class RoborockVacuumAdapter(VacuumAdapter):
         preflight = await self.async_preflight(hass, context, request)
         if not preflight.ready:
             return preflight
-        if request.passes != 2:
-            return await self._generic.async_dispatch(hass, context, request)
-        resolved = resolve_roborock_area_mapping(
-            self._vacuum_options(hass, request.robot_entity_id), request.area_ids
-        )
         if self._is_q10_request(hass, context, request):
+            resolved = resolve_roborock_area_mapping(
+                self._vacuum_options(hass, request.robot_entity_id), request.area_ids
+            )
             try:
                 profile = resolve_q10_custom_clean_profile(hass, context, request)
                 customer_clean = build_q10_customer_clean_payload(
-                    resolved.targets, fan_level=profile.fan_level, clean_count=request.passes
+                    resolved.targets,
+                    fan_level=profile.fan_level,
+                    clean_count=request.passes,
+                    clean_line=profile.clean_line,
                 )
             except Q10CustomCleanError as err:
                 return AdapterDispatchResult("unsupported", err.code, err.summary)
@@ -620,6 +657,11 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 "Cleaning request accepted",
                 native_attempted=True,
             )
+        if request.passes != 2:
+            return await self._generic.async_dispatch(hass, context, request)
+        resolved = resolve_roborock_area_mapping(
+            self._vacuum_options(hass, request.robot_entity_id), request.area_ids
+        )
         payload = build_roborock_two_pass_payload(resolved.targets)
         await hass.services.async_call(
             "vacuum",

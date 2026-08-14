@@ -149,7 +149,14 @@ def _profile_mapping(value: object) -> dict[str, str | None]:
         return {}
     if not isinstance(value, Mapping):
         raise StateSchemaError("cleaning profile must be an object")
-    allowed = {"operation", "fan_speed", "mode", "mop_mode", "mop_intensity"}
+    allowed = {
+        "operation",
+        "fan_speed",
+        "mode",
+        "mop_mode",
+        "mop_intensity",
+        "cleaning_depth",
+    }
     if set(value) - allowed:
         raise StateSchemaError("cleaning profile has unsupported fields")
     if any(item is not None and not isinstance(item, str) for item in value.values()):
@@ -162,7 +169,7 @@ def _profile_sources_mapping(value: object) -> dict[str, str]:
         return {}
     if not isinstance(value, Mapping):
         raise StateSchemaError("cleaning profile sources must be an object")
-    allowed = {"fan_speed", "mode", "mop_mode", "mop_intensity"}
+    allowed = {"fan_speed", "mode", "mop_mode", "mop_intensity", "cleaning_depth"}
     if set(value) - allowed or any(item not in {"room", "robot"} for item in value.values()):
         raise StateSchemaError("cleaning profile sources are invalid")
     return {str(key): str(item) for key, item in value.items()}
@@ -365,6 +372,7 @@ class RoomSettings:
     mode: str | None = None
     mop_mode: str | None = None
     mop_intensity: str | None = None
+    cleaning_depth: str | None = None
 
     @property
     def vacuum_interval(self) -> float:
@@ -458,6 +466,9 @@ class RoomSettings:
             mop_intensity=_optional_string(
                 value.get("mop_intensity"), "room mop_intensity"
             ),
+            cleaning_depth=_optional_string(
+                value.get("cleaning_depth"), "room cleaning_depth"
+            ),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -482,6 +493,7 @@ class RoomSettings:
             "mode": self.mode,
             "mop_mode": self.mop_mode,
             "mop_intensity": self.mop_intensity,
+            "cleaning_depth": self.cleaning_depth,
         }
 
     def to_runtime(self) -> dict[str, object]:
@@ -506,6 +518,7 @@ class RoomSettings:
             "mode": self.mode,
             "mop_mode": self.mop_mode,
             "mop_intensity": self.mop_intensity,
+            "cleaning_depth": self.cleaning_depth,
         }
 
 
@@ -520,6 +533,7 @@ class RobotSettings:
     mop_mode: str | None = None
     mop_intensity: str | None = None
     fan_speed: str | None = None
+    cleaning_depth: str | None = None
 
     @classmethod
     def defaults(cls, supports_mopping: bool) -> RobotSettings:
@@ -556,6 +570,7 @@ class RobotSettings:
             mop_mode=_string(value.get("mop_mode")),
             mop_intensity=_string(value.get("mop_intensity")),
             fan_speed=_string(value.get("fan_speed")),
+            cleaning_depth=_string(value.get("cleaning_depth")),
         )
 
     def to_runtime(self) -> dict[str, object]:

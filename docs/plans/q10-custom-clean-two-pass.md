@@ -1,8 +1,7 @@
 # Plan: Q10 custom-clean native two-pass support
 
-**Status:** Implemented and deployed in v1.6.0. The v1.6.1 follow-up safely
-refreshes a stale unsupported scheduler profile only when its robot is docked,
-before controlled live validation.
+**Status:** Implemented and deployed in v1.6.0, with docked-only stale-profile
+recovery in v1.6.1 and Q10 **Cleaning Depth** controls in v1.6.2.
 
 ## Goal
 
@@ -95,7 +94,7 @@ silently change a user-selected profile.
   by the native byte payload. Reject malformed, stale, cross-map, or ambiguous
   mappings before any command is sent.
 
-## Planned follow-up: Cleaning Depth
+## Implemented follow-up: Cleaning Depth
 
 Expose the Q10 custom-clean `cleanLine` setting as **Cleaning Depth** at both
 the robot-default and room-override levels. The verified protocol values are:
@@ -108,16 +107,17 @@ the robot-default and room-override levels. The verified protocol values are:
 
 ### Compatibility and persistence rules
 
-- The unset/default value remains **Daily**, preserving the existing v1.6
-  Q10 payload exactly.
+- Eligible Q10 robot defaults are **one pass** and **Daily** depth. Rooms
+  inherit both defaults unless they explicitly override either one.
 - The resolved depth becomes part of the exact scheduled profile and follows
   the same robot-default then room-override precedence as fan speed and mode.
 - Only a Q10 adapter that proves its native custom-clean capability may offer
   the controls. A room override remains incompatible with an assigned robot
   that cannot support it; the scheduler must not silently discard it.
-- The current supported Q10 custom-clean path is native two-pass vacuum work.
-  Whether Cleaning Depth also changes one-pass Q10 room cleans is an explicit
-  product decision, not an incidental protocol expansion.
+- Pass count and Cleaning Depth are independent. A Q10 room may use Fast,
+  Daily, or Fine with either one or two vacuum passes. A selected depth uses
+  the Q10 custom-clean profile even for one pass; an explicitly unset depth
+  retains the portable one-pass route.
 - Observations indicate a custom profile can persist while the robot remains
   in `customized` mode. Treat that as a behavior to characterize in hardware
   tests, not a dispatch dependency: each supported start should initially
@@ -125,28 +125,25 @@ the robot-default and room-override levels. The verified protocol values are:
   optimization that reuses a profile must prove equivalence across mode
   changes, docking, and completion.
 
-### Implementation and validation plan
+### Implemented changes and remaining hardware validation
 
-1. Add the optional `cleaning_depth` field to the profile model, durable state
-   validation, adapter capability contract, scheduler profile resolution, and
-   projected status. Existing state without the field remains valid.
-2. Advertise `fast`, `daily`, and `fine` only from the eligible Q10 adapter;
-   add a **Cleaning Depth** robot select and a same-floor room override select.
-   Keep the served and standalone dashboard copies identical and order the room
-   control with the other profile settings.
-3. Extend Q10 custom-profile validation and payload generation so the resolved
-   option maps only to `0`, `1`, or `2`; no vendor value, payload, or map target
-   enters durable data or dashboard diagnostics.
-4. Add unit and contract tests for default-Daily compatibility, each encoded
-   value, invalid settings, persisted occurrence recovery, capability changes,
-   control visibility, and dashboard-copy parity.
+1. The optional `cleaning_depth` field is persisted with exact stage profiles,
+   exposed in status projections, and remains compatible with state that
+   predates the field.
+2. Eligible Q10 adapters advertise `fast`, `daily`, and `fine`; the integration
+   creates **Cleaning Depth** robot and same-floor room selects, and keeps both
+   dashboard copies in parity.
+3. Q10 payload validation maps only these three values to `0`, `1`, or `2`;
+   vendor payloads and map targets remain transient.
+4. Unit tests cover the Daily payload, Fine with both one and two passes,
+   unsupported values, persisted profile compatibility, and dashboard parity.
 5. With a docked Q10 in an unoccupied mapped room, run controlled starts for
    Daily and one non-default depth. Observe start/cleaning/completion, then
    characterize profile persistence while staying in `customized` mode, after
    leaving that mode, after docking, and after completion. Do not rely on
    persistence unless those tests prove it safe.
-6. After the scope decision and hardware validation, release through the normal
-   semantic-version, HACS, Home Assistant restart, and live-verification flow.
+6. Release through the normal semantic-version, HACS, Home Assistant restart,
+   and live-verification flow.
 
 ## Implementation plan
 

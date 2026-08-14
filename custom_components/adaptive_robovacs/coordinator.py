@@ -660,6 +660,11 @@ class AdaptiveRoboVacCoordinator:
                 "cleaning_program": None,
                 "vacuum_pass_count": None,
                 "mop_pass_count": None,
+                "fan_speed": None,
+                "mode": None,
+                "mop_mode": None,
+                "mop_intensity": None,
+                "cleaning_depth": None,
             },
         )
         # Existing persisted settings predate newer optional room controls.
@@ -676,6 +681,11 @@ class AdaptiveRoboVacCoordinator:
         settings.setdefault("cleaning_program", None)
         settings.setdefault("vacuum_pass_count", settings.get("pass_count"))
         settings.setdefault("mop_pass_count", None)
+        settings.setdefault("fan_speed", None)
+        settings.setdefault("mode", None)
+        settings.setdefault("mop_mode", None)
+        settings.setdefault("mop_intensity", None)
+        settings.setdefault("cleaning_depth", None)
         settings["pass_count"] = settings["vacuum_pass_count"]
         return settings
 
@@ -707,6 +717,11 @@ class AdaptiveRoboVacCoordinator:
                 "mop_mode": None,
                 "mop_intensity": None,
                 "fan_speed": None,
+                "cleaning_depth": (
+                    "daily"
+                    if robot.adapter_capabilities.cleaning_depth_options
+                    else None
+                ),
             },
         )
         if "cleaning_program" not in settings:
@@ -717,6 +732,10 @@ class AdaptiveRoboVacCoordinator:
                 else "vacuum_only"
             )
         settings.setdefault("mop_double_pass", False)
+        if "cleaning_depth" not in settings:
+            settings["cleaning_depth"] = (
+                "daily" if robot.adapter_capabilities.cleaning_depth_options else None
+            )
         settings["mopping_enabled"] = settings["cleaning_program"] != "vacuum_only"
         return settings
 
@@ -788,6 +807,7 @@ class AdaptiveRoboVacCoordinator:
             "mode",
             "mop_mode",
             "mop_intensity",
+            "cleaning_depth",
         }:
             raise ValueError(f"Unknown room setting: {key}")
         aliases = {"vacuum_interval": "cleaning_interval", "pass_count": "vacuum_pass_count"}
@@ -1109,6 +1129,7 @@ class AdaptiveRoboVacCoordinator:
             "mode",
             "mop_mode",
             "mop_intensity",
+            "cleaning_depth",
         }:
             raise ValueError(f"Unknown room setting: {key}")
         room = self.discovery.rooms[area_id]
@@ -1120,7 +1141,13 @@ class AdaptiveRoboVacCoordinator:
             None, "vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"
         }:
             raise ValueError("Unknown room cleaning program")
-        if key in {"fan_speed", "mode", "mop_mode", "mop_intensity"} and not (
+        if key in {
+            "fan_speed",
+            "mode",
+            "mop_mode",
+            "mop_intensity",
+            "cleaning_depth",
+        } and not (
             value is None or isinstance(value, str)
         ):
             raise ValueError("Room cleaning profile options must be strings or Robot default")
@@ -1164,6 +1191,7 @@ class AdaptiveRoboVacCoordinator:
             "mop_mode",
             "mop_intensity",
             "fan_speed",
+            "cleaning_depth",
         }:
             raise ValueError(f"Unknown robot setting: {key}")
         settings = self._robot_settings(self.discovery.robots[entity_id])
@@ -1171,6 +1199,14 @@ class AdaptiveRoboVacCoordinator:
             "vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"
         }:
             raise ValueError("Unknown robot cleaning program")
+        if key in {
+            "fan_speed",
+            "mode",
+            "mop_mode",
+            "mop_intensity",
+            "cleaning_depth",
+        } and not (value is None or isinstance(value, str)):
+            raise ValueError("Robot cleaning profile options must be strings or Not configured")
         if key == "mopping_enabled":
             settings["cleaning_program"] = "vacuum_then_mop" if value else "vacuum_only"
         else:
