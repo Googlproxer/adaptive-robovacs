@@ -115,6 +115,10 @@ names, map details, or notification targets.
   adapter layer: the Roborock adapter may resolve Home Assistant's mapping at
   dispatch time and issue the native repeat command without persisting a
   second mapping.
+- The v1.6.0 Q10/B01 protocol extension uses the custom-clean profile and
+  native `cleanCount` rather than the legacy Roborock repeat command. HACS
+  installation and controlled hardware validation remain pending. See the
+  [Q10 custom-clean two-pass plan](../q10-custom-clean-two-pass.md).
 
 ## Shared constraints
 

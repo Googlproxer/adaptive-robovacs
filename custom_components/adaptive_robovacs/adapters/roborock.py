@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +44,37 @@ WATER_ENTITY_KEYS = {
     "water_box_status": "water_box_attached",
     "water_shortage": "water_shortage",
 }
+
+
+Q10_CUSTOMER_CLEAN_DP = "62"
+Q10_CUSTOMIZED_OPTION = "customized"
+Q10_VACUUM_CLEAN_TYPE = 2
+Q10_WATER_OFF = 0
+Q10_DAILY_CLEAN_LINE = 1
+Q10_CUSTOM_CLEAN_SETTLE_SECONDS = 1.2
+Q10_FAN_LEVELS = {
+    "quiet": 1,
+    "balanced": 2,
+    "turbo": 3,
+    "max": 4,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class Q10CustomCleanProfile:
+    """Validated Q10 custom-clean settings for one immediate room start."""
+
+    fan_level: int
+    mode_entity_id: str
+
+
+class Q10CustomCleanError(ValueError):
+    """A safe Q10 custom-clean profile or protocol failure."""
+
+    def __init__(self, code: str, summary: str) -> None:
+        super().__init__(summary)
+        self.code = code
+        self.summary = summary
 
 
 def resolve_roborock_water_readiness(
@@ -197,7 +230,7 @@ def resolve_roborock_area_mapping(
             "The room mapping does not match the vacuum's current map.",
         )
     targets = tuple(dict.fromkeys(target for _prefix, target in parsed_targets))
-    if not targets:
+    if not targets or len(targets) > 255:
         raise RoborockMappingError(
             "area_mapping_missing",
             "The room is not mapped to this vacuum in Home Assistant.",
@@ -214,11 +247,175 @@ def build_roborock_two_pass_payload(targets: Sequence[int]) -> dict[str, object]
     }
 
 
+def supports_roborock_native_two_pass(vacuum_options: Mapping[str, object]) -> bool:
+    """Return whether the mapped vacuum accepts the legacy repeat command.
+
+    Home Assistant's newer B01/Q10 implementation still advertises
+    ``vacuum.send_command``, but it only accepts its own DP commands.  Its
+    current segment identifiers are unprefixed (for example ``"6"``), unlike
+    the V1 implementation's ``"map_segment"`` identifiers.  Do not advertise
+    two-pass support to that implementation: attempting the legacy
+    ``app_segment_clean`` command is rejected before it can reach the robot.
+
+    Missing or malformed evidence remains eligible here so the normal mapping
+    preflight can return its precise, actionable error instead of guessing.
+    """
+
+    last_seen = vacuum_options.get("last_seen_segments")
+    if not isinstance(last_seen, Sequence) or isinstance(last_seen, (str, bytes)):
+        return True
+    segment_ids = [
+        item["id"]
+        for item in last_seen
+        if isinstance(item, Mapping) and "id" in item
+    ]
+    if not segment_ids:
+        return True
+    for segment_id in segment_ids:
+        parsed = _segment_parts(segment_id)
+        if parsed is None:
+            return True
+        if parsed[0] is None:
+            return False
+    return True
+
+
+def is_roborock_q10_protocol(vacuum_options: Mapping[str, object]) -> bool:
+    """Return whether current mapping evidence identifies the B01/Q10 protocol.
+
+    Q10's Home Assistant integration publishes its current segment IDs as
+    unprefixed numeric values. Legacy V1 Roborock devices publish compound
+    ``map_segment`` values and accept ``app_segment_clean`` instead. Unknown or
+    malformed evidence never opts a vacuum into Q10 custom commands.
+    """
+
+    last_seen = vacuum_options.get("last_seen_segments")
+    if not isinstance(last_seen, Sequence) or isinstance(last_seen, (str, bytes)):
+        return False
+    segment_ids = [
+        item["id"]
+        for item in last_seen
+        if isinstance(item, Mapping) and "id" in item
+    ]
+    if not segment_ids:
+        return False
+    return all(
+        (parsed := _segment_parts(segment_id)) is not None and parsed[0] is None
+        for segment_id in segment_ids
+    )
+
+
+def q10_customized_mode_entity(context: AdapterMatchContext) -> str | None:
+    """Return the unambiguous Q10 cleaning-mode select with ``customized``."""
+
+    matches = tuple(
+        evidence.entity_id
+        for evidence in context.entities
+        if evidence.domain == "select"
+        and evidence.platform == "roborock"
+        and evidence.translation_key
+        in {"cleaning_mode", "clean_mode", "operation_mode"}
+        and Q10_CUSTOMIZED_OPTION in evidence.options
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def build_q10_customer_clean_payload(
+    targets: Sequence[int], *, fan_level: int, clean_count: int
+) -> str:
+    """Encode a Q10 customer-clean room profile without retaining room IDs."""
+
+    if not targets:
+        raise Q10CustomCleanError(
+            "area_mapping_missing",
+            "The room is not mapped to this vacuum in Home Assistant.",
+        )
+    if fan_level not in set(Q10_FAN_LEVELS.values()):
+        raise Q10CustomCleanError(
+            "profile_option_unsupported",
+            "The selected fan speed is not supported for Q10 custom cleaning.",
+        )
+    if clean_count not in {1, 2, 3}:
+        raise Q10CustomCleanError(
+            "adapter_request_unsupported",
+            "The requested Q10 custom clean count is not supported.",
+        )
+    payload: list[int] = [len(targets)]
+    for target in targets:
+        if isinstance(target, bool) or not isinstance(target, int) or not 1 <= target <= 255:
+            raise Q10CustomCleanError(
+                "area_mapping_ambiguous",
+                "The Home Assistant area mapping uses an unsupported Q10 segment.",
+            )
+        payload.extend(
+            (
+                target,
+                fan_level,
+                Q10_WATER_OFF,
+                Q10_VACUUM_CLEAN_TYPE,
+                clean_count,
+                Q10_DAILY_CLEAN_LINE,
+            )
+        )
+    return base64.b64encode(bytes(payload)).decode("ascii")
+
+
+def build_q10_start_payload(targets: Sequence[int]) -> dict[str, object]:
+    """Build the B01/Q10 room start command using transient mapped targets."""
+
+    return {
+        "command": "dpStartClean",
+        "params": {"cmd": 2, "clean_paramters": list(targets)},
+    }
+
+
+def resolve_q10_custom_clean_profile(
+    hass: Any,
+    context: AdapterMatchContext,
+    request: AdapterDispatchRequest,
+) -> Q10CustomCleanProfile:
+    """Validate Q10-only profile values immediately before a custom start."""
+
+    if request.operation != "vacuum":
+        raise Q10CustomCleanError(
+            "adapter_request_unsupported",
+            "Q10 custom two-pass cleaning currently supports vacuum-only work.",
+        )
+    mode_entity_id = q10_customized_mode_entity(context)
+    if not mode_entity_id:
+        raise Q10CustomCleanError(
+            "profile_control_unavailable",
+            "The Q10 customized cleaning-mode control is unavailable.",
+        )
+    mode_state = hass.states.get(mode_entity_id)
+    if (
+        not mode_state
+        or mode_state.state in {"unknown", "unavailable"}
+        or Q10_CUSTOMIZED_OPTION not in mode_state.attributes.get("options", [])
+    ):
+        raise Q10CustomCleanError(
+            "profile_control_unavailable",
+            "The Q10 customized cleaning-mode control is unavailable.",
+        )
+    fan_speed = request.cleaning_profile.get("fan_speed")
+    if fan_speed is None:
+        vacuum_state = hass.states.get(request.robot_entity_id)
+        fan_speed = (
+            vacuum_state.attributes.get("fan_speed") if vacuum_state else None
+        )
+    if not isinstance(fan_speed, str) or fan_speed not in Q10_FAN_LEVELS:
+        raise Q10CustomCleanError(
+            "profile_option_unsupported",
+            "The selected fan speed is not supported for Q10 custom cleaning.",
+        )
+    return Q10CustomCleanProfile(Q10_FAN_LEVELS[fan_speed], mode_entity_id)
+
+
 class RoborockVacuumAdapter(VacuumAdapter):
     """Enhance compatible Roborock vacuums with native cross-hatching."""
 
     adapter_id = "roborock"
-    schema_version = 2
+    schema_version = 4
     priority = 100
     platforms = frozenset({"roborock"})
 
@@ -229,11 +426,36 @@ class RoborockVacuumAdapter(VacuumAdapter):
         self, hass: Any, context: AdapterMatchContext
     ) -> AdapterCapabilities:
         generic = await self._generic.async_capabilities(hass, context)
-        pass_counts = set(generic.supported_pass_counts)
-        native_pass_counts: set[int] = set()
-        if context.supports_area_clean and context.supports_send_command:
-            pass_counts.add(2)
-            native_pass_counts.add(2)
+        vacuum_options = self._vacuum_options(hass, context.entity_id)
+        is_q10 = is_roborock_q10_protocol(vacuum_options)
+        vacuum_pass_counts = set(generic.vacuum_pass_counts)
+        mop_pass_counts = set(generic.mop_pass_counts)
+        native_vacuum_pass_counts: set[int] = set()
+        native_mop_pass_counts: set[int] = set()
+
+        if is_q10:
+            # The Q10 command family cannot use the portable/legacy repeat
+            # control. It has a vacuum-only customer-clean profile instead.
+            vacuum_pass_counts = {1}
+            mop_pass_counts = {1} if "mop" in generic.supported_operations else set()
+            if (
+                context.supports_area_clean
+                and context.supports_send_command
+                and q10_customized_mode_entity(context)
+            ):
+                vacuum_pass_counts.add(2)
+                native_vacuum_pass_counts.add(2)
+        elif (
+            context.supports_area_clean
+            and context.supports_send_command
+            and supports_roborock_native_two_pass(vacuum_options)
+        ):
+            vacuum_pass_counts.add(2)
+            if "mop" in generic.supported_operations:
+                mop_pass_counts.add(2)
+            native_vacuum_pass_counts.add(2)
+            if "mop" in generic.supported_operations:
+                native_mop_pass_counts.add(2)
         water, watched = resolve_roborock_water_readiness(
             context.entities, "mop" in generic.supported_operations
         )
@@ -241,31 +463,64 @@ class RoborockVacuumAdapter(VacuumAdapter):
             adapter_id=self.adapter_id,
             schema_version=self.schema_version,
             portable_area_clean=generic.portable_area_clean,
-            supported_pass_counts=frozenset(pass_counts),
-            native_area_pass_counts=frozenset(native_pass_counts),
+            supported_pass_counts=frozenset(vacuum_pass_counts),
+            native_area_pass_counts=frozenset(native_vacuum_pass_counts),
             supported_operations=generic.supported_operations,
             fan_speed_options=generic.fan_speed_options,
             mode_options=generic.mode_options,
             mop_mode_options=generic.mop_mode_options,
             mop_intensity_options=generic.mop_intensity_options,
             water_readiness=water,
-            vacuum_pass_counts=frozenset(pass_counts),
-            mop_pass_counts=(
-                frozenset(pass_counts)
-                if "mop" in generic.supported_operations
-                else frozenset()
-            ),
-            native_vacuum_pass_counts=frozenset(native_pass_counts),
-            native_mop_pass_counts=frozenset(native_pass_counts),
+            vacuum_pass_counts=frozenset(vacuum_pass_counts),
+            mop_pass_counts=frozenset(mop_pass_counts),
+            native_vacuum_pass_counts=frozenset(native_vacuum_pass_counts),
+            native_mop_pass_counts=frozenset(native_mop_pass_counts),
             watched_entity_ids=watched,
         )
 
     @staticmethod
     def _vacuum_options(hass: Any, entity_id: str) -> Mapping[str, object]:
-        entry = er.async_get(hass).async_get(entity_id)
+        registry = er.async_get(hass)
+        entry = registry.async_get(entity_id) if registry else None
         options = getattr(entry, "options", {}) if entry else {}
         vacuum_options = options.get("vacuum", {}) if isinstance(options, Mapping) else {}
         return vacuum_options if isinstance(vacuum_options, Mapping) else {}
+
+    def _is_q10_request(
+        self, hass: Any, context: AdapterMatchContext, request: AdapterDispatchRequest
+    ) -> bool:
+        return request.passes == 2 and is_roborock_q10_protocol(
+            self._vacuum_options(hass, context.entity_id)
+        )
+
+    async def async_validate_profile(
+        self,
+        hass: Any,
+        context: AdapterMatchContext,
+        request: AdapterDispatchRequest,
+    ) -> AdapterDispatchResult:
+        """Reject unsupported Q10 custom profile values before mutation."""
+
+        result = await super().async_validate_profile(hass, context, request)
+        if not result.ready or not self._is_q10_request(hass, context, request):
+            return result
+        try:
+            resolve_q10_custom_clean_profile(hass, context, request)
+        except Q10CustomCleanError as err:
+            return AdapterDispatchResult("unsupported", err.code, err.summary)
+        return AdapterDispatchResult("ready", "ready", "Ready")
+
+    async def async_apply_profile(
+        self,
+        hass: Any,
+        context: AdapterMatchContext,
+        request: AdapterDispatchRequest,
+    ) -> None:
+        """Leave Q10 custom values for its immediate pre-start sequence."""
+
+        if self._is_q10_request(hass, context, request):
+            return
+        await super().async_apply_profile(hass, context, request)
 
     async def async_preflight(
         self,
@@ -312,21 +567,59 @@ class RoborockVacuumAdapter(VacuumAdapter):
         if not preflight.ready:
             return preflight
         if request.passes != 2:
-            await hass.services.async_call(
-                "vacuum",
-                "clean_area",
-                {
-                    "entity_id": request.robot_entity_id,
-                    "cleaning_area_id": list(request.area_ids),
-                },
-                blocking=True,
-            )
-            return AdapterDispatchResult(
-                "accepted", "accepted", "Cleaning request accepted"
-            )
+            return await self._generic.async_dispatch(hass, context, request)
         resolved = resolve_roborock_area_mapping(
             self._vacuum_options(hass, request.robot_entity_id), request.area_ids
         )
+        if self._is_q10_request(hass, context, request):
+            try:
+                profile = resolve_q10_custom_clean_profile(hass, context, request)
+                customer_clean = build_q10_customer_clean_payload(
+                    resolved.targets, fan_level=profile.fan_level, clean_count=request.passes
+                )
+            except Q10CustomCleanError as err:
+                return AdapterDispatchResult("unsupported", err.code, err.summary)
+            if context.can_mutate and not context.can_mutate():
+                return AdapterDispatchResult(
+                    "blocked", "coordinator_shutting_down", "Coordinator is shutting down."
+                )
+            await hass.services.async_call(
+                "vacuum",
+                "send_command",
+                {
+                    "entity_id": request.robot_entity_id,
+                    "command": "dpCommon",
+                    "params": {Q10_CUSTOMER_CLEAN_DP: customer_clean},
+                },
+                blocking=True,
+            )
+            await asyncio.sleep(Q10_CUSTOM_CLEAN_SETTLE_SECONDS)
+            if context.can_mutate and not context.can_mutate():
+                return AdapterDispatchResult(
+                    "blocked", "coordinator_shutting_down", "Coordinator is shutting down."
+                )
+            await hass.services.async_call(
+                "select",
+                "select_option",
+                {"entity_id": profile.mode_entity_id, "option": Q10_CUSTOMIZED_OPTION},
+                blocking=True,
+            )
+            if context.can_mutate and not context.can_mutate():
+                return AdapterDispatchResult(
+                    "blocked", "coordinator_shutting_down", "Coordinator is shutting down."
+                )
+            await hass.services.async_call(
+                "vacuum",
+                "send_command",
+                {"entity_id": request.robot_entity_id, **build_q10_start_payload(resolved.targets)},
+                blocking=True,
+            )
+            return AdapterDispatchResult(
+                "accepted",
+                "accepted",
+                "Cleaning request accepted",
+                native_attempted=True,
+            )
         payload = build_roborock_two_pass_payload(resolved.targets)
         await hass.services.async_call(
             "vacuum",

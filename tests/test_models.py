@@ -84,6 +84,22 @@ class CadenceTests(unittest.TestCase):
             models.stage_pass_count("mop", None, None, True, False, capabilities), 1
         )
 
+    def test_operation_specific_native_passes_do_not_inherit_to_mopping(self) -> None:
+        capabilities = models.AdapterCapabilities(
+            adapter_id="q10",
+            schema_version=4,
+            portable_area_clean=True,
+            supported_pass_counts=frozenset({1, 2}),
+            native_area_pass_counts=frozenset({2}),
+            supported_operations=frozenset({"vacuum", "mop"}),
+            vacuum_pass_counts=frozenset({1, 2}),
+            mop_pass_counts=frozenset({1}),
+            native_vacuum_pass_counts=frozenset({2}),
+            native_mop_pass_counts=frozenset(),
+        )
+        self.assertEqual(capabilities.native_pass_counts_for("vacuum"), frozenset({2}))
+        self.assertEqual(capabilities.native_pass_counts_for("mop"), frozenset())
+
     def test_due_at_honours_later_manual_deferral(self) -> None:
         result = models.due_at(
             self.now - timedelta(hours=100),

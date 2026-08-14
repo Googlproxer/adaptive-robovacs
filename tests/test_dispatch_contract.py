@@ -35,11 +35,16 @@ class VacuumDispatchContractTests(unittest.TestCase):
         self.assertIn('"start_confirmation_failed"', source)
         self.assertNotIn("unmapped; awaiting native map repair", source)
 
-    def test_roborock_native_dispatch_is_exactly_one_repeat_two_command(self) -> None:
+    def test_roborock_native_paths_are_protocol_specific(self) -> None:
         source = ROBOROCK_PATH.read_text(encoding="utf-8")
         self.assertIn('"command": "app_segment_clean"', source)
         self.assertIn('"repeat": 2', source)
-        self.assertEqual(source.count('"send_command"'), 1)
+        self.assertIn('"command": "dpCommon"', source)
+        self.assertIn('"command": "dpStartClean"', source)
+        self.assertIn('"clean_paramters"', source)
+        self.assertIn("supports_roborock_native_two_pass", source)
+        self.assertIn("is_roborock_q10_protocol", source)
+        self.assertIn("return await self._generic.async_dispatch", source)
 
     def test_first_start_failure_halts_later_dispatches(self) -> None:
         source = COORDINATOR_PATH.read_text(encoding="utf-8")

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 from pathlib import Path
 import sys
 import types
 import unittest
+from unittest.mock import AsyncMock, call
 
 
 PACKAGE_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs"
@@ -112,6 +114,41 @@ class RoborockMappingTests(unittest.TestCase):
             },
         )
 
+    def test_unprefixed_current_segments_do_not_support_legacy_two_pass(self) -> None:
+        self.assertFalse(
+            roborock.supports_roborock_native_two_pass(
+                {"last_seen_segments": [{"id": "6"}, {"id": "10"}]}
+            )
+        )
+        self.assertTrue(
+            roborock.supports_roborock_native_two_pass(
+                {"last_seen_segments": [{"id": "42_6"}, {"id": "42_10"}]}
+            )
+        )
+
+    def test_q10_custom_payload_encodes_two_pass_vacuum_profile(self) -> None:
+        encoded = roborock.build_q10_customer_clean_payload(
+            (6, 10), fan_level=4, clean_count=2
+        )
+        self.assertEqual(
+            base64.b64decode(encoded),
+            bytes((2, 6, 4, 0, 2, 2, 1, 10, 4, 0, 2, 2, 1)),
+        )
+        self.assertEqual(
+            roborock.build_q10_start_payload((6, 10)),
+            {
+                "command": "dpStartClean",
+                "params": {"cmd": 2, "clean_paramters": [6, 10]},
+            },
+        )
+
+    def test_q10_custom_payload_rejects_non_byte_mapping_target(self) -> None:
+        with self.assertRaises(roborock.Q10CustomCleanError) as raised:
+            roborock.build_q10_customer_clean_payload(
+                (256,), fan_level=4, clean_count=2
+            )
+        self.assertEqual(raised.exception.code, "area_mapping_ambiguous")
+
 
 class RoborockWaterTests(unittest.TestCase):
     @staticmethod
@@ -167,6 +204,11 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             mode_options=(),
             mop_mode_options=(),
             mop_intensity_options=(),
+            mode_select_entity_id=None,
+            mop_mode_select_entity_id=None,
+            mop_intensity_select_entity_id=None,
+            passes_select_entity_id=None,
+            passes_options=(),
         )
         return base.AdapterMatchContext(
             entity_id="vacuum.test",
@@ -195,6 +237,247 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities.native_area_pass_counts, frozenset({2}))
         self.assertEqual(capabilities.fan_speed_options, ("quiet", "max"))
         self.assertIsNone(diagnostic)
+
+    async def test_unprefixed_segment_mapping_does_not_advertise_two_pass(self) -> None:
+        original_async_get = roborock.er.async_get
+        registry_entry = types.SimpleNamespace(
+            options={"vacuum": {"last_seen_segments": [{"id": "6"}]}}
+        )
+        roborock.er.async_get = lambda _hass: types.SimpleNamespace(
+            async_get=lambda _entity_id: registry_entry
+        )
+        self.addCleanup(setattr, roborock.er, "async_get", original_async_get)
+
+        _adapter, capabilities, diagnostic = await registry.async_resolve_adapter(
+            object(), self._context("roborock", send_command=True)
+        )
+
+        self.assertEqual(capabilities.supported_pass_counts, frozenset({1}))
+        self.assertEqual(capabilities.native_area_pass_counts, frozenset())
+        self.assertIsNone(diagnostic)
+
+    async def test_q10_custom_clean_advertises_vacuum_two_pass_only(self) -> None:
+        original_async_get = roborock.er.async_get
+        registry_entry = types.SimpleNamespace(
+            options={"vacuum": {"last_seen_segments": [{"id": "6"}]}}
+        )
+        roborock.er.async_get = lambda _hass: types.SimpleNamespace(
+            async_get=lambda _entity_id: registry_entry
+        )
+        self.addCleanup(setattr, roborock.er, "async_get", original_async_get)
+        context = self._q10_context()
+
+        _adapter, capabilities, diagnostic = await registry.async_resolve_adapter(
+            object(), context
+        )
+
+        self.assertEqual(capabilities.vacuum_pass_counts, frozenset({1, 2}))
+        self.assertEqual(capabilities.native_vacuum_pass_counts, frozenset({2}))
+        self.assertEqual(capabilities.mop_pass_counts, frozenset({1}))
+        self.assertEqual(capabilities.native_mop_pass_counts, frozenset())
+        self.assertIsNone(diagnostic)
+
+    def _q10_context(self) -> base.AdapterMatchContext:
+        context = self._context("roborock", send_command=True)
+        return base.AdapterMatchContext(
+            entity_id=context.entity_id,
+            platform=context.platform,
+            supports_area_clean=context.supports_area_clean,
+            supports_send_command=context.supports_send_command,
+            profile=context.profile,
+            fan_speed_options=("quiet", "balanced", "turbo", "max", "max_plus"),
+            entities=(
+                base.AdapterEntityEvidence(
+                    entity_id="select.test_cleaning_mode",
+                    domain="select",
+                    platform="roborock",
+                    translation_key="cleaning_mode",
+                    device_class=None,
+                    state="vacuum",
+                    options=("vac_and_mop", "vacuum", "mop", "customized"),
+                ),
+            ),
+        )
+
+    async def test_unprefixed_segment_mapping_uses_clean_area_for_one_pass(self) -> None:
+        original_async_get = roborock.er.async_get
+        registry_entry = types.SimpleNamespace(
+            options={"vacuum": {"last_seen_segments": [{"id": "6"}]}}
+        )
+        roborock.er.async_get = lambda _hass: types.SimpleNamespace(
+            async_get=lambda _entity_id: registry_entry
+        )
+        self.addCleanup(setattr, roborock.er, "async_get", original_async_get)
+        service_call = AsyncMock()
+        hass = types.SimpleNamespace(
+            services=types.SimpleNamespace(async_call=service_call)
+        )
+        adapter, _capabilities, _diagnostic = await registry.async_resolve_adapter(
+            hass, self._context("roborock", send_command=True)
+        )
+
+        result = await adapter.async_dispatch(
+            hass,
+            self._context("roborock", send_command=True),
+            roborock.AdapterDispatchRequest(
+                "vacuum.test", ("lego_room",), "vacuum", 1, {}
+            ),
+        )
+
+        self.assertTrue(result.accepted)
+        service_call.assert_awaited_once_with(
+            "vacuum",
+            "clean_area",
+            {"entity_id": "vacuum.test", "cleaning_area_id": ["lego_room"]},
+            blocking=True,
+        )
+
+    async def test_unprefixed_segment_mapping_rejects_two_pass_before_dispatch(self) -> None:
+        original_async_get = roborock.er.async_get
+        registry_entry = types.SimpleNamespace(
+            options={"vacuum": {"last_seen_segments": [{"id": "6"}]}}
+        )
+        roborock.er.async_get = lambda _hass: types.SimpleNamespace(
+            async_get=lambda _entity_id: registry_entry
+        )
+        self.addCleanup(setattr, roborock.er, "async_get", original_async_get)
+        service_call = AsyncMock()
+        hass = types.SimpleNamespace(
+            services=types.SimpleNamespace(async_call=service_call)
+        )
+        adapter, _capabilities, _diagnostic = await registry.async_resolve_adapter(
+            hass, self._context("roborock", send_command=True)
+        )
+
+        result = await adapter.async_dispatch(
+            hass,
+            self._context("roborock", send_command=True),
+            roborock.AdapterDispatchRequest(
+                "vacuum.test", ("lego_room",), "vacuum", 2, {}
+            ),
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.code, "two_pass_no_longer_supported")
+        service_call.assert_not_awaited()
+
+    async def test_q10_dispatch_configures_customized_profile_then_starts_once(self) -> None:
+        original_async_get = roborock.er.async_get
+        original_sleep = roborock.asyncio.sleep
+        registry_entry = types.SimpleNamespace(
+            options={
+                "vacuum": {
+                    "area_mapping": {"test_room": ["6"]},
+                    "last_seen_segments": [{"id": "6"}],
+                }
+            }
+        )
+        roborock.er.async_get = lambda _hass: types.SimpleNamespace(
+            async_get=lambda _entity_id: registry_entry
+        )
+        sleep = AsyncMock()
+        roborock.asyncio.sleep = sleep
+        self.addCleanup(setattr, roborock.er, "async_get", original_async_get)
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
+        service_call = AsyncMock()
+        states = {
+            "select.test_cleaning_mode": types.SimpleNamespace(
+                state="vacuum", attributes={"options": ["vacuum", "customized"]}
+            ),
+            "vacuum.test": types.SimpleNamespace(
+                state="docked", attributes={"fan_speed": "max"}
+            ),
+        }
+        hass = types.SimpleNamespace(
+            states=types.SimpleNamespace(get=states.get),
+            services=types.SimpleNamespace(async_call=service_call),
+        )
+        adapter, capabilities, _diagnostic = await registry.async_resolve_adapter(
+            hass, self._q10_context()
+        )
+        request = roborock.AdapterDispatchRequest(
+            "vacuum.test", ("test_room",), "vacuum", 2, {"fan_speed": "max"}
+        )
+
+        self.assertTrue((await adapter.async_validate_profile(
+            hass, self._q10_context(), request
+        )).ready)
+        result = await adapter.async_dispatch(hass, self._q10_context(), request)
+
+        self.assertTrue(result.accepted)
+        self.assertTrue(result.native_attempted)
+        self.assertEqual(capabilities.native_vacuum_pass_counts, frozenset({2}))
+        service_call.assert_has_awaits(
+            [
+                call(
+                    "vacuum",
+                    "send_command",
+                    {
+                        "entity_id": "vacuum.test",
+                        "command": "dpCommon",
+                        "params": {
+                            "62": roborock.build_q10_customer_clean_payload(
+                                (6,), fan_level=4, clean_count=2
+                            )
+                        },
+                    },
+                    blocking=True,
+                ),
+                call(
+                    "select",
+                    "select_option",
+                    {"entity_id": "select.test_cleaning_mode", "option": "customized"},
+                    blocking=True,
+                ),
+                call(
+                    "vacuum",
+                    "send_command",
+                    {
+                        "entity_id": "vacuum.test",
+                        "command": "dpStartClean",
+                        "params": {"cmd": 2, "clean_paramters": [6]},
+                    },
+                    blocking=True,
+                ),
+            ]
+        )
+        self.assertEqual(service_call.await_count, 3)
+        sleep.assert_awaited_once_with(roborock.Q10_CUSTOM_CLEAN_SETTLE_SECONDS)
+
+    async def test_q10_rejects_max_plus_before_any_service_call(self) -> None:
+        original_async_get = roborock.er.async_get
+        registry_entry = types.SimpleNamespace(
+            options={"vacuum": {"last_seen_segments": [{"id": "6"}]}}
+        )
+        roborock.er.async_get = lambda _hass: types.SimpleNamespace(
+            async_get=lambda _entity_id: registry_entry
+        )
+        self.addCleanup(setattr, roborock.er, "async_get", original_async_get)
+        service_call = AsyncMock()
+        states = {
+            "select.test_cleaning_mode": types.SimpleNamespace(
+                state="vacuum", attributes={"options": ["vacuum", "customized"]}
+            )
+        }
+        hass = types.SimpleNamespace(
+            states=types.SimpleNamespace(get=states.get),
+            services=types.SimpleNamespace(async_call=service_call),
+        )
+        adapter, _capabilities, _diagnostic = await registry.async_resolve_adapter(
+            hass, self._q10_context()
+        )
+
+        result = await adapter.async_validate_profile(
+            hass,
+            self._q10_context(),
+            roborock.AdapterDispatchRequest(
+                "vacuum.test", ("test_room",), "vacuum", 2, {"fan_speed": "max_plus"}
+            ),
+        )
+
+        self.assertFalse(result.ready)
+        self.assertEqual(result.code, "profile_option_unsupported")
+        service_call.assert_not_awaited()
 
     async def test_same_device_operation_options_verify_mopping(self) -> None:
         context = self._context("roborock", send_command=True)

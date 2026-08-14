@@ -159,14 +159,17 @@ class AdapterCapabilities:
             object.__setattr__(self, "vacuum_pass_counts", self.supported_pass_counts)
         if not self.mop_pass_counts and "mop" in self.supported_operations:
             object.__setattr__(self, "mop_pass_counts", self.supported_pass_counts)
-        if not self.native_vacuum_pass_counts:
+        if not self.native_vacuum_pass_counts and not self.native_mop_pass_counts:
+            # Schema-one snapshots exposed one native pass-count set shared by
+            # both operations. Preserve that legacy interpretation only when a
+            # newer adapter has not supplied either operation-specific set.
             object.__setattr__(
                 self, "native_vacuum_pass_counts", self.native_area_pass_counts
             )
-        if not self.native_mop_pass_counts and "mop" in self.supported_operations:
-            object.__setattr__(
-                self, "native_mop_pass_counts", self.native_area_pass_counts
-            )
+            if "mop" in self.supported_operations:
+                object.__setattr__(
+                    self, "native_mop_pass_counts", self.native_area_pass_counts
+                )
 
     def supports(self, operation: str, passes: int) -> bool:
         """Return whether the normalized request can be attempted."""
