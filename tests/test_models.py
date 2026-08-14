@@ -56,6 +56,13 @@ class CadenceTests(unittest.TestCase):
         self.assertFalse(models.manual_clean_robot_is_docked("cleaning"))
         self.assertFalse(models.manual_clean_robot_is_docked(None))
 
+    def test_return_to_dock_is_available_until_the_robot_is_docked(self) -> None:
+        self.assertTrue(models.can_request_return_to_dock("cleaning"))
+        self.assertTrue(models.can_request_return_to_dock("paused"))
+        self.assertFalse(models.can_request_return_to_dock("docked"))
+        self.assertFalse(models.can_request_return_to_dock("unavailable"))
+        self.assertFalse(models.can_request_return_to_dock(None))
+
     def test_room_pass_override_never_downgrades_an_unsupported_request(self) -> None:
         self.assertEqual(models.resolve_pass_count(None, False, {1, 2}), 1)
         self.assertEqual(models.resolve_pass_count(None, True, {1, 2}), 2)
@@ -228,15 +235,11 @@ class CadenceTests(unittest.TestCase):
             models.desired_window_allows(False, now, afternoon.start, afternoon.end)
         )
 
-    def test_carpet_rooms_never_choose_a_mopping_operation(self) -> None:
+    def test_due_mopping_is_selected_when_the_room_program_supports_it(self) -> None:
         mop_due = self.now - timedelta(hours=1)
         vacuum_due = self.now + timedelta(hours=4)
         self.assertEqual(
-            models.select_operation(vacuum_due, mop_due, True, True, self.now),
-            ("vacuum", vacuum_due),
-        )
-        self.assertEqual(
-            models.select_operation(vacuum_due, mop_due, True, False, self.now),
+            models.select_operation(vacuum_due, mop_due, True, self.now),
             ("mop", mop_due),
         )
 

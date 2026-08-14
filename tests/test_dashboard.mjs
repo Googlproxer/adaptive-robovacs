@@ -58,6 +58,10 @@ const baseStates = () => ({
     robot_entity_id: "vacuum.robot_one",
     friendly_name: "Robot One enabled",
   }),
+  "button.robot_one_stop_return": adaptiveState("robot_stop_return_control", {
+    robot_entity_id: "vacuum.robot_one",
+    friendly_name: "Robot One stop and return to dock",
+  }),
   "sensor.robot_two_status": adaptiveState("robot_status", {
     robot_entity_id: "vacuum.robot_two",
     friendly_name: "Robot Two status",
@@ -65,6 +69,10 @@ const baseStates = () => ({
   "switch.robot_two_enabled": adaptiveState("robot_control", {
     robot_entity_id: "vacuum.robot_two",
     friendly_name: "Robot Two enabled",
+  }),
+  "button.robot_two_stop_return": adaptiveState("robot_stop_return_control", {
+    robot_entity_id: "vacuum.robot_two",
+    friendly_name: "Robot Two stop and return to dock",
   }),
   "sensor.kitchen_next_clean": adaptiveState("room_schedule", {
     area_id: "kitchen",
@@ -200,6 +208,7 @@ test("vacuum card contains one selected vacuum and uses its friendly name", () =
   assert.deepEqual(configuration.entities, [
     { entity: "sensor.robot_one_status", name: "Status" },
     { entity: "switch.robot_one_enabled", name: "Enabled" },
+    { entity: "button.robot_one_stop_return", name: "Stop and return to dock" },
   ]);
   assert.ok(configuration.entities.every((row) => !row.entity.includes("robot_two")));
 });

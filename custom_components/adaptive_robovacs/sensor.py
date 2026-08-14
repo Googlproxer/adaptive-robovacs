@@ -160,7 +160,6 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "floor_id": state["floor_id"],
             "bedroom": state["bedroom"],
             "bedroom_transit": state["bedroom_transit"],
-            "carpet": state["carpet"],
             "ignore_desired_window": state["ignore_desired_window"],
             "desired_window_configured_start": state["desired_window_configured_start"],
             "desired_window_configured_end": state["desired_window_configured_end"],

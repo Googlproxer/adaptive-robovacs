@@ -13,6 +13,7 @@ const GLOBAL_ROLES = new Map([
 const VACUUM_ROLES = new Map([
   ["robot_status", 0],
   ["robot_control", 1],
+  ["robot_stop_return_control", 2],
 ]);
 const ROOM_ROLES = new Map([
   ["room_schedule", 0],

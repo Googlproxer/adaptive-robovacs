@@ -70,8 +70,8 @@ non-dispatching regardless of any room window setting.
 Each vacuum has a default **Cleaning program** and each room can inherit it or
 override it with **Vacuum only**, **Mop only**, **Vacuum then mop**, or **Mop
 then vacuum**. A room has one cleaning cadence; two-stage programs use two
-separate physical starts and repeat every safety check before stage two.
-Enable **Carpet (no mopping)** to block any program containing a mop stage.
+separate physical starts and repeat every safety check before stage two. Set a
+room's program to **Vacuum only** when it must never mop.
 
 Vacuum cards also own default **Fan speed**, **Mode**, **Mop mode**, and **Mop
 intensity** controls when the selected adapter discovers them. Room cards show
@@ -109,6 +109,14 @@ Scripts can call `adaptive_robovacs.manual_clean_room` with one `area_id` and
 than one Adaptive RoboVacs config entry is loaded. A physically completed
 manual occurrence updates the room's normal cadence; a rejected or unstarted
 request does not.
+
+## Stop and return to dock
+
+Every discovered robot has a **Stop and return to dock** button on its vacuum
+card. It sends that robot's native return-to-base command. When Adaptive
+RoboVacs is tracking the clean—scheduled or manual—it marks the job as
+cancelling immediately and only clears it once the robot is observed docked.
+The interrupted work is not credited as a completed room clean.
 
 ## Water-aware mopping
 

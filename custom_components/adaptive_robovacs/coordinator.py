@@ -51,6 +51,7 @@ from .models import (
     Forecast,
     ResolvedDailyWindow,
     can_refresh_pending_occurrence_profile,
+    can_request_return_to_dock,
     can_start_scheduled_clean,
     cleaning_profile_is_supported,
     cleaning_profile_sources,
@@ -604,7 +605,7 @@ class AdaptiveRoboVacCoordinator:
             room_settings = self._room_settings(room) if room else None
             has_mop_program = False
             water_ready = False
-            if room and room_settings and room_settings.get("enabled", True) and not room_settings.get("carpet"):
+            if room and room_settings and room_settings.get("enabled", True):
                 for robot in self.discovery.robots.values():
                     if robot.floor_id != room.floor_id:
                         continue
@@ -654,7 +655,6 @@ class AdaptiveRoboVacCoordinator:
                     DEFAULT_BEDROOM_INTERVAL if room.is_bedroom else DEFAULT_COMMON_INTERVAL
                 ),
                 "expected_minutes": DEFAULT_EXPECTED_MINUTES,
-                "carpet": False,
                 "ignore_desired_window": False,
                 "desired_window_start": None,
                 "desired_window_end": None,
@@ -669,7 +669,6 @@ class AdaptiveRoboVacCoordinator:
             },
         )
         # Existing persisted settings predate newer optional room controls.
-        settings.setdefault("carpet", False)
         settings.setdefault("ignore_desired_window", False)
         settings.setdefault("desired_window_start", None)
         settings.setdefault("desired_window_end", None)
@@ -811,7 +810,6 @@ class AdaptiveRoboVacCoordinator:
             "cleaning_interval",
             "vacuum_interval",
             "expected_minutes",
-            "carpet",
             "ignore_desired_window",
             "desired_window_start",
             "desired_window_end",
@@ -1133,7 +1131,6 @@ class AdaptiveRoboVacCoordinator:
             "cleaning_interval",
             "vacuum_interval",
             "expected_minutes",
-            "carpet",
             "ignore_desired_window",
             "desired_window_start",
             "desired_window_end",
@@ -1492,6 +1489,12 @@ class AdaptiveRoboVacCoordinator:
         hold.setdefault("phase", "held")
         if state_text not in {"unavailable", "unknown"}:
             hold["last_observed_at"] = _iso(now)
+        if (
+            hold.get("reason") == "user_requested_return"
+            and hold.get("phase") == "cancelling"
+            and state_text != "docked"
+        ):
+            return "cancelling"
         action = held_job_transition(
             state_text,
             str(hold.get("phase", "held")),
@@ -2140,8 +2143,6 @@ class AdaptiveRoboVacCoordinator:
             )
         )
         operations = expand_cleaning_program(program or "")
-        if room_settings.get("carpet"):
-            operations = tuple(operation for operation in operations if operation != "mop")
         if not operations:
             return None
         stages: list[dict[str, Any]] = []
@@ -2421,19 +2422,6 @@ class AdaptiveRoboVacCoordinator:
 
         if candidate["operation"] != "mop":
             return candidate, None
-        if self._room_settings(room).get("carpet"):
-            self._skip_occurrence_stage(
-                room.area_id,
-                int(candidate["stage_index"]),
-                "skipped_no_mop",
-                "room_is_carpeted",
-                now,
-            )
-            await self._async_save()
-            self._async_create_task(
-                self.async_evaluate(reason="mop-stage-skipped-carpet")
-            )
-            return None, f"skipped mopping {room.name}: room excludes mopping"
         water = robot.adapter_capabilities.water_readiness
         if water.status == "sensor_ready" and water.ready:
             self.data.get("water_notification_episodes", {}).pop(room.area_id, None)
@@ -3075,6 +3063,53 @@ class AdaptiveRoboVacCoordinator:
         self._notify_listeners()
         return {"changed": changed}
 
+    async def async_stop_and_return_to_dock(
+        self, robot_entity_id: str, *, context: Any = None
+    ) -> dict[str, Any]:
+        """Stop one robot and retain its active clean as cancelled until it docks."""
+
+        if self._closing:
+            return {"accepted": False, "reason": "coordinator shutting down"}
+        async with self._lock:
+            robot = self.discovery.robots.get(robot_entity_id)
+            if robot is None:
+                raise ValueError("Robot is not discovered by this config entry")
+            state = self.hass.states.get(robot.entity_id)
+            state_text = state.state if state else None
+            if state_text in {None, "unavailable", "unknown"}:
+                return {"accepted": False, "reason": "robot is unavailable"}
+            if not can_request_return_to_dock(state_text):
+                return {"accepted": True, "reason": "robot is already docked"}
+
+            await self.hass.services.async_call(
+                "vacuum",
+                "return_to_base",
+                {"entity_id": robot.entity_id},
+                blocking=True,
+                context=context,
+            )
+
+            active = self.data["active"].get(robot.entity_id)
+            if active:
+                now = _now()
+                hold = self.data["robot_holds"].setdefault(
+                    robot.entity_id,
+                    {
+                        "reason": "user_requested_return",
+                        "phase": "cancelling",
+                        "held_at": _iso(now),
+                    },
+                )
+                hold["reason"] = "user_requested_return"
+                hold["phase"] = "cancelling"
+                hold["returning_at"] = _iso(now)
+                hold["last_observed_at"] = _iso(now)
+                self._set_held_job_phase(robot.entity_id, active, "cancelling", now)
+                self._cancel_start_confirmation(robot.entity_id)
+                await self._async_save()
+                self._notify_listeners()
+            return {"accepted": True, "reason": "return to dock requested"}
+
     async def async_manual_clean_room(
         self,
         area_id: str,
@@ -3114,9 +3149,6 @@ class AdaptiveRoboVacCoordinator:
 
             if room is None:
                 return await reject("room is not discovered by this config entry")
-            settings = self._room_settings(room)
-            if mode == "mop_only" and settings.get("carpet"):
-                return await reject("room excludes mopping")
             if self.observe_only:
                 return await reject("observe-only mode")
             if self.party_mode:

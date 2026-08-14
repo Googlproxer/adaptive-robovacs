@@ -31,6 +31,27 @@ class _ResumeButton(AdaptiveEntity, ButtonEntity):
         await self.coordinator.async_recheck_and_resume()
 
 
+class _StopAndReturnButton(AdaptiveEntity, ButtonEntity):
+    """Return one vacuum to its dock and cancel its tracked clean, if any."""
+
+    def __init__(self, coordinator, robot_entity_id: str) -> None:
+        super().__init__(
+            coordinator,
+            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_stop_and_return",
+            "stop and return to dock",
+            "robot_stop_return_control",
+            robot_entity_id=robot_entity_id,
+            robot_name_suffix="stop and return to dock",
+        )
+        self.robot_entity_id = robot_entity_id
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_stop_and_return_to_dock(
+            self.robot_entity_id,
+            context=getattr(self, "_context", None),
+        )
+
+
 class _RoomManualCleanButton(AdaptiveEntity, ButtonEntity):
     """One non-queueing room action with its mode fixed by entity identity."""
 
@@ -67,6 +88,10 @@ class _RoomManualCleanButton(AdaptiveEntity, ButtonEntity):
 
 def _entities(coordinator) -> list[AdaptiveEntity]:
     entities: list[AdaptiveEntity] = [_ResumeButton(coordinator), _PreviewButton(coordinator)]
+    entities.extend(
+        _StopAndReturnButton(coordinator, robot.entity_id)
+        for robot in coordinator.discovery.robots.values()
+    )
     for room in coordinator.discovery.rooms.values():
         entities.extend(
             [

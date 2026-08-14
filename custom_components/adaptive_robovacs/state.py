@@ -31,7 +31,7 @@ from .const import (
 from .models import is_valid_daily_time
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 DAILY_WINDOW_VERSION = 1
 
 
@@ -361,7 +361,6 @@ class RoomSettings:
     enabled: bool
     cleaning_interval: float = DEFAULT_COMMON_INTERVAL
     expected_minutes: float = DEFAULT_EXPECTED_MINUTES
-    carpet: bool = False
     ignore_desired_window: bool = False
     desired_window_start: str | None = None
     desired_window_end: str | None = None
@@ -440,7 +439,6 @@ class RoomSettings:
                 5,
                 180,
             ),
-            carpet=bool(value.get("carpet", default.carpet)),
             ignore_desired_window=bool(
                 value.get("ignore_desired_window", default.ignore_desired_window)
             ),
@@ -478,7 +476,6 @@ class RoomSettings:
             "enabled": self.enabled,
             "cleaning_interval": self.cleaning_interval,
             "expected_minutes": self.expected_minutes,
-            "carpet": self.carpet,
             "ignore_desired_window": self.ignore_desired_window,
             "daily_window": {
                 "version": DAILY_WINDOW_VERSION,
@@ -506,7 +503,6 @@ class RoomSettings:
             "vacuum_interval": self.cleaning_interval,
             "mop_interval": self.cleaning_interval,
             "expected_minutes": self.expected_minutes,
-            "carpet": self.carpet,
             "ignore_desired_window": self.ignore_desired_window,
             "desired_window_start": self.desired_window_start,
             "desired_window_end": self.desired_window_end,
@@ -1190,7 +1186,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v7 or convert older shapes, returning whether a save is required."""
+        """Load v8 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -1198,7 +1194,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5, 6}:
+        if schema_version in {2, 3, 4, 5, 6, 7}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -1420,7 +1416,7 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v7 codec, and platform entities use
+        persistent I/O stays on the typed v8 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 

@@ -906,6 +906,12 @@ def manual_clean_robot_is_docked(state: str | None) -> bool:
     return state == "docked"
 
 
+def can_request_return_to_dock(state: str | None) -> bool:
+    """Return whether Home Assistant can send a physical return command."""
+
+    return state not in {None, "unavailable", "unknown", "docked"}
+
+
 def learned_duration_minutes(samples: Iterable[float], fallback: float, minimum: int = 3) -> tuple[float, int]:
     """Return a conservative learned duration without letting outliers dominate.
 
@@ -1023,12 +1029,11 @@ def select_operation(
     vacuum_due: datetime,
     mop_due: datetime | None,
     can_mop: bool,
-    carpet: bool,
     now: datetime,
 ) -> tuple[str, datetime]:
-    """Choose a safe operation, never selecting mopping for carpeted rooms."""
+    """Choose the due operation for a room's configured cleaning program."""
 
-    if not carpet and can_mop and mop_due is not None and mop_due <= now:
+    if can_mop and mop_due is not None and mop_due <= now:
         if vacuum_due <= now:
             return "vac_and_mop", min(vacuum_due, mop_due)
         return "mop", mop_due

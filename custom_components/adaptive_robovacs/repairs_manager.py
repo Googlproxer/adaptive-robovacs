@@ -213,10 +213,6 @@ def async_sync_cleaning_program_issues(
                     str(robot_settings.get("cleaning_program", "vacuum_only")),
                 )
                 operations = expand_cleaning_program(program or "")
-                if settings.get("carpet"):
-                    operations = tuple(
-                        operation for operation in operations if operation != "mop"
-                    )
                 if not operations:
                     continue
                 if all(

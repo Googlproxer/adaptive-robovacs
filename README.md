@@ -21,7 +21,7 @@ automatically on supported versions.
   binary sensors in the same area as a fallback.
 - Supports party mode, manual-clean deferrals, learned vacancy forecasts,
   restart recovery, multi-robot ready-first allocation, room pass overrides,
-  carpet-aware vacuum-only rooms, ordered vacuum/mop programs, independent
+  ordered vacuum/mop programs, independent
   vacuum/mop pass counts, water-aware mopping, robot cleaning-profile defaults,
   and exact per-room fan/mode/mop overrides.
 - Provides target-scoped Lovelace cards for global settings, each vacuum, and
@@ -84,12 +84,17 @@ stage or engaging the system-failure latch. Mop-capable robots without water
 telemetry require an explicit one-hour **Confirm water** mobile action; cancel,
 dismissal, timeout, or an unreachable notification safely skips only mopping.
 
-The three manual room actions bypass only cadence and the desired cleaning
-window. They still enforce scheduler halt, Party/observe-only state, occupancy,
-bedroom-transit rules, robot state and battery, carpet, water confirmation,
-adapter compatibility, area mapping, and start confirmation. A rejected press
-is audited but never queued to start later. A manual occurrence that physically
-completes becomes the room's normal cadence anchor.
+The three manual room actions bypass cadence, desired windows, occupancy,
+forecasting, configured enablement, battery thresholds, holds, and scheduler
+halts. A compatible same-floor robot must be physically docked; Party Mode and
+observe-only mode remain non-bypassable. A rejected press is audited but never
+queued to start later. A manual occurrence that physically completes becomes
+the room's normal cadence anchor.
+
+Each robot card also has a **Stop and return to dock** button. It sends the
+native return-to-base command and marks any tracked scheduler or manual clean
+as cancelling until the robot docks, so it is never recorded as a completed
+clean.
 
 Native map and segment identifiers are read transiently from the selected
 vacuum entity's current Home Assistant area mapping. They are never copied to

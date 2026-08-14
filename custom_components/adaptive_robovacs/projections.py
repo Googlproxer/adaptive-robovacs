@@ -122,8 +122,6 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
             str(robot_settings.get("cleaning_program", "vacuum_only")),
         )
         operations = expand_cleaning_program(program or "")
-        if settings.get("carpet"):
-            operations = tuple(item for item in operations if item != "mop")
         stages: list[dict[str, Any]] = []
         compatible = bool(operations)
         for operation in operations:
@@ -185,7 +183,6 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "vacuum_interval": settings["vacuum_interval"],
         "cleaning_interval": settings["cleaning_interval"],
         "expected_minutes": settings["expected_minutes"],
-        "carpet": settings["carpet"],
         "ignore_desired_window": settings["ignore_desired_window"],
         "desired_window_configured_start": desired_window.configured_start,
         "desired_window_configured_end": desired_window.configured_end,

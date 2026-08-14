@@ -146,7 +146,7 @@ class SchedulerStateTests(unittest.TestCase):
                         "vacuum_interval": 72,
                         "mop_interval": 120,
                         "expected_minutes": 28,
-                        "carpet": False,
+                        "carpet": True,
                     }
                 },
                 "robots": {"vacuum.alpha": {"minimum_battery": 85, "double_pass": True}},
@@ -208,8 +208,21 @@ class SchedulerStateTests(unittest.TestCase):
 
         stored = state.to_store()
         self.assertEqual(stored["schema_version"], SCHEMA_VERSION)
+        self.assertNotIn("carpet", stored["room_settings"]["kitchen"])
         self.assertNotIn("active", stored)
         self.assertEqual(stored["active_jobs"]["vacuum.alpha"]["room"], "kitchen")
+
+    def test_v7_carpet_setting_is_dropped_during_the_v8_migration(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.ensure_room("study", is_bedroom=False)
+        payload = state.to_store()
+        payload["schema_version"] = 7
+        payload["room_settings"]["study"]["carpet"] = True
+
+        migrated, did_migrate = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertTrue(did_migrate)
+        self.assertNotIn("carpet", migrated.to_store()["room_settings"]["study"])
 
     def test_v6_round_trip_preserves_occurrence_window_pass_fault_and_job_adapter(self) -> None:
         state = SchedulerState.create(ENTRY_DATA)

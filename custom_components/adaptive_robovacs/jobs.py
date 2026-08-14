@@ -58,8 +58,6 @@ class JobLifecycle:
             for operation in operations:
                 if operation not in {"vacuum", "mop"}:
                     continue
-                if operation == "mop" and coordinator._room_settings(room).get("carpet", False):
-                    continue
                 next_due = coordinator._room_due(room, operation, completed_at)
                 deferred = manual_deferral(completed_at, next_due)
                 if deferred:
