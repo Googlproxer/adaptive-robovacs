@@ -50,6 +50,12 @@ class CadenceTests(unittest.TestCase):
         )
         self.assertIsNone(models.manual_deferral(self.now, self.now + timedelta(hours=25)))
 
+    def test_manual_clean_accepts_only_a_docked_robot(self) -> None:
+        self.assertTrue(models.manual_clean_robot_is_docked("docked"))
+        self.assertFalse(models.manual_clean_robot_is_docked("idle"))
+        self.assertFalse(models.manual_clean_robot_is_docked("cleaning"))
+        self.assertFalse(models.manual_clean_robot_is_docked(None))
+
     def test_room_pass_override_never_downgrades_an_unsupported_request(self) -> None:
         self.assertEqual(models.resolve_pass_count(None, False, {1, 2}), 1)
         self.assertEqual(models.resolve_pass_count(None, True, {1, 2}), 2)

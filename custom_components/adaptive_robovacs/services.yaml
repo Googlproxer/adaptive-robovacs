@@ -42,7 +42,7 @@ record_manual_clean:
           integration: adaptive_robovacs
 manual_clean_room:
   name: Manually clean room
-  description: Immediately attempts a safety-gated clean of one discovered room. Cadence and the desired window are bypassed; all physical and scheduler safety gates remain active.
+  description: Immediately starts an explicit user override for one discovered room. It bypasses cadence, vacancy/occupancy, desired-window, configured enablement, battery, scheduler-hold, and scheduler-halt gates. A compatible same-floor robot must be physically docked. Party Mode and observe-only mode remain non-bypassable.
   fields:
     area_id:
       name: Room

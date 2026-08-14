@@ -3,7 +3,8 @@
 **Status:** Implemented and deployed in v1.6.0, with docked-only stale-profile
 recovery in v1.6.1, Q10 **Cleaning Depth** controls in v1.6.2, and the
 requested Daily-depth default migration in v1.6.3, and Max+ custom-profile
-support with a safe fallback in v1.6.4.
+support with a safe fallback in v1.6.4. The dashboard manual-clean override
+is extended in v1.6.5.
 
 ## Goal
 
@@ -65,9 +66,13 @@ command order and the resulting clean behavior.
 - Continue to resolve Home Assistant areas through the selected vacuum's
   current `area_mapping` immediately before dispatch. Native room IDs are
   transient: do not persist, log, project, or hard-code them.
-- Preserve all existing eligibility gates. Occupancy, bedroom-transit,
-  Party Mode, observe-only mode, shutdown, profile compatibility, and robot
-  readiness block every stage before it reaches Home Assistant.
+- Scheduled work preserves all eligibility gates. Dashboard manual cleans are
+  an explicit user override: they bypass room enablement, cadence, desired
+  windows, occupancy, vacancy forecasting, bedroom-transit checks, battery
+  thresholds, scheduler holds, and a scheduler halt. They still require a
+  discovered same-floor robot that is physically docked and can address the
+  selected room, plus a dispatchable profile. Party Mode and observe-only
+  mode remain non-bypassable safeguards.
 - Advertise two passes only after the Q10 probe proves that the mapping and
   custom-clean command path are usable. Unsupported or uncertain hardware
   remains on the portable one-pass path.
@@ -151,6 +156,22 @@ the robot-default and room-override levels. The verified protocol values are:
    persistence unless those tests prove it safe.
 6. Release through the normal semantic-version, HACS, Home Assistant restart,
    and live-verification flow.
+
+## Implemented follow-up: Dashboard manual-clean override
+
+The manual room-clean buttons are intentionally distinct from scheduled work.
+They are available at any time to a user who explicitly invokes them, provided
+a compatible same-floor robot is physically `docked`. In particular, a manual
+request does not wait for a room to become due or unoccupied, its historical
+vacancy forecast, a desired window, the configured battery minimum, a disabled
+room or robot, a held scheduler job, or a recorded scheduler dispatch halt.
+
+The override is checkpointed with its occurrence so a multi-stage configured
+manual clean keeps the same policy across later stages and an integration
+restart. It replaces an unstarted occurrence for the selected room; a failed
+manual start leaves normal scheduling cadence intact. Party Mode and
+observe-only mode remain non-bypassable, and an unsupported area-clean/profile
+combination still cannot be sent to the robot.
 
 ## Implementation plan
 

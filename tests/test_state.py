@@ -277,6 +277,7 @@ class SchedulerStateTests(unittest.TestCase):
             current_stage=1,
             source="manual_dashboard",
             manual_mode="configured",
+            manual_override=True,
             bypass_desired_window=True,
             manual_context_id="context-one",
         )
@@ -306,6 +307,7 @@ class SchedulerStateTests(unittest.TestCase):
             "max",
         )
         self.assertEqual(restored.occurrences["study"].source, "manual_dashboard")
+        self.assertTrue(restored.occurrences["study"].manual_override)
         self.assertTrue(restored.occurrences["study"].bypass_desired_window)
         self.assertEqual(
             restored.active_jobs["vacuum.beta"].cleaning_profile["fan_speed"],

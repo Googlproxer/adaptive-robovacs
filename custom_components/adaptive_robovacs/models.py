@@ -894,6 +894,18 @@ def manual_deferral(now: datetime, next_due: datetime) -> datetime | None:
     return None
 
 
+def manual_clean_robot_is_docked(state: str | None) -> bool:
+    """Return whether a robot meets the sole physical gate for a manual clean.
+
+    Dashboard-triggered room cleans are an explicit user override.  They do
+    not inherit scheduler gates such as battery thresholds, room occupancy,
+    cadence, or vacancy forecasting; the robot must simply be docked before
+    accepting a new room-clean command.
+    """
+
+    return state == "docked"
+
+
 def learned_duration_minutes(samples: Iterable[float], fallback: float, minimum: int = 3) -> tuple[float, int]:
     """Return a conservative learned duration without letting outliers dominate.
 

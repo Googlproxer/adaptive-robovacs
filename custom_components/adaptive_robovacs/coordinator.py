@@ -60,6 +60,7 @@ from .models import (
     held_job_transition,
     in_daytime_window,
     learned_duration_minutes,
+    manual_clean_robot_is_docked,
     manual_deferral,
     pending_completion_is_docked,
     resolve_daily_window,
@@ -1818,6 +1819,17 @@ class AdaptiveRoboVacCoordinator:
             return False, "battery below minimum"
         return True, "ready"
 
+    def _manual_robot_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]:
+        """Apply the intentionally minimal readiness check for a manual clean."""
+
+        if not robot.supports_area_clean:
+            return False, "does not support Home Assistant area cleaning"
+        state = self.hass.states.get(robot.entity_id)
+        state_text = state.state if state else None
+        if not manual_clean_robot_is_docked(state_text):
+            return False, f"robot is {state_text or 'unavailable'}"
+        return True, "docked"
+
     def _mop_ready(self, robot: DiscoveredRobot) -> bool:
         """Return whether the selected adapter verifies a mop operation."""
 
@@ -1910,15 +1922,48 @@ class AdaptiveRoboVacCoordinator:
             window.end,
         )
 
+    def _manual_candidate(
+        self,
+        room: DiscoveredRoom,
+        now: datetime,
+        mode: str,
+        context_id: str | None,
+        user_id: str | None,
+    ) -> dict[str, Any]:
+        """Build an explicit user override without scheduler eligibility gates."""
+
+        settings = self._room_settings(room)
+        return {
+            "room": room,
+            "operation": "vacuum",
+            "due_at": now,
+            "confidence": 1.0,
+            "reason": "manual override",
+            "duration_minutes": float(settings["expected_minutes"]),
+            "duration_sample_count": 0,
+            "passes": 1,
+            "occurrence": None,
+            "evaluated_at": now,
+            "unresolved_window_allowed": True,
+            "bypass_forecast": True,
+            "manual_override": True,
+            "source": "manual_dashboard",
+            "manual_mode": mode,
+            "manual_context_id": context_id,
+            "manual_user_id": user_id,
+            "bypass_desired_window": True,
+        }
+
     def _room_candidate(self, room: DiscoveredRoom, now: datetime) -> tuple[dict[str, Any] | None, str]:
         """Return a due room or a persisted occurrence awaiting its next stage."""
 
         settings = self._room_settings(room)
         detail = self._room_data(room.area_id)
-        if not settings.get("enabled", True):
+        occurrence = self.data.get("occurrences", {}).get(room.area_id)
+        manual_override = bool(occurrence and occurrence.get("manual_override"))
+        if not settings.get("enabled", True) and not manual_override:
             self.data.get("water_notification_episodes", {}).pop(room.area_id, None)
             return None, "room disabled"
-        occurrence = self.data.get("occurrences", {}).get(room.area_id)
         if occurrence:
             if occurrence.get("source") == "manual_dashboard":
                 due = _as_datetime(occurrence.get("scheduled_at")) or now
@@ -1944,22 +1989,29 @@ class AdaptiveRoboVacCoordinator:
             )
             if confirmation and confirmation.get("status") == "pending":
                 return None, "waiting for water confirmation"
-        if detail.get("occupancy") == "occupied":
+        if not manual_override and detail.get("occupancy") == "occupied":
             return None, f"occupancy {detail.get('occupancy')} ({detail.get('source')})"
         bypass_desired_window = bool(
             occurrence and occurrence.get("bypass_desired_window", False)
         )
-        if not self._desired_window_allows(room, now):
-            if not bypass_desired_window:
-                return None, "waiting for desired cleaning window"
+        if not manual_override:
+            if not self._desired_window_allows(room, now):
+                if not bypass_desired_window:
+                    return None, "waiting for desired cleaning window"
         unresolved_window_allowed = self._unresolved_allowed(room, now)
-        if detail.get("occupancy") != "unoccupied" and not unresolved_window_allowed:
+        if manual_override:
+            unresolved_window_allowed = True
+        if (
+            not manual_override
+            and detail.get("occupancy") != "unoccupied"
+            and not unresolved_window_allowed
+        ):
             if detail.get("occupancy") == "unresolved":
                 if room.is_bedroom_transit:
                     return None, "unresolved occupancy; bedroom-transit excluded"
                 return None, "unresolved occupancy; waiting for desired cleaning window"
             return None, f"occupancy {detail.get('occupancy')} ({detail.get('source')})"
-        if room.is_bedroom_transit:
+        if room.is_bedroom_transit and not manual_override:
             allowed, reason = self._hall_allowed(now)
             if not allowed:
                 return None, reason
@@ -1992,6 +2044,8 @@ class AdaptiveRoboVacCoordinator:
             "occurrence": occurrence,
             "evaluated_at": now,
             "unresolved_window_allowed": unresolved_window_allowed,
+            "bypass_forecast": manual_override,
+            "manual_override": manual_override,
             "source": occurrence.get("source", "scheduler") if occurrence else "scheduler",
             "manual_mode": occurrence.get("manual_mode") if occurrence else None,
             "manual_context_id": (
@@ -2008,7 +2062,10 @@ class AdaptiveRoboVacCoordinator:
         room: DiscoveredRoom = candidate["room"]
         occurrence = candidate.get("occurrence")
         if occurrence:
-            if occurrence.get("robot_registry_id") != robot.registry_id:
+            if (
+                not candidate.get("manual_override")
+                and occurrence.get("robot_registry_id") != robot.registry_id
+            ):
                 return None
             stage_index = int(occurrence.get("current_stage", 0))
             stages = occurrence.get("stages", [])
@@ -2038,7 +2095,9 @@ class AdaptiveRoboVacCoordinator:
                 room, operation, passes, robot.registry_id
             )
             forecast = (
-                Forecast(True, 0.0, "unresolved occupancy desired-window policy")
+                Forecast(True, 1.0, "manual override")
+                if candidate.get("bypass_forecast")
+                else Forecast(True, 0.0, "unresolved occupancy desired-window policy")
                 if candidate.get("unresolved_window_allowed")
                 else self._forecast(
                     room,
@@ -2126,7 +2185,9 @@ class AdaptiveRoboVacCoordinator:
             room, operation, passes, robot.registry_id
         )
         forecast = (
-            Forecast(True, 0.0, "unresolved occupancy desired-window policy")
+            Forecast(True, 1.0, "manual override")
+            if candidate.get("bypass_forecast")
+            else Forecast(True, 0.0, "unresolved occupancy desired-window policy")
             if candidate.get("unresolved_window_allowed")
             else self._forecast(
                 room,
@@ -2335,6 +2396,7 @@ class AdaptiveRoboVacCoordinator:
                 "current_stage": 0,
                 "source": candidate.get("source", "scheduler"),
                 "manual_mode": candidate.get("manual_mode"),
+                "manual_override": bool(candidate.get("manual_override")),
                 "bypass_desired_window": bool(
                     candidate.get("bypass_desired_window", False)
                 ),
@@ -2826,7 +2888,11 @@ class AdaptiveRoboVacCoordinator:
                     for robot in self.discovery.robots.values()
                     if robot.floor_id == room.floor_id
                     and robot.entity_id not in used_robots
-                    and robot_ready[robot.entity_id][0]
+                    and (
+                        self._manual_robot_ready(robot)[0]
+                        if candidate.get("manual_override")
+                        else robot_ready[robot.entity_id][0]
+                    )
                     and (resolved_candidate := self._candidate_for_robot(candidate, robot))
                     is not None
                 ]
@@ -2895,11 +2961,15 @@ class AdaptiveRoboVacCoordinator:
                 and not self._closing
                 and not self.observe_only
                 and not self.party_mode
-                and not self.data.get("scheduler_fault")
             ):
                 for robot, candidate in assignments:
                     if self._closing:
                         break
+                    if self.data.get("scheduler_fault") and not candidate.get(
+                        "manual_override"
+                    ):
+                        dispatches.append("scheduler dispatch halted")
+                        continue
                     # Earlier assignments may have awaited service calls. Recheck
                     # every room and robot gate before creating an occurrence or
                     # sending a water-confirmation notification.
@@ -2908,7 +2978,11 @@ class AdaptiveRoboVacCoordinator:
                     prepare_candidate, prepare_reason = self._room_candidate(
                         candidate["room"], prepare_now
                     )
-                    robot_is_ready, robot_reason = self._robot_ready(robot)
+                    robot_is_ready, robot_reason = (
+                        self._manual_robot_ready(robot)
+                        if candidate.get("manual_override")
+                        else self._robot_ready(robot)
+                    )
                     prepare_resolved = (
                         self._candidate_for_robot(prepare_candidate, robot)
                         if prepare_candidate and robot_is_ready
@@ -2942,7 +3016,11 @@ class AdaptiveRoboVacCoordinator:
                     fresh_candidate, fresh_reason = self._room_candidate(
                         candidate["room"], dispatch_now
                     )
-                    robot_is_ready, robot_reason = self._robot_ready(robot)
+                    robot_is_ready, robot_reason = (
+                        self._manual_robot_ready(robot)
+                        if candidate.get("manual_override")
+                        else self._robot_ready(robot)
+                    )
                     fresh_resolved = (
                         self._candidate_for_robot(fresh_candidate, robot)
                         if fresh_candidate and robot_is_ready
@@ -3005,7 +3083,7 @@ class AdaptiveRoboVacCoordinator:
         context_id: str | None = None,
         user_id: str | None = None,
     ) -> dict[str, Any]:
-        """Attempt one safety-gated dashboard room clean immediately."""
+        """Start one explicit dashboard room-clean override immediately."""
 
         if mode not in {"configured", "vacuum_only", "mop_only"}:
             raise ValueError(f"Unknown manual cleaning mode: {mode}")
@@ -3037,57 +3115,21 @@ class AdaptiveRoboVacCoordinator:
             if room is None:
                 return await reject("room is not discovered by this config entry")
             settings = self._room_settings(room)
-            detail = self._room_data(area_id)
-            if not settings.get("enabled", True):
-                return await reject("room disabled")
             if mode == "mop_only" and settings.get("carpet"):
                 return await reject("room excludes mopping")
             if self.observe_only:
                 return await reject("observe-only mode")
             if self.party_mode:
                 return await reject("party mode")
-            if self.data.get("scheduler_fault"):
-                return await reject("scheduler dispatch halted")
-            if self.data.get("occurrences", {}).get(area_id):
-                return await reject("room already has a cleaning occurrence")
-            if detail.get("occupancy") == "occupied":
-                return await reject(
-                    f"occupancy occupied ({detail.get('source')})"
-                )
-            unresolved_allowed = self._unresolved_allowed(room, now)
-            if detail.get("occupancy") != "unoccupied" and not unresolved_allowed:
-                return await reject(
-                    f"occupancy {detail.get('occupancy')} ({detail.get('source')})"
-                )
-            if room.is_bedroom_transit:
-                allowed, reason = self._hall_allowed(now)
-                if not allowed:
-                    return await reject(reason)
-
-            base_candidate = {
-                "room": room,
-                "operation": "vacuum",
-                "due_at": now,
-                "confidence": 0.0,
-                "reason": "manual dashboard request",
-                "duration_minutes": float(settings["expected_minutes"]),
-                "duration_sample_count": 0,
-                "passes": 1,
-                "occurrence": None,
-                "evaluated_at": now,
-                "unresolved_window_allowed": unresolved_allowed,
-                "source": "manual_dashboard",
-                "manual_mode": mode,
-                "manual_context_id": context_id,
-                "manual_user_id": user_id,
-                "bypass_desired_window": True,
-            }
+            base_candidate = self._manual_candidate(
+                room, now, mode, context_id, user_id
+            )
             resolved: list[tuple[DiscoveredRobot, dict[str, Any]]] = []
             readiness: list[str] = []
             for robot in self.discovery.robots.values():
                 if robot.floor_id != room.floor_id:
                     continue
-                ready, reason = self._robot_ready(robot)
+                ready, reason = self._manual_robot_ready(robot)
                 if not ready:
                     readiness.append(f"{robot.name}: {reason}")
                     continue
@@ -3109,6 +3151,11 @@ class AdaptiveRoboVacCoordinator:
                 reverse=True,
             )
             robot, candidate = resolved[0]
+            prior_occurrence = self.data.get("occurrences", {}).pop(area_id, None)
+            if prior_occurrence:
+                self.data.get("water_confirmations", {}).pop(
+                    str(prior_occurrence.get("occurrence_id")), None
+                )
             event["robot"] = robot.entity_id
             event["operations"] = [
                 stage["operation"] for stage in candidate.get("new_stages", [])
@@ -3147,11 +3194,11 @@ class AdaptiveRoboVacCoordinator:
 
             dispatch_now = _now()
             self._observe_occupancy(dispatch_now)
-            fresh, fresh_reason = self._room_candidate(room, dispatch_now)
-            robot_ready, robot_reason = self._robot_ready(robot)
+            fresh = {**prepared, "evaluated_at": dispatch_now}
+            robot_ready, robot_reason = self._manual_robot_ready(robot)
             fresh_resolved = (
                 self._candidate_for_robot(fresh, robot)
-                if fresh and robot_ready
+                if robot_ready
                 else None
             )
             if fresh_resolved is None:
@@ -3161,8 +3208,7 @@ class AdaptiveRoboVacCoordinator:
                         str(occurrence.get("occurrence_id")), None
                     )
                 return await reject(
-                    fresh_reason if not fresh else robot_reason if not robot_ready else
-                    "cleaning profile is no longer compatible"
+                    robot_reason if not robot_ready else "cleaning profile is no longer compatible"
                 )
             if prepared.get("water_confirmed"):
                 fresh_resolved["water_confirmed"] = True
@@ -3176,8 +3222,6 @@ class AdaptiveRoboVacCoordinator:
                 if self.observe_only
                 else "party mode"
                 if self.party_mode
-                else "scheduler dispatch halted"
-                if self.data.get("scheduler_fault")
                 else None
             )
             if changed_global_gate:

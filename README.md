@@ -26,7 +26,7 @@ automatically on supported versions.
   and exact per-room fan/mode/mop overrides.
 - Provides target-scoped Lovelace cards for global settings, each vacuum, and
   each room, with generated status and control rows. Every room card includes
-  safety-gated manual clean, vacuum-only, and mop-only actions.
+  explicit manual clean, vacuum-only, and mop-only override actions.
 
 ## Installation
 

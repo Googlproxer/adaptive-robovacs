@@ -9,7 +9,7 @@ PACKAGE = ROOT / "custom_components" / "adaptive_robovacs"
 
 
 class PlanFiveContractTests(unittest.TestCase):
-    def test_three_room_buttons_share_the_safety_gated_entry_point(self) -> None:
+    def test_three_room_buttons_share_the_manual_override_entry_point(self) -> None:
         buttons = (PACKAGE / "button.py").read_text(encoding="utf-8")
         coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
         for mode in ("configured", "vacuum_only", "mop_only"):
@@ -17,18 +17,16 @@ class PlanFiveContractTests(unittest.TestCase):
         self.assertIn("SERVICE_MANUAL_CLEAN_ROOM", buttons)
         self.assertIn("hass.services.async_call", buttons)
         self.assertIn("async def async_manual_clean_room", coordinator)
-        for gate in (
+        for safeguard in (
             "coordinator shutting down",
-            "room disabled",
             "observe-only mode",
             "party mode",
-            "scheduler dispatch halted",
-            "occupancy occupied",
-            "_hall_allowed(now)",
-            "_robot_ready(robot)",
+            "_manual_robot_ready(robot)",
         ):
-            self.assertIn(gate, coordinator)
+            self.assertIn(safeguard, coordinator)
         self.assertIn('"bypass_desired_window": True', coordinator)
+        self.assertIn('"bypass_forecast": True', coordinator)
+        self.assertIn('"manual_override": True', coordinator)
         self.assertIn('"source": "manual_dashboard"', coordinator)
 
     def test_service_targets_one_area_and_disambiguates_config_entries(self) -> None:

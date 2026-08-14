@@ -931,6 +931,7 @@ class CleaningOccurrence:
     current_stage: int = 0
     source: str = "scheduler"
     manual_mode: str | None = None
+    manual_override: bool = False
     bypass_desired_window: bool = False
     manual_context_id: str | None = None
     manual_user_id: str | None = None
@@ -960,6 +961,11 @@ class CleaningOccurrence:
                    source,
                    manual_mode,
                    _boolean(
+                       value.get("manual_override"),
+                       False,
+                       "occurrence manual_override",
+                   ),
+                   _boolean(
                        value.get("bypass_desired_window"),
                        False,
                        "occurrence bypass_desired_window",
@@ -983,6 +989,7 @@ class CleaningOccurrence:
                 "current_stage": self.current_stage,
                 "source": self.source,
                 "manual_mode": self.manual_mode,
+                "manual_override": self.manual_override,
                 "bypass_desired_window": self.bypass_desired_window,
                 "manual_context_id": self.manual_context_id,
                 "manual_user_id": self.manual_user_id}

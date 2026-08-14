@@ -95,11 +95,14 @@ Every discovered room has three integration-owned buttons:
 - **Manual mop only** runs one mop stage with its effective mop pass count and
   profile.
 
-These actions bypass the room cadence and desired window only. All other
-safety gates remain active, including occupancy, bedroom-transit rules,
-Party/observe-only mode, the global halt, robot battery/readiness, carpet,
-water, mapping, profile compatibility, and start confirmation. A blocked press
-is rejected immediately and is not retained as work that can start later.
+These actions are explicit user overrides. They bypass the room cadence,
+desired window, occupancy and vacancy forecast, bedroom-transit rules,
+configured room/robot enablement, battery threshold, scheduler holds, and the
+global scheduler halt. A discovered compatible robot on the room's floor must
+be physically docked. Party Mode and observe-only mode remain non-bypassable;
+the selected adapter must still be able to address the room and apply its
+profile. A blocked press is rejected immediately and is not retained as work
+that can start later.
 
 Scripts can call `adaptive_robovacs.manual_clean_room` with one `area_id` and
 `mode: configured`, `vacuum_only`, or `mop_only`. Supply `entry_id` when more
