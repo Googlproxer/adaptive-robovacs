@@ -50,6 +50,7 @@ from .jobs import JobLifecycle
 from .models import (
     Forecast,
     ResolvedDailyWindow,
+    can_refresh_pending_occurrence_profile,
     can_start_scheduled_clean,
     cleaning_profile_is_supported,
     cleaning_profile_sources,
@@ -2068,6 +2069,60 @@ class AdaptiveRoboVacCoordinator:
             "manual_context_id": candidate.get("manual_context_id"),
         }
 
+    async def _async_refresh_pending_profile_if_needed(
+        self, robot: DiscoveredRobot, candidate: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Refresh one invalid scheduler profile only while its robot is docked."""
+
+        try:
+            validation = await self.runtime.async_validate_profile(robot, candidate)
+        except Exception:
+            # Dispatch performs and logs the definitive validation, including
+            # its scheduler-fault handling.  Recovery must never hide that.
+            return candidate
+        if validation.ready or validation.code != "profile_option_unsupported":
+            return candidate
+
+        occurrence = candidate.get("occurrence")
+        if not isinstance(occurrence, dict):
+            return candidate
+        stage_index = int(candidate.get("stage_index", occurrence.get("current_stage", 0)))
+        stages = occurrence.get("stages", [])
+        if stage_index >= len(stages) or not isinstance(stages[stage_index], dict):
+            return candidate
+        stage = stages[stage_index]
+        robot_state = self.hass.states.get(robot.entity_id)
+        if not can_refresh_pending_occurrence_profile(
+            occurrence,
+            stage,
+            robot_state.state if robot_state else None,
+            bool(self.data.get("active", {}).get(robot.entity_id)),
+        ):
+            return candidate
+
+        prior_profile = {
+            key: stage[key]
+            for key in ("cleaning_profile", "requested_profile", "profile_sources")
+            if key in stage
+        }
+        for key in prior_profile:
+            stage.pop(key, None)
+        refreshed = self._candidate_for_robot(candidate, robot)
+        if refreshed is None:
+            stage.update(prior_profile)
+            return candidate
+
+        stage["cleaning_profile"] = dict(refreshed["resolved_profile"])
+        stage["requested_profile"] = dict(refreshed.get("requested_profile") or {})
+        stage["profile_sources"] = dict(refreshed.get("profile_sources") or {})
+        await self._async_save()
+        _LOGGER.info(
+            "Adaptive RoboVacs refreshed an unsupported pending profile: robot=%s room=%s",
+            robot.entity_id,
+            candidate["room"].area_id,
+        )
+        return refreshed
+
     def _skip_occurrence_stage(
         self,
         area_id: str,
@@ -2820,6 +2875,9 @@ class AdaptiveRoboVacCoordinator:
                         continue
                     if prepared.get("water_confirmed"):
                         fresh_resolved["water_confirmed"] = True
+                    fresh_resolved = await self._async_refresh_pending_profile_if_needed(
+                        robot, fresh_resolved
+                    )
                     ok, message = await self._async_dispatch(
                         robot, fresh_resolved, dispatch_now
                     )
@@ -3020,6 +3078,9 @@ class AdaptiveRoboVacCoordinator:
                 )
             if prepared.get("water_confirmed"):
                 fresh_resolved["water_confirmed"] = True
+            fresh_resolved = await self._async_refresh_pending_profile_if_needed(
+                robot, fresh_resolved
+            )
             changed_global_gate = (
                 "coordinator shutting down"
                 if self._closing

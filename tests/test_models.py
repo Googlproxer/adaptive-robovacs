@@ -386,6 +386,46 @@ class RecoveryTransitionTests(unittest.TestCase):
         )
 
 
+class PendingProfileRefreshTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.occurrence = {"source": "scheduler"}
+        self.stage = {"status": "pending", "started_at": None}
+
+    def test_allows_only_an_unstarted_scheduler_stage_on_a_docked_robot(self) -> None:
+        self.assertTrue(
+            models.can_refresh_pending_occurrence_profile(
+                self.occurrence, self.stage, "docked", False
+            )
+        )
+
+    def test_rejects_active_manual_and_started_work(self) -> None:
+        self.assertFalse(
+            models.can_refresh_pending_occurrence_profile(
+                self.occurrence, self.stage, "docked", True
+            )
+        )
+        self.assertFalse(
+            models.can_refresh_pending_occurrence_profile(
+                {"source": "manual_dashboard"}, self.stage, "docked", False
+            )
+        )
+        self.assertFalse(
+            models.can_refresh_pending_occurrence_profile(
+                self.occurrence,
+                {"status": "running", "started_at": "2026-08-14T00:00:00+00:00"},
+                "docked",
+                False,
+            )
+        )
+
+    def test_rejects_a_robot_that_is_not_observed_docked(self) -> None:
+        self.assertFalse(
+            models.can_refresh_pending_occurrence_profile(
+                self.occurrence, self.stage, "idle", False
+            )
+        )
+
+
 class ManualCleanRequestTests(unittest.TestCase):
     def setUp(self) -> None:
         self.robots = ["vacuum.sheila"]

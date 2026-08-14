@@ -156,6 +156,18 @@ class HomeAssistantRuntime:
         fan_speed = settings.get("fan_speed")
         return not fan_speed or fan_speed in robot.adapter_capabilities.fan_speed_options
 
+    async def async_validate_profile(
+        self, robot: DiscoveredRobot, candidate: dict[str, Any]
+    ) -> AdapterDispatchResult:
+        """Validate one candidate profile without changing the vacuum."""
+
+        adapter = adapter_for_id(robot.adapter_id)
+        return await adapter.async_validate_profile(
+            self._coordinator.hass,
+            self._adapter_context(robot),
+            self._request(robot, candidate),
+        )
+
     async def async_dispatch(
         self, robot: DiscoveredRobot, candidate: dict[str, Any], now: datetime
     ) -> tuple[bool, str]:

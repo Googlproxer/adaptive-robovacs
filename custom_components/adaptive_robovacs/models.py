@@ -447,6 +447,31 @@ def cleaning_profile_is_supported(
     return not any(options and value is None for options, value in required)
 
 
+def can_refresh_pending_occurrence_profile(
+    occurrence: Mapping[str, object] | None,
+    stage: Mapping[str, object] | None,
+    robot_state: str | None,
+    has_active_job: bool,
+) -> bool:
+    """Return whether a stale scheduler profile may be refreshed safely.
+
+    A persisted occurrence normally keeps its exact resolved profile so later
+    default changes cannot alter scheduled work.  The sole recovery exception
+    is an unstarted scheduler stage whose assigned robot is observed docked;
+    no active or manual work may be changed this way.
+    """
+
+    return bool(
+        occurrence
+        and occurrence.get("source", "scheduler") == "scheduler"
+        and stage
+        and stage.get("status") == "pending"
+        and not stage.get("started_at")
+        and robot_state == "docked"
+        and not has_active_job
+    )
+
+
 CLEANING_PROGRAMS: tuple[CleaningProgram, ...] = (
     "vacuum_only",
     "mop_only",

@@ -1,7 +1,8 @@
 # Plan: Q10 custom-clean native two-pass support
 
-**Status:** Implemented for v1.6.0; HACS installation and controlled live
-validation remain pending.
+**Status:** Implemented and deployed in v1.6.0. The v1.6.1 follow-up safely
+refreshes a stale unsupported scheduler profile only when its robot is docked,
+before controlled live validation.
 
 ## Goal
 
