@@ -534,7 +534,7 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service_call.await_count, 3)
         sleep.assert_awaited_once_with(roborock.Q10_CUSTOM_CLEAN_SETTLE_SECONDS)
 
-    async def test_q10_rejects_max_plus_before_any_service_call(self) -> None:
+    async def test_q10_accepts_max_plus_with_the_protocol_fan_level(self) -> None:
         original_async_get = roborock.er.async_get
         registry_entry = types.SimpleNamespace(
             options={"vacuum": {"last_seen_segments": [{"id": "6"}]}}
@@ -557,17 +557,73 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             hass, self._q10_context()
         )
 
+        request = roborock.AdapterDispatchRequest(
+            "vacuum.test", ("test_room",), "vacuum", 1, {"fan_speed": "max_plus"}
+        )
         result = await adapter.async_validate_profile(
             hass,
             self._q10_context(),
+            request,
+        )
+
+        self.assertTrue(result.ready)
+        self.assertEqual(
+            roborock.build_q10_customer_clean_payload(
+                (6,), fan_level=roborock.Q10_FAN_LEVELS["max_plus"], clean_count=1, clean_line=0
+            ),
+            "AQYIAAIBAA==",
+        )
+        service_call.assert_not_awaited()
+
+    async def test_q10_max_plus_profile_write_failure_does_not_attempt_a_start(self) -> None:
+        original_async_get = roborock.er.async_get
+        original_sleep = roborock.asyncio.sleep
+        registry_entry = types.SimpleNamespace(
+            options={
+                "vacuum": {
+                    "area_mapping": {"test_room": ["6"]},
+                    "last_seen_segments": [{"id": "6"}],
+                }
+            }
+        )
+        roborock.er.async_get = lambda _hass: types.SimpleNamespace(
+            async_get=lambda _entity_id: registry_entry
+        )
+        sleep = AsyncMock()
+        roborock.asyncio.sleep = sleep
+        self.addCleanup(setattr, roborock.er, "async_get", original_async_get)
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
+        service_call = AsyncMock(side_effect=RuntimeError("unsupported profile"))
+        states = {
+            "select.test_cleaning_mode": types.SimpleNamespace(
+                state="vacuum", attributes={"options": ["vacuum", "customized"]}
+            )
+        }
+        hass = types.SimpleNamespace(
+            states=types.SimpleNamespace(get=states.get),
+            services=types.SimpleNamespace(async_call=service_call),
+        )
+        adapter, _capabilities, _diagnostic = await registry.async_resolve_adapter(
+            hass, self._q10_context()
+        )
+
+        result = await adapter.async_dispatch(
+            hass,
+            self._q10_context(),
             roborock.AdapterDispatchRequest(
-                "vacuum.test", ("test_room",), "vacuum", 2, {"fan_speed": "max_plus"}
+                "vacuum.test",
+                ("test_room",),
+                "vacuum",
+                1,
+                {"fan_speed": "max_plus", "cleaning_depth": "fast"},
             ),
         )
 
-        self.assertFalse(result.ready)
-        self.assertEqual(result.code, "profile_option_unsupported")
-        service_call.assert_not_awaited()
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.code, "q10_max_plus_profile_write_failed")
+        self.assertFalse(result.native_attempted)
+        service_call.assert_awaited_once()
+        sleep.assert_not_awaited()
 
     async def test_same_device_operation_options_verify_mopping(self) -> None:
         context = self._context("roborock", send_command=True)

@@ -62,6 +62,7 @@ Q10_FAN_LEVELS = {
     "balanced": 2,
     "turbo": 3,
     "max": 4,
+    "max_plus": 8,
 }
 
 
@@ -440,7 +441,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
     """Enhance compatible Roborock vacuums with native cross-hatching."""
 
     adapter_id = "roborock"
-    schema_version = 5
+    schema_version = 6
     priority = 100
     platforms = frozenset({"roborock"})
 
@@ -620,16 +621,28 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 return AdapterDispatchResult(
                     "blocked", "coordinator_shutting_down", "Coordinator is shutting down."
                 )
-            await hass.services.async_call(
-                "vacuum",
-                "send_command",
-                {
-                    "entity_id": request.robot_entity_id,
-                    "command": "dpCommon",
-                    "params": {Q10_CUSTOMER_CLEAN_DP: customer_clean},
-                },
-                blocking=True,
-            )
+            try:
+                await hass.services.async_call(
+                    "vacuum",
+                    "send_command",
+                    {
+                        "entity_id": request.robot_entity_id,
+                        "command": "dpCommon",
+                        "params": {Q10_CUSTOMER_CLEAN_DP: customer_clean},
+                    },
+                    blocking=True,
+                )
+            except Exception:
+                # This happens before the physical start command.  Mark a
+                # Max+ profile distinctly so the runtime can safely persist
+                # its one-way fallback to Max without retrying a clean.
+                if request.cleaning_profile.get("fan_speed") == "max_plus":
+                    return AdapterDispatchResult(
+                        "unsupported",
+                        "q10_max_plus_profile_write_failed",
+                        "The Q10 rejected the Max+ custom cleaning profile.",
+                    )
+                raise
             await asyncio.sleep(Q10_CUSTOM_CLEAN_SETTLE_SECONDS)
             if context.can_mutate and not context.can_mutate():
                 return AdapterDispatchResult(
@@ -645,12 +658,26 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 return AdapterDispatchResult(
                     "blocked", "coordinator_shutting_down", "Coordinator is shutting down."
                 )
-            await hass.services.async_call(
-                "vacuum",
-                "send_command",
-                {"entity_id": request.robot_entity_id, **build_q10_start_payload(resolved.targets)},
-                blocking=True,
-            )
+            try:
+                await hass.services.async_call(
+                    "vacuum",
+                    "send_command",
+                    {"entity_id": request.robot_entity_id, **build_q10_start_payload(resolved.targets)},
+                    blocking=True,
+                )
+            except Exception:
+                # The service might have passed the command to the robot, so
+                # the runtime must not retry.  It can still persist Max as the
+                # safe setting for subsequent work.
+                if request.cleaning_profile.get("fan_speed") == "max_plus":
+                    return AdapterDispatchResult(
+                        "failed",
+                        "q10_max_plus_start_failed",
+                        "The Q10 did not accept the Max+ room-clean start.",
+                        native_attempted=True,
+                        outcome_uncertain=True,
+                    )
+                raise
             return AdapterDispatchResult(
                 "accepted",
                 "accepted",

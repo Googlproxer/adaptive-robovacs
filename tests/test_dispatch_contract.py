@@ -42,6 +42,9 @@ class VacuumDispatchContractTests(unittest.TestCase):
         self.assertIn('"command": "dpCommon"', source)
         self.assertIn('"command": "dpStartClean"', source)
         self.assertIn('"clean_paramters"', source)
+        self.assertIn('"max_plus": 8', source)
+        self.assertIn('"q10_max_plus_profile_write_failed"', source)
+        self.assertIn('"q10_max_plus_start_failed"', source)
         self.assertIn("supports_roborock_native_two_pass", source)
         self.assertIn("is_roborock_q10_protocol", source)
         self.assertIn("return await self._generic.async_dispatch", source)
@@ -52,6 +55,15 @@ class VacuumDispatchContractTests(unittest.TestCase):
         self.assertIn('and not self.data.get("scheduler_fault")', source)
         self.assertIn("if not ok:", source)
         self.assertIn("break", source[source.index("if not ok:"):])
+
+    def test_q10_max_plus_failure_downgrades_only_the_effective_setting(self) -> None:
+        coordinator = COORDINATOR_PATH.read_text(encoding="utf-8")
+        runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+        self.assertIn("async def _async_downgrade_q10_max_plus", coordinator)
+        self.assertIn('settings["fan_speed"] = "max"', coordinator)
+        self.assertIn('"q10_max_plus_profile_write_failed"', runtime)
+        self.assertIn('"q10_max_plus_start_failed"', runtime)
+        self.assertIn('active.get("q10_max_plus_fallback")', coordinator)
 
     def test_native_targets_do_not_cross_the_adapter_boundary(self) -> None:
         public_source = "".join(

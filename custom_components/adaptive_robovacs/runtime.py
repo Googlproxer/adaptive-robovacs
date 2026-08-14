@@ -197,6 +197,12 @@ class HomeAssistantRuntime:
             "profile_sources": dict(candidate.get("profile_sources") or {}),
             "manual_mode": candidate.get("manual_mode"),
             "manual_context_id": candidate.get("manual_context_id"),
+            "q10_max_plus_fallback": bool(
+                robot.adapter_capabilities.cleaning_depth_options
+                and candidate.get("operation") == "vacuum"
+                and (candidate.get("resolved_profile") or {}).get("fan_speed")
+                == "max_plus"
+            ),
         }
 
         adapter = adapter_for_id(robot.adapter_id)
@@ -334,6 +340,11 @@ class HomeAssistantRuntime:
             )
             return False, fault_summary(code)
         if not result.accepted:
+            if result.code in {
+                "q10_max_plus_profile_write_failed",
+                "q10_max_plus_start_failed",
+            }:
+                await coordinator._async_downgrade_q10_max_plus(robot, room, candidate)
             await coordinator._async_latch_scheduler_fault(
                 robot,
                 room,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from copy import deepcopy
 from datetime import datetime, timedelta
 import hashlib
@@ -1233,6 +1233,39 @@ class AdaptiveRoboVacCoordinator:
         async_sync_cleaning_program_issues(self)
         self._notify_listeners()
         await self.async_evaluate(dry_run=True, reason=f"robot:{entity_id}:{key}")
+
+    async def _async_downgrade_q10_max_plus(
+        self,
+        robot: DiscoveredRobot,
+        room: DiscoveredRoom,
+        candidate: Mapping[str, Any],
+    ) -> None:
+        """Persist the safe Max fallback after a failed Q10 Max+ custom clean.
+
+        This intentionally changes only the setting that supplied the failed
+        effective fan speed.  It never retries the physical start: a failed
+        write is safe to record, while a failed or uncertain start remains
+        governed by the normal global scheduler halt.
+        """
+
+        source = str((candidate.get("profile_sources") or {}).get("fan_speed"))
+        settings = (
+            self._room_settings(room)
+            if source == "room"
+            else self._robot_settings(robot)
+        )
+        if settings.get("fan_speed") != "max_plus":
+            return
+        settings["fan_speed"] = "max"
+        await self._async_save()
+        async_sync_cleaning_program_issues(self)
+        self._notify_listeners()
+        _LOGGER.warning(
+            "Adaptive RoboVacs changed a rejected Q10 Max+ profile to Max: robot=%s room=%s source=%s",
+            robot.entity_id,
+            room.name,
+            source or "robot",
+        )
 
     async def _async_recover_active_jobs(self) -> None:
         """Recover a persisted command checkpoint after a Home Assistant restart."""
@@ -2529,6 +2562,8 @@ class AdaptiveRoboVacCoordinator:
                     robot = self.discovery.robots.get(robot_id)
                     room = self.discovery.rooms.get(str(active.get("room", "")))
                     if robot and room:
+                        if active.get("q10_max_plus_fallback"):
+                            await self._async_downgrade_q10_max_plus(robot, room, active)
                         uncertain = state_text not in {"docked", "idle"}
                         await self._async_latch_scheduler_fault(
                             robot,

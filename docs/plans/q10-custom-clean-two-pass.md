@@ -2,7 +2,8 @@
 
 **Status:** Implemented and deployed in v1.6.0, with docked-only stale-profile
 recovery in v1.6.1, Q10 **Cleaning Depth** controls in v1.6.2, and the
-requested Daily-depth default migration in v1.6.3.
+requested Daily-depth default migration in v1.6.3, and Max+ custom-profile
+support with a safe fallback in v1.6.4.
 
 ## Goal
 
@@ -29,10 +30,10 @@ storing credentials.
 - The Q10 adapter will select the exposed `customized` cleaning mode before
   every custom-clean start. This follows observed native-app behavior. A
   controlled validation will still confirm the precise required command order.
-- `max_plus` is unsupported for Q10 custom cleaning in the initial release. A
-  request that resolves to it fails safely as profile-incompatible; it is not
-  downgraded to another fan level. Support can be added only after a dedicated
-  protocol test.
+- `max_plus` uses the Q10 protocol's verified fan-level value `8`. If the Q10
+  rejects the custom-profile write or room-start command, or an accepted Max+
+  start never confirms, the integration changes only the effective fan-speed
+  setting from `max_plus` to `max`. It does not retry a physical start.
 - A custom profile is transient dispatch preparation, not durable robot state.
   Build and send it immediately before the corresponding start and do not
   reuse it for later work. Observed app behavior indicates the robot resets it
@@ -82,9 +83,12 @@ The Q10 custom profile requires values that the portable area-clean service
 does not carry. The adapter must validate every one rather than infer or
 silently change a user-selected profile.
 
-- Map only known compatible fan-speed values to Q10 `funLevel` values 1--4.
-  `max_plus` is explicitly unsupported for the initial custom path unless a
-  verified protocol mapping is added in later work.
+- Map known compatible fan-speed values to Q10 `funLevel` values: Quiet `1`,
+  Balanced `2`, Turbo `3`, Max `4`, and Max+ `8`.
+- A rejected Max+ profile write or room-start command, or a non-confirming
+  Max+ start, downgrades the effective robot- or room-owned selection to Max
+  for future cleans. The normal scheduler halt remains in place and the vacuum
+  is never automatically started a second time.
 - Start with an explicitly supported operation and known `cleanType`. Do not
   enable custom mopping until `waterLevel`, mop readiness, and cleaning-line
   behavior have verified mappings.
