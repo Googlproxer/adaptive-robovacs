@@ -722,6 +722,9 @@ class AdaptiveRoboVacCoordinator:
                     if robot.adapter_capabilities.cleaning_depth_options
                     else None
                 ),
+                "cleaning_depth_configured": bool(
+                    robot.adapter_capabilities.cleaning_depth_options
+                ),
             },
         )
         if "cleaning_program" not in settings:
@@ -732,10 +735,22 @@ class AdaptiveRoboVacCoordinator:
                 else "vacuum_only"
             )
         settings.setdefault("mop_double_pass", False)
-        if "cleaning_depth" not in settings:
+        settings.setdefault("cleaning_depth", None)
+        if (
+            not settings.get("cleaning_depth_configured")
+            and settings.get("cleaning_depth") is not None
+        ):
+            settings["cleaning_depth_configured"] = True
+        elif (
+            not settings.get("cleaning_depth_configured")
+            and robot.adapter_capabilities.cleaning_depth_options
+        ):
             settings["cleaning_depth"] = (
-                "daily" if robot.adapter_capabilities.cleaning_depth_options else None
+                "daily"
             )
+            settings["cleaning_depth_configured"] = True
+        else:
+            settings.setdefault("cleaning_depth_configured", False)
         settings["mopping_enabled"] = settings["cleaning_program"] != "vacuum_only"
         return settings
 
@@ -1211,6 +1226,8 @@ class AdaptiveRoboVacCoordinator:
             settings["cleaning_program"] = "vacuum_then_mop" if value else "vacuum_only"
         else:
             settings[key] = value
+        if key == "cleaning_depth":
+            settings["cleaning_depth_configured"] = True
         settings["mopping_enabled"] = settings["cleaning_program"] != "vacuum_only"
         await self._async_save()
         async_sync_cleaning_program_issues(self)

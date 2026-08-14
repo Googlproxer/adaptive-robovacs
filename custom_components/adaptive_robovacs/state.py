@@ -534,6 +534,7 @@ class RobotSettings:
     mop_intensity: str | None = None
     fan_speed: str | None = None
     cleaning_depth: str | None = None
+    cleaning_depth_configured: bool = False
 
     @classmethod
     def defaults(cls, supports_mopping: bool) -> RobotSettings:
@@ -571,6 +572,12 @@ class RobotSettings:
             mop_intensity=_string(value.get("mop_intensity")),
             fan_speed=_string(value.get("fan_speed")),
             cleaning_depth=_string(value.get("cleaning_depth")),
+            cleaning_depth_configured=bool(
+                value.get(
+                    "cleaning_depth_configured",
+                    value.get("cleaning_depth") is not None,
+                )
+            ),
         )
 
     def to_runtime(self) -> dict[str, object]:

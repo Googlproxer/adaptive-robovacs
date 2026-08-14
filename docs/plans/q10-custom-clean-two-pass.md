@@ -1,7 +1,8 @@
 # Plan: Q10 custom-clean native two-pass support
 
 **Status:** Implemented and deployed in v1.6.0, with docked-only stale-profile
-recovery in v1.6.1 and Q10 **Cleaning Depth** controls in v1.6.2.
+recovery in v1.6.1, Q10 **Cleaning Depth** controls in v1.6.2, and the
+requested Daily-depth default migration in v1.6.3.
 
 ## Goal
 
@@ -108,7 +109,9 @@ the robot-default and room-override levels. The verified protocol values are:
 ### Compatibility and persistence rules
 
 - Eligible Q10 robot defaults are **one pass** and **Daily** depth. Rooms
-  inherit both defaults unless they explicitly override either one.
+  inherit both defaults unless they explicitly override either one. The
+  migration records initialization separately, so a later explicit
+  **Not configured** selection is not mistaken for legacy state.
 - The resolved depth becomes part of the exact scheduled profile and follows
   the same robot-default then room-override precedence as fan speed and mode.
 - Only a Q10 adapter that proves its native custom-clean capability may offer

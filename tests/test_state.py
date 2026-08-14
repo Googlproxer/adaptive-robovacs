@@ -27,6 +27,7 @@ RoomHistory = state_module.RoomHistory
 SchedulerState = state_module.SchedulerState
 SchedulerFault = state_module.SchedulerFault
 StateSchemaError = state_module.StateSchemaError
+RobotSettings = state_module.RobotSettings
 migrate_runtime_robot_identity = state_module.migrate_runtime_robot_identity
 
 
@@ -41,6 +42,16 @@ ENTRY_DATA = {
 
 
 class SchedulerStateTests(unittest.TestCase):
+    def test_cleaning_depth_initialization_distinguishes_legacy_and_reset_values(self) -> None:
+        defaults = RobotSettings.defaults(False)
+        legacy = RobotSettings.from_mapping({}, defaults)
+        reset = RobotSettings.from_mapping(
+            {"cleaning_depth": None, "cleaning_depth_configured": True}, defaults
+        )
+
+        self.assertFalse(legacy.cleaning_depth_configured)
+        self.assertTrue(reset.cleaning_depth_configured)
+
     def test_robot_identity_migration_preserves_settings_jobs_and_unique_alias(self) -> None:
         data = {
             "settings": {
