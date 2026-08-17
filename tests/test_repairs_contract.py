@@ -48,7 +48,19 @@ class RepairsContractTests(unittest.TestCase):
         self.assertIn("runtime.async_preflight", method)
         self.assertNotIn("async_dispatch", method)
         self.assertNotIn("services.async_call", method)
+        self.assertIn('if state.state == "cleaning":', method)
+        self.assertIn("should_assume_native_app_clean", method)
+        self.assertIn("_discard_unconfirmed_scheduler_job", method)
         self.assertIn("description_placeholders=_description_placeholders(self)", repairs)
+
+    def test_unconfirmed_cleaning_is_not_credited_to_the_scheduled_room(self) -> None:
+        coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+        reconciliation = coordinator[coordinator.index("    async def _async_reconcile_jobs"):]
+        self.assertIn("should_assume_native_app_clean", reconciliation)
+        self.assertLess(
+            reconciliation.index("should_assume_native_app_clean"),
+            reconciliation.rindex("self._resume_held_job(robot_id, active, state, now)"),
+        )
 
     def test_opening_a_repair_never_submits_its_confirmation(self) -> None:
         repairs = (PACKAGE / "repairs.py").read_text(encoding="utf-8")

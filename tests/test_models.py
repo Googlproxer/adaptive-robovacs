@@ -395,6 +395,25 @@ class RecoveryTransitionTests(unittest.TestCase):
             )
         )
 
+    def test_unconfirmed_cleaning_is_treated_as_native_app_activity(self) -> None:
+        fault = {"robot_registry_id": "registry-robot"}
+        active = {"source": "scheduler", "seen_cleaning": False}
+        self.assertTrue(
+            models.should_assume_native_app_clean(
+                "cleaning", fault, "registry-robot", active
+            )
+        )
+        self.assertFalse(
+            models.should_assume_native_app_clean(
+                "docked", fault, "registry-robot", active
+            )
+        )
+        self.assertFalse(
+            models.should_assume_native_app_clean(
+                "cleaning", fault, "registry-robot", {**active, "seen_cleaning": True}
+            )
+        )
+
     def test_idle_transition_does_not_complete_a_recovered_job(self) -> None:
         self.assertFalse(
             models.recovery_transition_is_observed(

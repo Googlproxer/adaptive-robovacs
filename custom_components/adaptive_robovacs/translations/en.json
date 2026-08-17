@@ -22,11 +22,11 @@
         "step": {
           "confirm": {
             "title": "Recheck and resume Adaptive RoboVacs",
-            "description": "Adaptive RoboVacs stopped all new scheduler dispatch after a cleaning request failed for {room} with {robot}. {reason}\n\nThis checks vacuum availability, battery, adapter compatibility, and the current Home Assistant area mapping without sending a cleaning command. Submit to confirm that Adaptive RoboVacs may resume future scheduler dispatch."
+            "description": "Adaptive RoboVacs stopped all new scheduler dispatch after a cleaning request failed for {room} with {robot}. {reason}\n\nWhen the vacuum is docked, this checks availability, battery, adapter compatibility, and the current Home Assistant area mapping without sending a cleaning command. If it is already cleaning and the integration cannot confirm which room it is cleaning, the clean is treated as native-app activity: the halt clears without recording a scheduled room as cleaned and without interrupting the vacuum. Submit to allow future scheduler dispatch."
           }
         },
         "error": {
-          "recheck_failed": "The non-dispatching recheck still found a problem. Confirm the vacuum is docked and available, then review its Home Assistant area mapping and try again."
+          "recheck_failed": "The non-dispatching recheck still found a problem. Confirm the vacuum is either cleaning or docked and available, then review its Home Assistant area mapping and try again."
         }
       }
     },

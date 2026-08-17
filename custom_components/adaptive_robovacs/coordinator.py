@@ -75,6 +75,7 @@ from .models import (
     effective_cleaning_program,
     expand_cleaning_program,
     stage_pass_count,
+    should_assume_native_app_clean,
     unresolved_occupancy_allowed,
 )
 from .projections import robot_state, room_state
@@ -924,7 +925,7 @@ class AdaptiveRoboVacCoordinator:
         self._notify_listeners()
 
     async def async_recheck_and_resume(self) -> bool:
-        """Recheck without dispatching and explicitly clear a verified halt."""
+        """Clear a halt after a safe non-dispatching recheck."""
 
         async with self._lock:
             fault = self.data.get("scheduler_fault")
@@ -936,7 +937,22 @@ class AdaptiveRoboVacCoordinator:
             if robot is None or room is None:
                 return False
             state = self.hass.states.get(robot.entity_id)
-            if not state or state.state != "docked":
+            if not state:
+                return False
+            if state.state == "cleaning":
+                # State alone cannot prove which room an unconfirmed start is
+                # cleaning. Do not credit the planned room or interrupt the
+                # physical clean; keep it outside scheduler tracking instead.
+                if should_assume_native_app_clean(
+                    state.state,
+                    self.data.get("scheduler_fault"),
+                    robot.registry_id,
+                    self.data["active"].get(robot.entity_id),
+                ):
+                    self._discard_unconfirmed_scheduler_job(robot, room)
+                await self._async_clear_scheduler_fault(room)
+                return True
+            if state.state != "docked":
                 return False
             settings = self._robot_settings(robot)
             battery = self._robot_battery(robot)
@@ -1010,21 +1026,44 @@ class AdaptiveRoboVacCoordinator:
                 return False
             if not preflight.ready:
                 return False
-            if active and not active.get("seen_cleaning"):
-                occurrence = self.data.get("occurrences", {}).get(room.area_id)
-                stage_index = active.get("stage_index")
-                if occurrence and isinstance(stage_index, int) and stage_index < len(occurrence.get("stages", [])):
-                    occurrence["stages"][stage_index]["status"] = "pending"
-                    occurrence["stages"][stage_index]["started_at"] = None
-                self.data["active"][robot.entity_id] = None
-            self.data["scheduler_fault"] = None
-            detail = self._room_data(room.area_id)
-            detail["map_status"] = "mapped"
-            detail["map_error"] = None
-            await self._async_save()
-            async_delete_scheduler_halted_issue(self)
-            self._notify_listeners()
+            self._discard_unconfirmed_scheduler_job(robot, room)
+            await self._async_clear_scheduler_fault(room)
             return True
+
+    def _discard_unconfirmed_scheduler_job(
+        self, robot: DiscoveredRobot, room: DiscoveredRoom
+    ) -> None:
+        """Forget a scheduler room that never had a confirmed clean start."""
+
+        active = self.data["active"].get(robot.entity_id)
+        if (
+            not active
+            or active.get("source") not in {"scheduler", "manual_dashboard"}
+            or active.get("seen_cleaning")
+        ):
+            return
+        occurrence = self.data.get("occurrences", {}).get(room.area_id)
+        stage_index = active.get("stage_index")
+        if (
+            occurrence
+            and isinstance(stage_index, int)
+            and stage_index < len(occurrence.get("stages", []))
+        ):
+            occurrence["stages"][stage_index]["status"] = "pending"
+            occurrence["stages"][stage_index]["started_at"] = None
+        self.data["active"][robot.entity_id] = None
+        self._cancel_start_confirmation(robot.entity_id)
+
+    async def _async_clear_scheduler_fault(self, room: DiscoveredRoom) -> None:
+        """Clear the global dispatch halt without changing a physical clean."""
+
+        self.data["scheduler_fault"] = None
+        detail = self._room_data(room.area_id)
+        detail["map_status"] = "mapped"
+        detail["map_error"] = None
+        await self._async_save()
+        async_delete_scheduler_halted_issue(self)
+        self._notify_listeners()
 
     async def async_recheck_room_compatibility(self, area_id: str) -> bool:
         """Recheck a saved two-pass room without sending a clean."""
@@ -2681,6 +2720,25 @@ class AdaptiveRoboVacCoordinator:
                 changed = True
                 continue
             if not active:
+                continue
+
+            fault = self.data.get("scheduler_fault")
+            robot = self.discovery.robots.get(robot_id)
+            fault_room = self.discovery.rooms.get(
+                str(fault.get("room_area_id", ""))
+            ) if fault else None
+            if (
+                robot
+                and fault_room
+                and should_assume_native_app_clean(
+                    state_text, fault, robot.registry_id, active
+                )
+            ):
+                # The physical state confirms a clean, not its room. Preserve
+                # the scheduled stage for a later retry and classify the live
+                # clean as native-app activity.
+                self._discard_unconfirmed_scheduler_job(robot, fault_room)
+                changed = True
                 continue
 
             recovered_at = _as_datetime(active.get("recovered_at"))

@@ -680,6 +680,30 @@ def can_start_scheduled_clean(robot_state: str | None) -> bool:
     return robot_state == "docked"
 
 
+def should_assume_native_app_clean(
+    robot_state: str | None,
+    scheduler_fault: Mapping[str, object] | None,
+    robot_registry_id: str,
+    active: Mapping[str, object] | None,
+) -> bool:
+    """Return whether a live clean cannot be attributed to a scheduler job.
+
+    A start whose outcome was uncertain has no authoritative room observation.
+    If the vacuum is subsequently cleaning, retaining the planned scheduler room
+    would incorrectly record an unproven clean. Treat that physical clean as a
+    native-app clean instead.
+    """
+
+    return bool(
+        robot_state == "cleaning"
+        and scheduler_fault
+        and scheduler_fault.get("robot_registry_id") == robot_registry_id
+        and active
+        and active.get("source") in {"scheduler", "manual_dashboard"}
+        and not active.get("seen_cleaning")
+    )
+
+
 def offline_held_recovery_outcome(
     robot_state: str | None,
     hold_phase: str | None,

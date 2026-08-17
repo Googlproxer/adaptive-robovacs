@@ -74,7 +74,11 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             "activity": state["active"],
             "room": state["active_room"],
             "rooms": state["active_rooms"],
-            "activity_source": state["active"].get("source") if state["active"] else None,
+            "activity_source": (
+                state["active"].get("source")
+                if state["active"]
+                else "native_app_assumed" if state["state"] == "cleaning" else None
+            ),
             "activity_phase": state["active"].get("phase") if state["active"] else None,
             "scheduler_hold": state["scheduler_hold"],
             "cleaning_mode": state["settings"].get("mode"),
