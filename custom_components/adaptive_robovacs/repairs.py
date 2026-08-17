@@ -35,7 +35,8 @@ class SchedulerHaltedRepairFlow(RepairsFlow):
     ) -> data_entry_flow.FlowResult:
         """Start the scheduler-halt repair flow."""
 
-        return await self.async_step_confirm(user_input)
+        # Opening a Repair must never be treated as submitting its confirmation.
+        return await self.async_step_confirm()
 
     async def async_step_confirm(
         self, user_input: dict[str, str] | None = None
@@ -65,7 +66,9 @@ class TwoPassCompatibilityRepairFlow(RepairsFlow):
     async def async_step_init(
         self, user_input: dict[str, str] | None = None
     ) -> data_entry_flow.FlowResult:
-        return await self.async_step_confirm(user_input)
+        # Home Assistant may supply initial flow data when opening a Repair.
+        # Deliberately discard it until the user submits the confirmation form.
+        return await self.async_step_confirm()
 
     async def async_step_confirm(
         self, user_input: dict[str, str] | None = None
@@ -92,7 +95,8 @@ class NotificationDeliveryRepairFlow(RepairsFlow):
         self._coordinator = coordinator
 
     async def async_step_init(self, user_input=None) -> data_entry_flow.FlowResult:
-        return await self.async_step_confirm(user_input)
+        # Do not let opening this issue recheck and resolve it automatically.
+        return await self.async_step_confirm()
 
     async def async_step_confirm(self, user_input=None) -> data_entry_flow.FlowResult:
         errors: dict[str, str] = {}

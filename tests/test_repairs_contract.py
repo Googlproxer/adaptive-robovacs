@@ -50,6 +50,11 @@ class RepairsContractTests(unittest.TestCase):
         self.assertNotIn("services.async_call", method)
         self.assertIn("description_placeholders=_description_placeholders(self)", repairs)
 
+    def test_opening_a_repair_never_submits_its_confirmation(self) -> None:
+        repairs = (PACKAGE / "repairs.py").read_text(encoding="utf-8")
+        self.assertNotIn("async_step_confirm(user_input)", repairs)
+        self.assertEqual(repairs.count("return await self.async_step_confirm()"), 3)
+
     def test_repairs_and_public_fault_state_exclude_native_targets_and_raw_errors(self) -> None:
         source = "".join(
             (PACKAGE / path).read_text(encoding="utf-8")
