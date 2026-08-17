@@ -45,9 +45,10 @@ class SchedulerHaltedRepairFlow(RepairsFlow):
 
         errors: dict[str, str] = {}
         if user_input is not None:
-            if await self._coordinator.async_recheck_and_resume():
+            result = await self._coordinator.async_recheck_and_resume()
+            if result.cleared:
                 return self.async_create_entry(title="", data={})
-            errors["base"] = "recheck_failed"
+            errors["base"] = result.reason
         return self.async_show_form(
             step_id="confirm",
             data_schema=vol.Schema({}),

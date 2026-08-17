@@ -74,6 +74,8 @@ from .models import (
     resolve_occupancy,
     effective_cleaning_program,
     expand_cleaning_program,
+    SchedulerHaltRecheckResult,
+    scheduler_halt_recheck_result,
     stage_pass_count,
     should_assume_native_app_clean,
     unresolved_occupancy_allowed,
@@ -924,21 +926,22 @@ class AdaptiveRoboVacCoordinator:
         async_create_scheduler_halted_issue(self)
         self._notify_listeners()
 
-    async def async_recheck_and_resume(self) -> bool:
-        """Clear a halt after a safe non-dispatching recheck."""
+    async def async_recheck_and_resume(self) -> SchedulerHaltRecheckResult:
+        """Acknowledge a stale halt without dispatching cleaning work."""
 
         async with self._lock:
             fault = self.data.get("scheduler_fault")
             if not fault:
-                return False
+                return SchedulerHaltRecheckResult(False, "no_scheduler_halt")
             await self.async_refresh_discovery()
             robot = self.robot_for_registry_id(str(fault.get("robot_registry_id", "")))
             room = self.discovery.rooms.get(str(fault.get("room_area_id", "")))
             if robot is None or room is None:
-                return False
+                return SchedulerHaltRecheckResult(False, "recovery_target_unavailable")
             state = self.hass.states.get(robot.entity_id)
-            if not state:
-                return False
+            result = scheduler_halt_recheck_result(state.state if state else None)
+            if not result.cleared:
+                return result
             if state.state == "cleaning":
                 # State alone cannot prove which room an unconfirmed start is
                 # cleaning. Do not credit the planned room or interrupt the
@@ -951,84 +954,10 @@ class AdaptiveRoboVacCoordinator:
                 ):
                     self._discard_unconfirmed_scheduler_job(robot, room)
                 await self._async_clear_scheduler_fault(room)
-                return True
-            if state.state != "docked":
-                return False
-            settings = self._robot_settings(robot)
-            battery = self._robot_battery(robot)
-            if (
-                not settings.get("enabled", True)
-                or battery is None
-                or battery < float(settings.get("minimum_battery", DEFAULT_MINIMUM_BATTERY))
-            ):
-                return False
-            active = self.data["active"].get(robot.entity_id)
-            occurrence = self.data.get("occurrences", {}).get(room.area_id)
-            stage = None
-            if occurrence:
-                index = int(occurrence.get("current_stage", 0))
-                if index < len(occurrence.get("stages", [])):
-                    stage = occurrence["stages"][index]
-            operation = str(
-                active.get("operation") if active else stage.get("operation") if stage else "vacuum"
-            )
-            passes = int(active.get("passes", 1) if active else stage.get("passes", 1) if stage else 1)
-            if not robot.adapter_capabilities.supports(operation, passes):
-                return False
-            candidate = {
-                "room": room,
-                "operation": operation,
-                "passes": passes,
-                "water_confirmed": bool(
-                    occurrence
-                    and (
-                        request := self.data.get("water_confirmations", {}).get(
-                            str(occurrence.get("occurrence_id"))
-                        )
-                    )
-                    and request.get("status") == "confirmed"
-                    and (_as_datetime(request.get("expires_at")) or _now()) > _now()
-                ),
-                "ignore_water_readiness": operation == "mop",
-            }
-            cleaning_profile = (
-                active.get("cleaning_profile")
-                if active
-                else stage.get("cleaning_profile") if stage else None
-            )
-            if not isinstance(cleaning_profile, dict) or not cleaning_profile:
-                resolved_profile = resolve_cleaning_profile(
-                    operation,
-                    self._room_settings(room),
-                    settings,
-                    robot.adapter_capabilities,
-                )
-                if resolved_profile is None:
-                    return False
-                cleaning_profile = resolved_profile.to_mapping()
-            candidate["resolved_profile"] = cleaning_profile
-            if not self.runtime.profile_is_ready(
-                robot,
-                str(candidate["operation"]),
-                passes,
-                cleaning_profile,
-            ):
-                return False
-            try:
-                preflight = await self.runtime.async_preflight(robot, candidate)
-            except Exception:
-                _LOGGER.exception(
-                    "Adaptive RoboVacs non-dispatching repair recheck failed: robot=%s room=%s adapter=%s",
-                    robot.entity_id,
-                    room.name,
-                    robot.adapter_id,
-                )
-                return False
-            if not preflight.ready:
-                return False
+                return result
             self._discard_unconfirmed_scheduler_job(robot, room)
             await self._async_clear_scheduler_fault(room)
-            return True
+            return result
 
     def _discard_unconfirmed_scheduler_job(
         self, robot: DiscoveredRobot, room: DiscoveredRoom

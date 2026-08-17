@@ -56,6 +56,25 @@ class CadenceTests(unittest.TestCase):
         self.assertFalse(models.manual_clean_robot_is_docked("cleaning"))
         self.assertFalse(models.manual_clean_robot_is_docked(None))
 
+    def test_docked_robot_can_acknowledge_a_halt_without_dispatch_readiness(self) -> None:
+        result = models.scheduler_halt_recheck_result("docked")
+        self.assertTrue(result.cleared)
+        self.assertEqual(result.reason, "cleared_docked")
+
+    def test_cleaning_robot_can_acknowledge_a_halt_without_room_attribution(self) -> None:
+        result = models.scheduler_halt_recheck_result("cleaning")
+        self.assertTrue(result.cleared)
+        self.assertEqual(result.reason, "cleared_cleaning")
+
+    def test_halt_recheck_explains_unavailable_or_unsafe_robot_state(self) -> None:
+        unavailable = models.scheduler_halt_recheck_result("unavailable")
+        self.assertFalse(unavailable.cleared)
+        self.assertEqual(unavailable.reason, "robot_state_unavailable")
+
+        returning = models.scheduler_halt_recheck_result("returning")
+        self.assertFalse(returning.cleared)
+        self.assertEqual(returning.reason, "robot_not_docked_or_cleaning")
+
     def test_return_to_dock_is_available_until_the_robot_is_docked(self) -> None:
         self.assertTrue(models.can_request_return_to_dock("cleaning"))
         self.assertTrue(models.can_request_return_to_dock("paused"))

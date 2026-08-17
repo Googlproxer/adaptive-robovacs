@@ -22,11 +22,14 @@
         "step": {
           "confirm": {
             "title": "Recheck and resume Adaptive RoboVacs",
-            "description": "Adaptive RoboVacs stopped all new scheduler dispatch after a cleaning request failed for {room} with {robot}. {reason}\n\nWhen the vacuum is docked, this checks availability, battery, adapter compatibility, and the current Home Assistant area mapping without sending a cleaning command. If it is already cleaning and the integration cannot confirm which room it is cleaning, the clean is treated as native-app activity: the halt clears without recording a scheduled room as cleaned and without interrupting the vacuum. Submit to allow future scheduler dispatch."
+            "description": "Adaptive RoboVacs stopped all new scheduler dispatch after a cleaning request failed for {room} with {robot}. {reason}\n\nWhen the vacuum is docked, submitting this Repair clears the stale halt without sending a cleaning command. Battery, availability, adapter compatibility, occupancy, and Home Assistant area mapping are checked later when a new clean is due. If it is already cleaning and the integration cannot confirm which room it is cleaning, the clean is treated as native-app activity: the halt clears without recording a scheduled room as cleaned and without interrupting the vacuum."
           }
         },
         "error": {
-          "recheck_failed": "The non-dispatching recheck still found a problem. Confirm the vacuum is either cleaning or docked and available, then review its Home Assistant area mapping and try again."
+          "no_scheduler_halt": "The scheduler halt is already cleared. Close this Repair and refresh the Scheduler status.",
+          "recovery_target_unavailable": "The affected vacuum or room is no longer available to Home Assistant. Restore it, then try again.",
+          "robot_state_unavailable": "Home Assistant cannot read the vacuum's current state. Wait for its integration to reconnect, then try again.",
+          "robot_not_docked_or_cleaning": "The vacuum is neither docked nor cleaning. Wait until it docks, or confirm a native-app clean has started, then try again."
         }
       }
     },

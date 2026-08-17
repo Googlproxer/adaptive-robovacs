@@ -73,6 +73,25 @@ class RobotReadiness:
     reason: str
 
 
+type SchedulerHaltRecheckReason = Literal[
+    "cleared_docked",
+    "cleared_cleaning",
+    "no_scheduler_halt",
+    "recovery_target_unavailable",
+    "robot_state_unavailable",
+    "robot_not_docked_or_cleaning",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulerHaltRecheckResult:
+    """The safe outcome of acknowledging a scheduler halt."""
+
+    cleared: bool
+    reason: SchedulerHaltRecheckReason
+    robot_state: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class RoomCandidate:
     """A pure room candidate before it is assigned to a robot."""
@@ -678,6 +697,28 @@ def can_start_scheduled_clean(robot_state: str | None) -> bool:
     """Return whether the robot is physically safe to start scheduled work."""
 
     return robot_state == "docked"
+
+
+def scheduler_halt_recheck_result(
+    robot_state: str | None,
+) -> SchedulerHaltRecheckResult:
+    """Classify whether a physical state can acknowledge a scheduler halt.
+
+    Acknowledging a halt never dispatches cleaning work, so it must not apply
+    future-dispatch gates such as battery level, occupancy, or map readiness.
+    Those safeguards are re-evaluated when the scheduler later considers a
+    new clean.
+    """
+
+    if robot_state == "docked":
+        return SchedulerHaltRecheckResult(True, "cleared_docked", robot_state)
+    if robot_state == "cleaning":
+        return SchedulerHaltRecheckResult(True, "cleared_cleaning", robot_state)
+    if robot_state in {None, "unknown", "unavailable"}:
+        return SchedulerHaltRecheckResult(False, "robot_state_unavailable", robot_state)
+    return SchedulerHaltRecheckResult(
+        False, "robot_not_docked_or_cleaning", robot_state
+    )
 
 
 def should_assume_native_app_clean(
