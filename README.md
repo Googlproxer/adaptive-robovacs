@@ -137,6 +137,9 @@ version, not a moving commit from the default branch. Each release must bump
 the integration version in `custom_components/adaptive_robovacs/manifest.json`,
 pass the test suite, and have matching tag and release versions.
 
+See [CHANGELOG.md](CHANGELOG.md) for the concise release index and the linked
+detailed release notes.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
