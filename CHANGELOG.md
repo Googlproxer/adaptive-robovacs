@@ -11,6 +11,16 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 - Added this central changelog as the release-history index.
 
+## [1.6.10] - 2026-08-19
+
+### Fixed
+
+- Corrected the Roborock Q10 transport mapping for **Fast** and **Daily**
+  cleaning depth. The dashboard order remains Fast, Daily, Fine, while Fast
+  now sends line 1 and the observed fastest Daily clean sends line 0.
+
+Detailed notes: [`docs/releases/v1.6.10.md`](docs/releases/v1.6.10.md).
+
 ## [1.6.9] - 2026-08-17
 
 ### Fixed
