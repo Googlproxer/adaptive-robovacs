@@ -50,11 +50,13 @@ Q10_CUSTOMER_CLEAN_DP = "62"
 Q10_CUSTOMIZED_OPTION = "customized"
 Q10_VACUUM_CLEAN_TYPE = 2
 Q10_WATER_OFF = 0
-Q10_DAILY_CLEAN_LINE = 1
+# The Q10's line values do not follow the displayed label order: observation
+# confirms that line 0 is the daily (fastest) clean and line 1 is fast.
+Q10_DEFAULT_CLEAN_LINE = 0
 Q10_CUSTOM_CLEAN_SETTLE_SECONDS = 1.2
 Q10_CLEANING_DEPTH_LINES = {
-    "fast": 0,
-    "daily": Q10_DAILY_CLEAN_LINE,
+    "fast": 1,
+    "daily": Q10_DEFAULT_CLEAN_LINE,
     "fine": 2,
 }
 Q10_FAN_LEVELS = {
@@ -422,7 +424,7 @@ def resolve_q10_custom_clean_profile(
         )
     cleaning_depth = request.cleaning_profile.get("cleaning_depth")
     if cleaning_depth is None:
-        clean_line = Q10_DAILY_CLEAN_LINE
+        clean_line = Q10_DEFAULT_CLEAN_LINE
     elif isinstance(cleaning_depth, str) and cleaning_depth in Q10_CLEANING_DEPTH_LINES:
         clean_line = Q10_CLEANING_DEPTH_LINES[cleaning_depth]
     else:

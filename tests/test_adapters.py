@@ -142,6 +142,12 @@ class RoborockMappingTests(unittest.TestCase):
             },
         )
 
+    def test_q10_cleaning_depth_transport_mapping_preserves_display_order(self) -> None:
+        self.assertEqual(
+            roborock.Q10_CLEANING_DEPTH_LINES,
+            {"fast": 1, "daily": 0, "fine": 2},
+        )
+
     def test_q10_custom_payload_rejects_non_byte_mapping_target(self) -> None:
         with self.assertRaises(roborock.Q10CustomCleanError) as raised:
             roborock.build_q10_customer_clean_payload(
