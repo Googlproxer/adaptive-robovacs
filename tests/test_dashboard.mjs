@@ -9,6 +9,13 @@ class MockElement {
 }
 
 const elements = new Map();
+const visibilityListeners = new Map();
+const animationFrames = new Map();
+let nextAnimationFrame = 1;
+let visibilityState = "visible";
+let helperLoads = 0;
+const createdCards = [];
+
 globalThis.HTMLElement = MockElement;
 globalThis.customElements = {
   define(name, constructor) {
@@ -18,14 +25,41 @@ globalThis.customElements = {
     return elements.get(name);
   },
 };
+globalThis.document = {
+  addEventListener(type, listener) {
+    visibilityListeners.set(type, listener);
+  },
+  get visibilityState() {
+    return visibilityState;
+  },
+};
 globalThis.window = {
   customCards: [],
-  loadCardHelpers: async () => ({
-    createCardElement: async (configuration) => ({
-      configuration,
-      getCardSize: () => 4,
-    }),
-  }),
+  requestAnimationFrame(callback) {
+    const frame = nextAnimationFrame++;
+    animationFrames.set(frame, callback);
+    return frame;
+  },
+  cancelAnimationFrame(frame) {
+    animationFrames.delete(frame);
+  },
+  loadCardHelpers: async () => {
+    helperLoads += 1;
+    return {
+      createCardElement: async (configuration) => {
+        const card = {
+          configuration,
+          hassWrites: [],
+          getCardSize: () => 4,
+          set hass(hass) {
+            this.hassWrites.push(hass);
+          },
+        };
+        createdCards.push(card);
+        return card;
+      },
+    };
+  },
 };
 
 await import("../custom_components/adaptive_robovacs/frontend/adaptive-robovacs-dashboard.js");
@@ -160,6 +194,31 @@ function configure(Card, config, states = baseStates()) {
   return { card, configuration: card._configuration() };
 }
 
+function flushAnimationFrames() {
+  const callbacks = [...animationFrames.values()];
+  animationFrames.clear();
+  callbacks.forEach((callback) => callback());
+}
+
+async function flushDashboard() {
+  flushAnimationFrames();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function setVisibility(nextVisibility) {
+  visibilityState = nextVisibility;
+  visibilityListeners.get("visibilitychange")?.();
+}
+
+function mount(Card, config, states = baseStates()) {
+  const card = new Card();
+  card.connectedCallback();
+  card.setConfig(config);
+  card.hass = { states };
+  return card;
+}
+
 test("registers the three target-scoped cards only", () => {
   assert.deepEqual([...elements.keys()], [
     "adaptive-robovacs-global",
@@ -240,11 +299,13 @@ test("room card contains one selected room with status before controls", () => {
 test("new target-owned controls appear without changing card configuration", () => {
   const states = baseStates();
   const initial = configure(RoomCard, { area_id: "kitchen" }, states).configuration;
-  states["select.kitchen_profile"] = adaptiveState("room_control", {
-    area_id: "kitchen",
-    friendly_name: "Kitchen profile",
-  });
-  const updated = configure(RoomCard, { area_id: "kitchen" }, states).configuration;
+  const updated = configure(RoomCard, { area_id: "kitchen" }, {
+    ...states,
+    "select.kitchen_profile": adaptiveState("room_control", {
+      area_id: "kitchen",
+      friendly_name: "Kitchen profile",
+    }),
+  }).configuration;
   assert.equal(updated.entities.length, initial.entities.length + 1);
   assert.deepEqual(
     updated.entities.find((row) => row.entity === "select.kitchen_profile"),
@@ -323,14 +384,14 @@ test("friendly-name and ownership changes invalidate the render signature", () =
   assert.notEqual(card._entitySignature(), original);
 });
 
-test("failure diagnostics invalidate the render signature", () => {
+test("failure diagnostics update native rows without changing the card structure", () => {
   const states = baseStates();
   const { card } = configure(RoomCard, { area_id: "kitchen" }, states);
   const original = card._entitySignature();
   states["sensor.kitchen_next_clean"].attributes.failure_code =
     "area_mapping_missing";
   states["sensor.kitchen_next_clean"].attributes.repair_active = true;
-  assert.notEqual(card._entitySignature(), original);
+  assert.equal(card._entitySignature(), original);
 });
 
 test("cards request full section width and validate option types", () => {
@@ -338,4 +399,116 @@ test("cards request full section width and validate option types", () => {
   assert.deepEqual(card.getGridOptions(), { columns: "full" });
   assert.throws(() => configure(RoomCard, { area_id: ["kitchen"] }), /must be a string/);
   assert.throws(() => configure(GlobalCard, { title: 42 }), /must be a string/);
+});
+
+test("hidden-tab updates defer all card work and render only the newest state on return", async () => {
+  const initialCreated = createdCards.length;
+  setVisibility("hidden");
+  const states = baseStates();
+  const card = mount(VacuumCard, { vacuum_entity_id: "vacuum.robot_one" }, states);
+  card.hass = {
+    states: {
+      ...states,
+      "vacuum.robot_one": {
+        ...states["vacuum.robot_one"],
+        attributes: { friendly_name: "Latest Robot Name" },
+      },
+    },
+  };
+
+  flushAnimationFrames();
+  await Promise.resolve();
+  assert.equal(createdCards.length, initialCreated);
+
+  setVisibility("visible");
+  await flushDashboard();
+  assert.equal(createdCards.length, initialCreated + 1);
+  assert.equal(createdCards.at(-1).configuration.title, "Latest Robot Name");
+  assert.equal(card.children.length, 1);
+  card.disconnectedCallback();
+});
+
+test("unrelated updates do not recreate or update a room's nested card", async () => {
+  const states = baseStates();
+  const card = mount(RoomCard, { area_id: "kitchen" }, states);
+  await flushDashboard();
+  const nativeCard = createdCards.at(-1);
+  const createdBefore = createdCards.length;
+  const writesBefore = nativeCard.hassWrites.length;
+  card.hass = {
+    states: {
+      ...states,
+      "sensor.unrelated": { state: "updated", attributes: {} },
+    },
+  };
+  await flushDashboard();
+
+  assert.equal(createdCards.length, createdBefore);
+  assert.equal(nativeCard.hassWrites.length, writesBefore);
+  card.disconnectedCallback();
+});
+
+test("relevant updates refresh in place and structural discovery recreates once", async () => {
+  const states = baseStates();
+  const card = mount(RoomCard, { area_id: "kitchen" }, states);
+  await flushDashboard();
+  const nativeCard = createdCards.at(-1);
+  const createdBefore = createdCards.length;
+
+  card.hass = {
+    states: {
+      ...states,
+      "number.kitchen_cadence": {
+        ...states["number.kitchen_cadence"],
+        state: "4",
+      },
+    },
+  };
+  await flushDashboard();
+  assert.equal(createdCards.length, createdBefore);
+  assert.equal(nativeCard.hassWrites.length, 2);
+
+  card.hass = {
+    states: {
+      ...states,
+      "select.kitchen_extra": adaptiveState("room_control", {
+        area_id: "kitchen",
+        friendly_name: "Kitchen extra",
+      }),
+    },
+  };
+  await flushDashboard();
+  assert.equal(createdCards.length, createdBefore + 1);
+  assert.equal(
+    createdCards.at(-1).configuration.entities.find((row) => row.entity === "select.kitchen_extra").name,
+    "Extra"
+  );
+  card.disconnectedCallback();
+});
+
+test("one shared helper load services rapid renders and disconnected cards", async () => {
+  const helperLoadsBefore = helperLoads;
+  const createdBefore = createdCards.length;
+  const states = baseStates();
+  const card = mount(GlobalCard, {}, states);
+  card.hass = {
+    states: {
+      ...states,
+      "sensor.scheduler": {
+        ...states["sensor.scheduler"],
+        state: "newest",
+      },
+    },
+  };
+  await flushDashboard();
+  assert.equal(createdCards.length, createdBefore + 1);
+  assert.ok(helperLoads === helperLoadsBefore || helperLoads === helperLoadsBefore + 1);
+
+  const detached = mount(GlobalCard, {}, states);
+  flushAnimationFrames();
+  detached.disconnectedCallback();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(detached.children, undefined);
+  card.disconnectedCallback();
 });

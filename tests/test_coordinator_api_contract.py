@@ -32,6 +32,30 @@ class CoordinatorFacadeContractTests(unittest.TestCase):
         self.assertIn("STORE_VERSION: Final = 1", constants)
         self.assertIn('STORE_VERSION, f"{STORAGE_KEY}.{entry.entry_id}"', coordinator)
 
+    def test_evaluation_publishes_one_final_projection_without_delaying_direct_refreshes(self) -> None:
+        source = COORDINATOR_PATH.read_text(encoding="utf-8")
+        refresh = source.split("    async def async_refresh_discovery(", 1)[1].split(
+            "    def _migrate_runtime_robot_identity", 1
+        )[0]
+        evaluation = source.split("    async def async_evaluate(", 1)[1].split(
+            "    async def async_record_manual_clean", 1
+        )[0]
+        self.assertIn("*, notify: bool = True", refresh)
+        self.assertIn("if notify:", refresh)
+        self.assertIn("await self.async_refresh_discovery(notify=False)", evaluation)
+        self.assertEqual(evaluation.count("self._notify_listeners()"), 1)
+
+        for method, next_method in (
+            ("async_set_global", "async_set_room_setting"),
+            ("async_set_room_setting", "async_set_robot_setting"),
+            ("async_set_robot_setting", "_async_downgrade_q10_max_plus"),
+        ):
+            section = source.split(f"    async def {method}", 1)[1].split(
+                f"    async def {next_method}", 1
+            )[0]
+            self.assertIn("await self.async_evaluate(dry_run=True", section)
+            self.assertNotIn("self._notify_listeners()", section)
+
 
 if __name__ == "__main__":
     unittest.main()

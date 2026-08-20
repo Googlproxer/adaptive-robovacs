@@ -11,6 +11,20 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 - Added this central changelog as the release-history index.
 
+## [1.7.2] - 2026-08-20
+
+### Changed
+
+- Dashboard cards now batch Home Assistant updates to one visible animation
+  frame, pause unnecessary work while a browser tab is hidden, and update only
+  native rows affected by a state change.
+- Dashboard discovery now builds one shared entity index per state snapshot and
+  recreates a nested card only when its own visible structure changes.
+- Scheduler evaluations publish one final entity projection instead of an
+  intermediate discovery projection followed by the final result.
+
+Detailed notes: [`docs/releases/v1.7.2.md`](docs/releases/v1.7.2.md).
+
 ## [1.7.1] - 2026-08-20
 
 ### Fixed

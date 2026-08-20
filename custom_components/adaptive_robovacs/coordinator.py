@@ -549,8 +549,13 @@ class AdaptiveRoboVacCoordinator:
         self.state, _ = SchedulerState.from_store(durable, self.entry.data)
         await self.store.async_save(self.state.to_store())
 
-    async def async_refresh_discovery(self) -> None:
-        """Refresh registry state and reset only changed room occupancy models."""
+    async def async_refresh_discovery(self, *, notify: bool = True) -> None:
+        """Refresh registry state and reset only changed room occupancy models.
+
+        Evaluation publishes its final projection after recalculating room and
+        robot state, so it suppresses this intermediate notification. Direct
+        refresh callers retain the existing immediate publication behaviour.
+        """
 
         prior_discovery = self.discovery
         self.discovery = await async_discover(self.hass)
@@ -629,7 +634,8 @@ class AdaptiveRoboVacCoordinator:
             async_dispatcher_send(self.hass, SIGNAL_DISCOVERY_UPDATED, self.entry.entry_id)
         async_sync_two_pass_issues(self)
         async_sync_cleaning_program_issues(self)
-        self._notify_listeners()
+        if notify:
+            self._notify_listeners()
 
     def _migrate_runtime_robot_identity(
         self, prior_discovery: DiscoveryResult
@@ -1098,7 +1104,6 @@ class AdaptiveRoboVacCoordinator:
             resolve_daily_window(None, None, global_start, global_end)
         self.data[key] = value
         await self._async_save()
-        self._notify_listeners()
         await self.async_evaluate(dry_run=True, reason=f"global:{key}")
 
     async def async_set_room_setting(self, area_id: str, key: str, value: Any) -> None:
@@ -1165,7 +1170,6 @@ class AdaptiveRoboVacCoordinator:
             settings["pass_count"] = value
         await self._async_save()
         async_sync_cleaning_program_issues(self)
-        self._notify_listeners()
         await self.async_evaluate(dry_run=True, reason=f"room:{area_id}:{key}")
 
     async def async_set_robot_setting(self, entity_id: str, key: str, value: Any) -> None:
@@ -1218,7 +1222,6 @@ class AdaptiveRoboVacCoordinator:
         settings["mopping_enabled"] = settings["cleaning_program"] != "vacuum_only"
         await self._async_save()
         async_sync_cleaning_program_issues(self)
-        self._notify_listeners()
         await self.async_evaluate(dry_run=True, reason=f"robot:{entity_id}:{key}")
 
     async def _async_downgrade_q10_max_plus(
@@ -2882,7 +2885,7 @@ class AdaptiveRoboVacCoordinator:
                     "dispatches": ["coordinator shutting down"],
                 }
             now = _now()
-            await self.async_refresh_discovery()
+            await self.async_refresh_discovery(notify=False)
             self._observe_occupancy(now)
             await self._async_reconcile_jobs(now, transition)
             candidates: list[dict[str, Any]] = []

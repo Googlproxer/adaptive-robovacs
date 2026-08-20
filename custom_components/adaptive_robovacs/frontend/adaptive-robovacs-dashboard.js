@@ -35,6 +35,118 @@ const ROOM_ROLES = new Map([
   ["room_manual_mop_control", 17],
 ]);
 const ROOM_HIDDEN_ROLES = new Set(["room_manual_status"]);
+const EMPTY_ADAPTIVE_ENTITY_INDEX = {
+  entities: [],
+  entryIds: [],
+  byEntry: new Map(),
+};
+const adaptiveEntityIndexes = new WeakMap();
+const pendingCards = new Set();
+let pendingAnimationFrame;
+let pendingAnimationFrameKind;
+let cardHelpersPromise;
+
+function adaptiveEntityIndex(hass) {
+  const states = hass?.states;
+  if (!states || typeof states !== "object") return EMPTY_ADAPTIVE_ENTITY_INDEX;
+  const cached = adaptiveEntityIndexes.get(states);
+  if (cached) return cached;
+
+  const byEntry = new Map();
+  const entities = [];
+  for (const [entityId, state] of Object.entries(states)) {
+    const attrs = state?.attributes || {};
+    const entryId = attrs[ENTRY_ATTRIBUTE];
+    if (!entryId) continue;
+    const item = { entityId, state, attrs };
+    let entry = byEntry.get(entryId);
+    if (!entry) {
+      entry = { entities: [], byRobot: new Map(), byArea: new Map() };
+      byEntry.set(entryId, entry);
+    }
+    entry.entities.push(item);
+    if (attrs.robot_entity_id) {
+      const robotEntities = entry.byRobot.get(attrs.robot_entity_id) || [];
+      robotEntities.push(item);
+      entry.byRobot.set(attrs.robot_entity_id, robotEntities);
+    }
+    if (attrs.area_id) {
+      const areaEntities = entry.byArea.get(attrs.area_id) || [];
+      areaEntities.push(item);
+      entry.byArea.set(attrs.area_id, areaEntities);
+    }
+    entities.push(item);
+  }
+  const index = {
+    entities,
+    entryIds: [...byEntry.keys()].sort(),
+    byEntry,
+  };
+  adaptiveEntityIndexes.set(states, index);
+  return index;
+}
+
+function isDocumentHidden() {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function cancelPendingAnimationFrame() {
+  if (pendingAnimationFrame === undefined) return;
+  if (pendingAnimationFrameKind === "animation") {
+    window.cancelAnimationFrame?.(pendingAnimationFrame);
+  } else {
+    clearTimeout(pendingAnimationFrame);
+  }
+  pendingAnimationFrame = undefined;
+  pendingAnimationFrameKind = undefined;
+}
+
+function flushPendingCards() {
+  pendingAnimationFrame = undefined;
+  pendingAnimationFrameKind = undefined;
+  if (isDocumentHidden()) return;
+  const cards = [...pendingCards];
+  pendingCards.clear();
+  for (const card of cards) card._flushRefresh();
+}
+
+function requestPendingCardFlush() {
+  if (pendingAnimationFrame !== undefined || isDocumentHidden() || !pendingCards.size) {
+    return;
+  }
+  if (typeof window.requestAnimationFrame === "function") {
+    pendingAnimationFrameKind = "animation";
+    pendingAnimationFrame = window.requestAnimationFrame(flushPendingCards);
+  } else {
+    pendingAnimationFrameKind = "timeout";
+    pendingAnimationFrame = setTimeout(flushPendingCards, 0);
+  }
+}
+
+function queueCardRefresh(card) {
+  if (!card._connected) return;
+  pendingCards.add(card);
+  requestPendingCardFlush();
+}
+
+function removeQueuedCard(card) {
+  pendingCards.delete(card);
+  if (!pendingCards.size) cancelPendingAnimationFrame();
+}
+
+function loadCardHelpers() {
+  if (!cardHelpersPromise) {
+    cardHelpersPromise = window.loadCardHelpers().catch((error) => {
+      cardHelpersPromise = undefined;
+      throw error;
+    });
+  }
+  return cardHelpersPromise;
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", requestPendingCardFlush);
+}
 
 const COMMON_FORM_SCHEMA = [
   {
@@ -97,12 +209,23 @@ class AdaptiveRoboVacsCardBase extends HTMLElement {
     this._assertConfig(config || {});
     this._config = { ...(config || {}) };
     this._signature = undefined;
-    if (this._hass) this._refresh();
+    this._refresh();
   }
 
   set hass(hass) {
     this._hass = hass;
     this._refresh();
+  }
+
+  connectedCallback() {
+    this._connected = true;
+    this._refresh();
+  }
+
+  disconnectedCallback() {
+    this._connected = false;
+    this._renderGeneration = (this._renderGeneration || 0) + 1;
+    removeQueuedCard(this);
   }
 
   getCardSize() {
@@ -126,38 +249,28 @@ class AdaptiveRoboVacsCardBase extends HTMLElement {
   }
 
   _allAdaptiveEntities() {
-    if (!this._hass) return [];
-    return Object.entries(this._hass.states)
-      .filter(([, state]) => Boolean(state.attributes?.[ENTRY_ATTRIBUTE]))
-      .map(([entityId, state]) => ({
-        entityId,
-        state,
-        attrs: state.attributes || {},
-      }));
+    return adaptiveEntityIndex(this._hass).entities;
   }
 
   _entryContext() {
-    const allEntities = this._allAdaptiveEntities();
+    const index = adaptiveEntityIndex(this._hass);
     const configuredEntry = this._config?.entry_id;
-    const entryIds = [...new Set(
-      allEntities.map((item) => item.attrs[ENTRY_ATTRIBUTE]).filter(Boolean)
-    )].sort();
 
     if (configuredEntry) {
-      const entities = allEntities.filter(
-        (item) => item.attrs[ENTRY_ATTRIBUTE] === configuredEntry
-      );
-      return entities.length
-        ? { entryId: configuredEntry, entities }
+      const entry = index.byEntry.get(configuredEntry);
+      return entry
+        ? { entryId: configuredEntry, entities: entry.entities, entry }
         : { error: "No Adaptive RoboVacs entities were found for the selected integration entry." };
     }
-    if (entryIds.length === 0) {
+    if (index.entryIds.length === 0) {
       return { error: "No Adaptive RoboVacs entities are currently available." };
     }
-    if (entryIds.length > 1) {
+    if (index.entryIds.length > 1) {
       return { error: "Select an Adaptive RoboVacs integration entry for this card." };
     }
-    return { entryId: entryIds[0], entities: allEntities };
+    const entryId = index.entryIds[0];
+    const entry = index.byEntry.get(entryId);
+    return { entryId, entities: entry.entities, entry };
   }
 
   _orderedEntities(items, roleOrder) {
@@ -202,53 +315,92 @@ class AdaptiveRoboVacsCardBase extends HTMLElement {
     throw new Error("Card configuration is not implemented.");
   }
 
-  _targetSignature() {
-    return null;
-  }
-
   _entitySignature() {
-    const entities = this._allAdaptiveEntities()
-      .map((item) => [
-        item.entityId,
-        item.attrs[ENTRY_ATTRIBUTE],
-        item.attrs[ROLE_ATTRIBUTE],
-        item.attrs.robot_entity_id,
-        item.attrs.area_id,
-        item.attrs.room,
-        item.attrs.floor_id,
-        item.attrs.bedroom,
-        item.attrs.friendly_name,
-        item.attrs.failure_code,
-        item.attrs.repair_active,
-      ])
-      .sort(([left], [right]) => left.localeCompare(right));
-    return JSON.stringify({
-      config: this._config || {},
-      entities,
-      target: this._targetSignature(),
-    });
+    return JSON.stringify({ config: this._config || {}, card: this._configuration() });
   }
 
   _refresh() {
     if (!this._hass || !this._config) return;
-    const signature = this._entitySignature();
-    if (signature !== this._signature) {
-      this._signature = signature;
-      this._render();
-    }
-    if (this._card) this._card.hass = this._hass;
+    queueCardRefresh(this);
   }
 
-  async _render() {
+  _cardModel() {
+    const configuration = this._configuration();
+    const entityIds = configuration.entities
+      ?.map((row) => typeof row === "string" ? row : row?.entity)
+      .filter(Boolean) || [];
+    return {
+      configuration,
+      dependencyIds: [...new Set(entityIds)],
+    };
+  }
+
+  _childInput() {
+    return {
+      dependencies: this._dependencyIds.map((entityId) => this._hass?.states?.[entityId]),
+      config: this._hass?.config,
+      language: this._hass?.language,
+      locale: this._hass?.locale,
+      selectedTheme: this._hass?.selectedTheme,
+      themes: this._hass?.themes,
+      user: this._hass?.user,
+    };
+  }
+
+  _sameChildInput(left, right) {
+    return Boolean(left && right)
+      && left.config === right.config
+      && left.language === right.language
+      && left.locale === right.locale
+      && left.selectedTheme === right.selectedTheme
+      && left.themes === right.themes
+      && left.user === right.user
+      && left.dependencies.length === right.dependencies.length
+      && left.dependencies.every((state, index) => state === right.dependencies[index]);
+  }
+
+  _pushHassToCard(force = false) {
+    if (!this._card || !this._hass) return;
+    const input = this._childInput();
+    if (force || !this._sameChildInput(input, this._lastChildInput)) {
+      this._card.hass = this._hass;
+      this._lastChildInput = input;
+    }
+  }
+
+  _flushRefresh() {
+    if (!this._connected || !this._hass || !this._config || isDocumentHidden()) return;
+    const model = this._cardModel();
+    const signature = JSON.stringify({ config: this._config, card: model.configuration });
+    if (signature !== this._signature) {
+      this._signature = signature;
+      this._dependencyIds = model.dependencyIds;
+      void this._render(model);
+      return;
+    }
+    this._dependencyIds = model.dependencyIds;
+    this._pushHassToCard();
+  }
+
+  async _render(model) {
     if (!this._hass) return;
     const generation = (this._renderGeneration || 0) + 1;
     this._renderGeneration = generation;
-    const helpers = await window.loadCardHelpers();
-    const card = await helpers.createCardElement(this._configuration());
-    if (generation !== this._renderGeneration) return;
-    this._card = card;
-    card.hass = this._hass;
-    this.replaceChildren(card);
+    try {
+      const helpers = await loadCardHelpers();
+      const card = await helpers.createCardElement(model.configuration);
+      if (generation !== this._renderGeneration || !this._connected) return;
+      this._card = card;
+      this._dependencyIds = model.dependencyIds;
+      this._lastChildInput = undefined;
+      this._pushHassToCard(true);
+      this.replaceChildren(card);
+    } catch (error) {
+      if (generation === this._renderGeneration) {
+        this._signature = undefined;
+        console.error("Adaptive RoboVacs dashboard could not create its card.", error);
+      }
+    }
   }
 }
 
@@ -319,20 +471,12 @@ class AdaptiveRoboVacsVacuumCard extends AdaptiveRoboVacsCardBase {
     return this._hass?.states?.[entityId]?.attributes?.friendly_name || entityId || "Vacuum";
   }
 
-  _targetSignature() {
-    const entityId = this._config?.vacuum_entity_id;
-    const state = this._hass?.states?.[entityId];
-    return [entityId, state?.attributes?.friendly_name];
-  }
-
   _configuration() {
     const entityId = this._config?.vacuum_entity_id;
     if (!entityId) return this._messageConfiguration("Select a vacuum in the card editor.");
     const context = this._entryContext();
     if (context.error) return this._messageConfiguration(context.error);
-    const entities = context.entities.filter(
-      (item) => item.attrs.robot_entity_id === entityId
-    );
+    const entities = context.entry.byRobot.get(entityId) || [];
     const entityRows = this._targetEntityRows(
       entities,
       VACUUM_ROLES,
@@ -388,10 +532,8 @@ class AdaptiveRoboVacsRoomCard extends AdaptiveRoboVacsCardBase {
     if (!areaId) return this._messageConfiguration("Select a room in the card editor.");
     const context = this._entryContext();
     if (context.error) return this._messageConfiguration(context.error);
-    const entities = context.entities.filter(
-      (item) =>
-        item.attrs.area_id === areaId &&
-        !ROOM_HIDDEN_ROLES.has(item.attrs[ROLE_ATTRIBUTE])
+    const entities = (context.entry.byArea.get(areaId) || []).filter(
+      (item) => !ROOM_HIDDEN_ROLES.has(item.attrs[ROLE_ATTRIBUTE])
     );
     const roomName = entities.find((item) => item.attrs.room)?.attrs.room || this._defaultTitle();
     const entityRows = this._targetEntityRows(entities, ROOM_ROLES, roomName);
