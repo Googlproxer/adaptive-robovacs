@@ -15,8 +15,8 @@ from ..models import (
     AdapterCapabilities,
     AdapterDispatchRequest,
     AdapterDispatchResult,
-    DIRECT_CUSTOM_MOP_INTENSITIES,
-    DIRECT_CUSTOM_MOP_ROUTES,
+    NATIVE_MOP_PROFILE_INTENSITIES,
+    NATIVE_MOP_PROFILE_ROUTES,
     WaterReadiness,
 )
 from .base import AdapterEntityEvidence, AdapterMatchContext, VacuumAdapter
@@ -72,13 +72,15 @@ Q10_FAN_LEVELS = {
     "max": 4,
     "max_plus": 8,
 }
-DIRECT_CUSTOM_MOP_RETRY_INTERVAL_SECONDS = 5
-DIRECT_CUSTOM_MOP_RETRY_ATTEMPTS = 6
-DIRECT_CUSTOM_MOP_BLOCK_CODES = frozenset(
+NATIVE_MOP_PROFILE_TIMEOUT_SECONDS = 30
+NATIVE_MOP_PROFILE_RETRY_INTERVAL_SECONDS = 5
+NATIVE_MOP_PROFILE_RETRY_ATTEMPTS = 6
+NATIVE_MOP_PROFILE_BLOCK_CODES = frozenset(
     {
-        "direct_custom_mop_profile_invalid",
-        "direct_custom_mop_control_unavailable",
-        "direct_custom_mop_unconfirmed",
+        "native_mop_profile_invalid",
+        "native_mop_profile_control_unavailable",
+        "native_mop_profile_unconfirmed",
+        "native_mop_profile_apply_failed",
     }
 )
 
@@ -93,8 +95,8 @@ def _option(options: Sequence[str], wanted: str) -> str | None:
     )
 
 
-def supports_roborock_direct_custom_mop(context: AdapterMatchContext) -> bool:
-    """Return whether live controls prove a direct, suction-off mop profile."""
+def supports_roborock_native_mop_profile(context: AdapterMatchContext) -> bool:
+    """Return whether live controls prove a native, suction-off mop profile."""
 
     profile = context.profile
     control_ids = (
@@ -105,17 +107,17 @@ def supports_roborock_direct_custom_mop(context: AdapterMatchContext) -> bool:
     return bool(
         context.supports_area_clean
         and all(control_ids)
-        # A shared generic operation selector must never be mistaken for the
-        # independent native Custom, route, and water controls.
+        # A shared generic operation selector must never be mistaken for
+        # independent native operation, route, and water controls.
         and len(set(control_ids)) == len(control_ids)
-        and _option(profile.mode_options, "custom")
+        and _option(profile.mode_options, "mop")
         and _option(context.fan_speed_options, "off")
         and any(
-            _normalised_option(option) in DIRECT_CUSTOM_MOP_ROUTES
+            _normalised_option(option) in NATIVE_MOP_PROFILE_ROUTES
             for option in profile.mop_mode_options
         )
         and any(
-            _normalised_option(option) in DIRECT_CUSTOM_MOP_INTENSITIES
+            _normalised_option(option) in NATIVE_MOP_PROFILE_INTENSITIES
             for option in profile.mop_intensity_options
         )
     )
@@ -509,8 +511,8 @@ class RoborockVacuumAdapter(VacuumAdapter):
         generic = await self._generic.async_capabilities(hass, context)
         vacuum_options = self._vacuum_options(hass, context.entity_id)
         is_q10 = is_roborock_q10_protocol(vacuum_options)
-        direct_custom_mop = (
-            not is_q10 and supports_roborock_direct_custom_mop(context)
+        native_mop_profile = (
+            not is_q10 and supports_roborock_native_mop_profile(context)
         )
         vacuum_pass_counts = set(generic.vacuum_pass_counts)
         mop_pass_counts = set(generic.mop_pass_counts)
@@ -564,7 +566,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
             native_vacuum_pass_counts=frozenset(native_vacuum_pass_counts),
             native_mop_pass_counts=frozenset(native_mop_pass_counts),
             watched_entity_ids=watched,
-            direct_custom_mop=direct_custom_mop,
+            native_mop_profile=native_mop_profile,
         )
 
     @staticmethod
@@ -590,18 +592,18 @@ class RoborockVacuumAdapter(VacuumAdapter):
         )
 
     @staticmethod
-    def _is_direct_custom_mop_request(
+    def _is_native_mop_profile_request(
         context: AdapterMatchContext, request: AdapterDispatchRequest
     ) -> bool:
-        return request.operation == "mop" and supports_roborock_direct_custom_mop(
+        return request.operation == "mop" and supports_roborock_native_mop_profile(
             context
         )
 
     @staticmethod
-    def _direct_custom_mop_values(
+    def _native_mop_profile_values(
         context: AdapterMatchContext, request: AdapterDispatchRequest
     ) -> tuple[str, str, str, str] | None:
-        """Return exact direct controls, or None when a stage is not safe."""
+        """Return exact native mop controls, or None when a stage is not safe."""
 
         profile = context.profile
         mode = request.cleaning_profile.get("mode")
@@ -611,13 +613,13 @@ class RoborockVacuumAdapter(VacuumAdapter):
         if not all(isinstance(value, str) for value in (mode, fan_speed, route, intensity)):
             return None
         if (
-            _normalised_option(mode) != "custom"
+            _normalised_option(mode) != "mop"
             or _normalised_option(fan_speed) != "off"
-            or _normalised_option(route) not in DIRECT_CUSTOM_MOP_ROUTES
-            or _normalised_option(intensity) not in DIRECT_CUSTOM_MOP_INTENSITIES
+            or _normalised_option(route) not in NATIVE_MOP_PROFILE_ROUTES
+            or _normalised_option(intensity) not in NATIVE_MOP_PROFILE_INTENSITIES
         ):
             return None
-        resolved_mode = _option(profile.mode_options, "custom")
+        resolved_mode = _option(profile.mode_options, "mop")
         resolved_fan = _option(context.fan_speed_options, "off")
         resolved_route = _option(profile.mop_mode_options, _normalised_option(route))
         resolved_intensity = _option(
@@ -638,18 +640,18 @@ class RoborockVacuumAdapter(VacuumAdapter):
             and option in state.attributes.get("options", [])
         )
 
-    async def _async_validate_direct_custom_mop(
+    async def _async_validate_native_mop_profile(
         self,
         hass: Any,
         context: AdapterMatchContext,
         request: AdapterDispatchRequest,
     ) -> AdapterDispatchResult:
-        values = self._direct_custom_mop_values(context, request)
+        values = self._native_mop_profile_values(context, request)
         if values is None:
             return AdapterDispatchResult(
                 "blocked",
-                "direct_custom_mop_profile_invalid",
-                "Rob needs an explicit direct custom mop profile.",
+                "native_mop_profile_invalid",
+                "Rob needs an explicit native mop-only profile.",
             )
         mode, route, intensity, _fan_speed = values
         profile = context.profile
@@ -664,30 +666,30 @@ class RoborockVacuumAdapter(VacuumAdapter):
         ):
             return AdapterDispatchResult(
                 "blocked",
-                "direct_custom_mop_control_unavailable",
-                "Rob's direct custom mop controls are unavailable.",
+                "native_mop_profile_control_unavailable",
+                "Rob's native mop-only controls are unavailable.",
             )
         vacuum_state = hass.states.get(request.robot_entity_id)
         if not vacuum_state or vacuum_state.state in {"unavailable", "unknown"}:
             return AdapterDispatchResult(
                 "blocked",
-                "direct_custom_mop_control_unavailable",
-                "Rob's direct custom mop controls are unavailable.",
+                "native_mop_profile_control_unavailable",
+                "Rob's native mop-only controls are unavailable.",
             )
         return AdapterDispatchResult("ready", "ready", "Ready")
 
-    async def _async_apply_direct_custom_mop(
+    async def _async_apply_native_mop_profile(
         self,
         hass: Any,
         context: AdapterMatchContext,
         request: AdapterDispatchRequest,
     ) -> AdapterDispatchResult:
-        """Apply and observe a suction-off custom mop profile before dispatch."""
+        """Apply and observe a native suction-off mop profile before dispatch."""
 
-        validation = await self._async_validate_direct_custom_mop(hass, context, request)
+        validation = await self._async_validate_native_mop_profile(hass, context, request)
         if not validation.ready:
             return validation
-        values = self._direct_custom_mop_values(context, request)
+        values = self._native_mop_profile_values(context, request)
         assert values is not None
         mode, route, intensity, fan_speed = values
         profile = context.profile
@@ -708,42 +710,67 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 and vacuum_state.attributes.get("fan_speed") == fan_speed
             )
 
-        for attempt in range(DIRECT_CUSTOM_MOP_RETRY_ATTEMPTS + 1):
-            if context.can_mutate and not context.can_mutate():
-                return AdapterDispatchResult("ready", "ready", "Ready")
-            for entity_id, option in (
-                (profile.mode_select_entity_id, mode),
-                (profile.mop_mode_select_entity_id, route),
-                (profile.mop_intensity_select_entity_id, intensity),
-            ):
-                await hass.services.async_call(
-                    "select",
-                    "select_option",
-                    {"entity_id": entity_id, "option": option},
-                    blocking=True,
-                )
-            if context.can_mutate and not context.can_mutate():
-                return AdapterDispatchResult("ready", "ready", "Ready")
-            await hass.services.async_call(
-                "vacuum",
-                "set_fan_speed",
-                {"entity_id": request.robot_entity_id, "fan_speed": fan_speed},
-                blocking=True,
+        try:
+            # The inner deadline includes service latency. It must complete
+            # before the runtime watchdog so a failed mop stage becomes a
+            # safe skip rather than a scheduler-wide fault.
+            async with asyncio.timeout(NATIVE_MOP_PROFILE_TIMEOUT_SECONDS):
+                for attempt in range(NATIVE_MOP_PROFILE_RETRY_ATTEMPTS + 1):
+                    if context.can_mutate and not context.can_mutate():
+                        return AdapterDispatchResult("ready", "ready", "Ready")
+                    # Route and intensity select the concrete profile first.
+                    # Rob reports a transient combined state while doing so,
+                    # but it is still docked and no clean has been dispatched.
+                    for entity_id, option in (
+                        (profile.mop_mode_select_entity_id, route),
+                        (profile.mop_intensity_select_entity_id, intensity),
+                        (profile.mode_select_entity_id, mode),
+                    ):
+                        await hass.services.async_call(
+                            "select",
+                            "select_option",
+                            {"entity_id": entity_id, "option": option},
+                            blocking=True,
+                        )
+                    if context.can_mutate and not context.can_mutate():
+                        return AdapterDispatchResult("ready", "ready", "Ready")
+                    await hass.services.async_call(
+                        "vacuum",
+                        "set_fan_speed",
+                        {"entity_id": request.robot_entity_id, "fan_speed": fan_speed},
+                        blocking=True,
+                    )
+                    if observed():
+                        return AdapterDispatchResult("ready", "ready", "Ready")
+                    if attempt < NATIVE_MOP_PROFILE_RETRY_ATTEMPTS:
+                        await asyncio.sleep(NATIVE_MOP_PROFILE_RETRY_INTERVAL_SECONDS)
+        except TimeoutError:
+            _LOGGER.warning(
+                "Adaptive RoboVacs timed out confirming Roborock native mop profile: robot=%s timeout=%ss",
+                request.robot_entity_id,
+                NATIVE_MOP_PROFILE_TIMEOUT_SECONDS,
             )
-            if observed():
-                return AdapterDispatchResult("ready", "ready", "Ready")
-            if attempt < DIRECT_CUSTOM_MOP_RETRY_ATTEMPTS:
-                await asyncio.sleep(DIRECT_CUSTOM_MOP_RETRY_INTERVAL_SECONDS)
+        except Exception:
+            _LOGGER.warning(
+                "Adaptive RoboVacs could not apply Roborock native mop profile: robot=%s",
+                request.robot_entity_id,
+                exc_info=True,
+            )
+            return AdapterDispatchResult(
+                "blocked",
+                "native_mop_profile_apply_failed",
+                "Rob's native mop-only profile could not be applied.",
+            )
 
         _LOGGER.warning(
-            "Adaptive RoboVacs could not confirm Roborock direct custom mop profile: robot=%s retries=%s",
+            "Adaptive RoboVacs could not confirm Roborock native mop profile: robot=%s retries=%s",
             request.robot_entity_id,
-            DIRECT_CUSTOM_MOP_RETRY_ATTEMPTS,
+            NATIVE_MOP_PROFILE_RETRY_ATTEMPTS,
         )
         return AdapterDispatchResult(
             "blocked",
-            "direct_custom_mop_unconfirmed",
-            "Rob's direct custom mop profile could not be confirmed.",
+            "native_mop_profile_unconfirmed",
+            "Rob's native mop-only profile could not be confirmed.",
         )
 
     async def async_validate_profile(
@@ -754,8 +781,8 @@ class RoborockVacuumAdapter(VacuumAdapter):
     ) -> AdapterDispatchResult:
         """Reject unsupported Q10 custom profile values before mutation."""
 
-        if self._is_direct_custom_mop_request(context, request):
-            return await self._async_validate_direct_custom_mop(hass, context, request)
+        if self._is_native_mop_profile_request(context, request):
+            return await self._async_validate_native_mop_profile(hass, context, request)
         result = await super().async_validate_profile(hass, context, request)
         if not result.ready or not self._is_q10_request(hass, context, request):
             return result
@@ -773,8 +800,8 @@ class RoborockVacuumAdapter(VacuumAdapter):
     ) -> AdapterDispatchResult:
         """Leave Q10 custom values for its immediate pre-start sequence."""
 
-        if self._is_direct_custom_mop_request(context, request):
-            return await self._async_apply_direct_custom_mop(hass, context, request)
+        if self._is_native_mop_profile_request(context, request):
+            return await self._async_apply_native_mop_profile(hass, context, request)
         if self._is_q10_request(hass, context, request):
             return AdapterDispatchResult("ready", "ready", "Ready")
         return await super().async_apply_profile(hass, context, request)

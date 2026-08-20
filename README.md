@@ -135,11 +135,12 @@ restart-safe `manual_dashboard` occurrence metadata. Existing settings migrate
 to **Robot default**, while accepted occurrences retain their exact resolved
 profile across a restart.
 
-Version 1.7.0 adds Store schema v9 for the one-time, registry-keyed direct
-Custom mopping migration. For qualifying Roborock controls, a robot's own
-  saved non-concrete route and water defaults become **Standard** and
-  **Medium**. Room overrides are not changed because they may be shared by a
-  different vacuum.
+Version 1.7.0 adds Store schema v9 for the one-time, registry-keyed Roborock
+mop-profile migration. For qualifying controls, a robot's own saved
+non-concrete route and water defaults become **Standard** and **Medium**.
+Version 1.7.1 verifies the stable physical contract—native **Mop** mode with
+suction **Off**—after those concrete settings are applied. Room overrides are
+not changed because they may be shared by a different vacuum.
 
 ## Releases and upgrades
 

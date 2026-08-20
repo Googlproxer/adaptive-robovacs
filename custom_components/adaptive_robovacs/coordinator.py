@@ -56,11 +56,11 @@ from .models import (
     cleaning_profile_is_supported,
     cleaning_profile_sources,
     desired_window_allows,
-    direct_custom_mop_default_migration,
+    native_mop_profile_default_migration,
     due_at,
     forecast_vacancy,
     held_job_transition,
-    is_direct_custom_mop_value,
+    is_native_mop_profile_value,
     in_daytime_window,
     learned_duration_minutes,
     manual_clean_robot_is_docked,
@@ -759,8 +759,8 @@ class AdaptiveRoboVacCoordinator:
             settings.setdefault("cleaning_depth_configured", False)
         settings.setdefault("direct_custom_mop_migrated", False)
         migration = (
-            direct_custom_mop_default_migration(settings)
-            if robot.adapter_capabilities.direct_custom_mop
+            native_mop_profile_default_migration(settings)
+            if robot.adapter_capabilities.native_mop_profile
             else None
         )
         if migration is not None:
@@ -1202,12 +1202,12 @@ class AdaptiveRoboVacCoordinator:
         } and not (value is None or isinstance(value, str)):
             raise ValueError("Robot cleaning profile options must be strings or Not configured")
         if (
-            robot.adapter_capabilities.direct_custom_mop
+            robot.adapter_capabilities.native_mop_profile
             and key in {"mop_mode", "mop_intensity"}
-            and not is_direct_custom_mop_value(key, value)
+            and not is_native_mop_profile_value(key, value)
         ):
             raise ValueError(
-                "Direct Custom mopping requires a concrete route and water intensity"
+                "Native mop-only cleaning requires a concrete route and water intensity"
             )
         if key == "mopping_enabled":
             settings["cleaning_program"] = "vacuum_then_mop" if value else "vacuum_only"

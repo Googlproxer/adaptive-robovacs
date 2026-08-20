@@ -256,7 +256,7 @@ def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict
         for area_id in coordinator._active_rooms(active)
         if area_id in coordinator.discovery.rooms
     ] if active else []
-    direct_custom_mop = robot.adapter_capabilities.direct_custom_mop
+    native_mop_profile = robot.adapter_capabilities.native_mop_profile
     active_mop_profile = (
         active.get("cleaning_profile", {})
         if active and active.get("operation") == "mop"
@@ -268,10 +268,10 @@ def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict
         "mop_intensity"
     )
     mop_profile_summary = (
-        "Custom mode with suction off"
+        "Mop mode with suction off"
         f"; route: {str(direct_route or 'standard').replace('_', ' ')}"
         f"; water: {str(direct_intensity or 'medium').replace('_', ' ')}"
-        if direct_custom_mop
+        if native_mop_profile
         else None
     )
     def observed(entity: str | None) -> str | None:
@@ -313,7 +313,7 @@ def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict
             "cleaning_depth_options": list(
                 robot.adapter_capabilities.cleaning_depth_options
             ),
-            "direct_custom_mop": direct_custom_mop,
+            "native_mop_profile": native_mop_profile,
             "supported_operations": sorted(
                 robot.adapter_capabilities.supported_operations
             ),

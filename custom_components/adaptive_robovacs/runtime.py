@@ -25,6 +25,12 @@ SERVICE_CALL_TIMEOUT_SECONDS = 35
 SAFE_MOP_PROFILE_BLOCK_CODES = frozenset(
     {
         "mop_only_mode_unconfirmed",
+        "native_mop_profile_invalid",
+        "native_mop_profile_control_unavailable",
+        "native_mop_profile_unconfirmed",
+        "native_mop_profile_apply_failed",
+        # Retain these legacy values during a rolling upgrade: a stage saved
+        # before v1.7.1 must still be handled as a safe mop-only skip.
         "direct_custom_mop_profile_invalid",
         "direct_custom_mop_control_unavailable",
         "direct_custom_mop_unconfirmed",

@@ -47,6 +47,10 @@ class WaterMoppingContractTests(unittest.TestCase):
         self.assertIn("profile_apply = await adapter.async_apply_profile", runtime)
         self.assertLess(handler, runtime.index("result = await adapter.async_dispatch"))
         for code in (
+            "native_mop_profile_invalid",
+            "native_mop_profile_control_unavailable",
+            "native_mop_profile_unconfirmed",
+            "native_mop_profile_apply_failed",
             "direct_custom_mop_profile_invalid",
             "direct_custom_mop_control_unavailable",
             "direct_custom_mop_unconfirmed",

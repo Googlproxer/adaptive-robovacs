@@ -283,15 +283,15 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities.mop_pass_counts, frozenset({1}))
         self.assertEqual(capabilities.native_mop_pass_counts, frozenset())
         self.assertEqual(capabilities.cleaning_depth_options, ("fast", "daily", "fine"))
-        self.assertFalse(capabilities.direct_custom_mop)
+        self.assertFalse(capabilities.native_mop_profile)
         self.assertIsNone(diagnostic)
 
-    async def test_direct_custom_mop_capability_is_advertised_only_for_qualifying_controls(self) -> None:
+    async def test_native_mop_profile_capability_is_advertised_only_for_qualifying_controls(self) -> None:
         _adapter, capabilities, diagnostic = await registry.async_resolve_adapter(
-            None, self._direct_custom_mop_context()
+            None, self._native_mop_profile_context()
         )
 
-        self.assertTrue(capabilities.direct_custom_mop)
+        self.assertTrue(capabilities.native_mop_profile)
         self.assertIsNone(diagnostic)
 
     def _q10_context(self) -> base.AdapterMatchContext:
@@ -339,11 +339,11 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         )
 
     @staticmethod
-    def _direct_custom_mop_context(*, shared_controls: bool = False) -> base.AdapterMatchContext:
+    def _native_mop_profile_context(*, shared_controls: bool = False) -> base.AdapterMatchContext:
         profile = types.SimpleNamespace(
             supports_double_pass=False,
             supports_mopping=True,
-            mode_options=("vacuum", "mop", "vac_and_mop", "custom"),
+            mode_options=("vacuum", "mop", "vac_and_mop"),
             mop_mode_options=("standard", "deep", "deep_plus", "fast", "smart_mode"),
             mop_intensity_options=("off", "low", "medium", "high", "smart_mode"),
             mode_select_entity_id="select.test_cleaning_mode",
@@ -370,7 +370,7 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         )
 
     @staticmethod
-    def _direct_custom_mop_request(
+    def _native_mop_profile_request(
         *, route: str = "deep", intensity: str = "high"
     ) -> base.AdapterDispatchRequest:
         return base.AdapterDispatchRequest(
@@ -379,18 +379,18 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             "mop",
             1,
             {
-                "mode": "custom",
+                "mode": "mop",
                 "fan_speed": "off",
                 "mop_mode": route,
                 "mop_intensity": intensity,
             },
         )
 
-    def _direct_custom_mop_hass(self):
+    def _native_mop_profile_hass(self):
         states = {
             "select.test_cleaning_mode": types.SimpleNamespace(
                 state="vac_and_mop",
-                attributes={"options": ["vacuum", "mop", "vac_and_mop", "custom"]},
+                attributes={"options": ["vacuum", "mop", "vac_and_mop"]},
             ),
             "select.test_mop_route": types.SimpleNamespace(
                 state="smart_mode",
@@ -408,20 +408,20 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             states=types.SimpleNamespace(get=states.get),
         )
 
-    def test_direct_custom_mop_requires_independent_same_device_controls(self) -> None:
+    def test_native_mop_profile_requires_independent_same_device_controls(self) -> None:
         self.assertTrue(
-            roborock.supports_roborock_direct_custom_mop(
-                self._direct_custom_mop_context()
+            roborock.supports_roborock_native_mop_profile(
+                self._native_mop_profile_context()
             )
         )
         self.assertFalse(
-            roborock.supports_roborock_direct_custom_mop(
-                self._direct_custom_mop_context(shared_controls=True)
+            roborock.supports_roborock_native_mop_profile(
+                self._native_mop_profile_context(shared_controls=True)
             )
         )
 
-    async def test_direct_custom_mop_applies_native_controls_in_order_with_suction_off(self) -> None:
-        states, hass = self._direct_custom_mop_hass()
+    async def test_native_mop_profile_applies_controls_in_safe_order_with_suction_off(self) -> None:
+        states, hass = self._native_mop_profile_hass()
         calls: list[tuple[str, str, dict[str, object]]] = []
 
         async def service_call(domain, service, data, *, blocking):
@@ -437,32 +437,110 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             generic.GenericVacuumAdapter()
         ).async_apply_profile(
             hass,
-            self._direct_custom_mop_context(),
-            self._direct_custom_mop_request(),
+            self._native_mop_profile_context(),
+            self._native_mop_profile_request(),
         )
 
         self.assertTrue(result.ready)
         self.assertEqual(
             calls,
             [
-                ("select", "select_option", {"entity_id": "select.test_cleaning_mode", "option": "custom"}),
                 ("select", "select_option", {"entity_id": "select.test_mop_route", "option": "deep"}),
                 ("select", "select_option", {"entity_id": "select.test_water_intensity", "option": "high"}),
+                ("select", "select_option", {"entity_id": "select.test_cleaning_mode", "option": "mop"}),
                 ("vacuum", "set_fan_speed", {"entity_id": "vacuum.test", "fan_speed": "off"}),
             ],
         )
         self.assertEqual(states["vacuum.test"].attributes["fan_speed"], "off")
-        self.assertNotIn(
-            "mop",
-            {data.get("option") for _domain, _service, data in calls},
-        )
+        self.assertNotIn("custom", {data.get("option") for _domain, _service, data in calls})
         self.assertNotIn(
             "vac_and_mop",
             {data.get("option") for _domain, _service, data in calls},
         )
 
-    async def test_direct_custom_mop_retries_the_entire_profile_until_observed(self) -> None:
-        states, hass = self._direct_custom_mop_hass()
+    async def test_native_mop_profile_stabilizes_linked_roborock_controls(self) -> None:
+        states, hass = self._native_mop_profile_hass()
+        calls: list[tuple[str, str, dict[str, object]]] = []
+
+        async def service_call(domain, service, data, *, blocking):
+            self.assertTrue(blocking)
+            calls.append((domain, service, data))
+            if data.get("entity_id") == "select.test_mop_route":
+                states["select.test_mop_route"].state = data["option"]
+                states["select.test_cleaning_mode"].state = "vac_and_mop"
+                states["vacuum.test"].attributes["fan_speed"] = "balanced"
+            elif data.get("entity_id") == "select.test_water_intensity":
+                states["select.test_water_intensity"].state = data["option"]
+            elif data.get("entity_id") == "select.test_cleaning_mode":
+                states["select.test_cleaning_mode"].state = data["option"]
+            else:
+                states["vacuum.test"].attributes["fan_speed"] = data["fan_speed"]
+
+        hass.services = types.SimpleNamespace(async_call=service_call)
+        result = await roborock.RoborockVacuumAdapter(
+            generic.GenericVacuumAdapter()
+        ).async_apply_profile(
+            hass,
+            self._native_mop_profile_context(),
+            self._native_mop_profile_request(),
+        )
+
+        self.assertTrue(result.ready)
+        self.assertEqual(states["select.test_cleaning_mode"].state, "mop")
+        self.assertEqual(states["vacuum.test"].attributes["fan_speed"], "off")
+        self.assertNotIn("custom", {data.get("option") for _, _, data in calls})
+        self.assertNotIn("vac_and_mop", {data.get("option") for _, _, data in calls})
+
+    async def test_native_mop_profile_deadline_is_a_safe_mop_block(self) -> None:
+        _states, hass = self._native_mop_profile_hass()
+
+        class TimeoutOnExit:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _traceback):
+                raise TimeoutError
+
+        original_timeout = roborock.asyncio.timeout
+        original_sleep = roborock.asyncio.sleep
+        roborock.asyncio.timeout = lambda _seconds: TimeoutOnExit()
+        roborock.asyncio.sleep = AsyncMock()
+        self.addCleanup(setattr, roborock.asyncio, "timeout", original_timeout)
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
+        hass.services = types.SimpleNamespace(async_call=AsyncMock())
+
+        result = await roborock.RoborockVacuumAdapter(
+            generic.GenericVacuumAdapter()
+        ).async_apply_profile(
+            hass,
+            self._native_mop_profile_context(),
+            self._native_mop_profile_request(),
+        )
+
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.code, "native_mop_profile_unconfirmed")
+
+    async def test_native_mop_profile_write_error_is_a_safe_mop_block(self) -> None:
+        _states, hass = self._native_mop_profile_hass()
+
+        async def service_call(_domain, _service, _data, *, blocking):
+            self.assertTrue(blocking)
+            raise RuntimeError("native control rejected")
+
+        hass.services = types.SimpleNamespace(async_call=service_call)
+        result = await roborock.RoborockVacuumAdapter(
+            generic.GenericVacuumAdapter()
+        ).async_apply_profile(
+            hass,
+            self._native_mop_profile_context(),
+            self._native_mop_profile_request(),
+        )
+
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.code, "native_mop_profile_apply_failed")
+
+    async def test_native_mop_profile_retries_the_entire_profile_until_observed(self) -> None:
+        states, hass = self._native_mop_profile_hass()
         calls: list[tuple[str, str, dict[str, object]]] = []
 
         async def service_call(domain, service, data, *, blocking):
@@ -484,18 +562,18 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             generic.GenericVacuumAdapter()
         ).async_apply_profile(
             hass,
-            self._direct_custom_mop_context(),
-            self._direct_custom_mop_request(),
+            self._native_mop_profile_context(),
+            self._native_mop_profile_request(),
         )
 
         self.assertTrue(result.ready)
         self.assertEqual(len(calls), 8)
         sleep.assert_awaited_once_with(
-            roborock.DIRECT_CUSTOM_MOP_RETRY_INTERVAL_SECONDS
+            roborock.NATIVE_MOP_PROFILE_RETRY_INTERVAL_SECONDS
         )
 
-    async def test_direct_custom_mop_timeout_blocks_before_any_clean_dispatch(self) -> None:
-        _states, hass = self._direct_custom_mop_hass()
+    async def test_native_mop_profile_timeout_blocks_before_any_clean_dispatch(self) -> None:
+        _states, hass = self._native_mop_profile_hass()
         calls: list[tuple[str, str, dict[str, object]]] = []
 
         async def service_call(domain, service, data, *, blocking):
@@ -511,12 +589,12 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             generic.GenericVacuumAdapter()
         ).async_apply_profile(
             hass,
-            self._direct_custom_mop_context(),
-            self._direct_custom_mop_request(),
+            self._native_mop_profile_context(),
+            self._native_mop_profile_request(),
         )
 
         self.assertTrue(result.blocked)
-        self.assertEqual(result.code, "direct_custom_mop_unconfirmed")
+        self.assertEqual(result.code, "native_mop_profile_unconfirmed")
         self.assertEqual(len(calls), 28)
         self.assertEqual(sleep.await_count, 6)
         self.assertNotIn(
@@ -524,20 +602,20 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             {(domain, service) for domain, service, _data in calls},
         )
 
-    async def test_direct_custom_mop_rejects_nonconcrete_route_or_water(self) -> None:
-        _states, hass = self._direct_custom_mop_hass()
+    async def test_native_mop_profile_rejects_nonconcrete_route_or_water(self) -> None:
+        _states, hass = self._native_mop_profile_hass()
         hass.services = types.SimpleNamespace(async_call=AsyncMock())
 
         result = await roborock.RoborockVacuumAdapter(
             generic.GenericVacuumAdapter()
         ).async_validate_profile(
             hass,
-            self._direct_custom_mop_context(),
-            self._direct_custom_mop_request(route="smart_mode"),
+            self._native_mop_profile_context(),
+            self._native_mop_profile_request(route="smart_mode"),
         )
 
         self.assertTrue(result.blocked)
-        self.assertEqual(result.code, "direct_custom_mop_profile_invalid")
+        self.assertEqual(result.code, "native_mop_profile_invalid")
         hass.services.async_call.assert_not_awaited()
 
     async def test_mop_profile_applies_shared_operation_selector_once(self) -> None:

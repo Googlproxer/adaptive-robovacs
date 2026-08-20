@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .entity import AdaptiveEntity, async_setup_dynamic_entities
-from .models import is_direct_custom_mop_value
+from .models import is_native_mop_profile_value
 
 TIME_OPTIONS = tuple(
     f"{hour:02d}:{minute:02d}"
@@ -190,14 +190,14 @@ class _RobotSelect(AdaptiveEntity, SelectEntity):
             options = self._fallback_options
         direct_mop_setting = bool(
             robot
-            and robot.adapter_capabilities.direct_custom_mop
+            and robot.adapter_capabilities.native_mop_profile
             and self.key in {"mop_mode", "mop_intensity"}
         )
         if direct_mop_setting:
             options = tuple(
                 option
                 for option in options
-                if is_direct_custom_mop_value(self.key, option)
+                if is_native_mop_profile_value(self.key, option)
             )
         visible = ([NOT_CONFIGURED_OPTION] if not direct_mop_setting else []) + list(options)
         saved = self.coordinator.robot_state(self.robot_entity_id)["settings"].get(
@@ -305,22 +305,22 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
             )
         if profile.mode_select_entity_id and profile.mode_options:
             label = (
-                "vacuum cleaning mode (mopping uses Custom with suction off)"
-                if robot.adapter_capabilities.direct_custom_mop
+                "vacuum cleaning mode (mopping uses native Mop with suction off)"
+                if robot.adapter_capabilities.native_mop_profile
                 else "mode"
             )
             entities.append(_RobotSelect(coordinator, robot.entity_id, "mode", profile.mode_options, label))
         if profile.mop_mode_select_entity_id and profile.mop_mode_options:
             label = (
-                "direct custom mop route"
-                if robot.adapter_capabilities.direct_custom_mop
+                "native mop route"
+                if robot.adapter_capabilities.native_mop_profile
                 else "mop mode"
             )
             entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_mode", profile.mop_mode_options, label))
         if profile.mop_intensity_select_entity_id and profile.mop_intensity_options:
             label = (
-                "direct custom water intensity"
-                if robot.adapter_capabilities.direct_custom_mop
+                "native mop water intensity"
+                if robot.adapter_capabilities.native_mop_profile
                 else "mop intensity"
             )
             entities.append(_RobotSelect(coordinator, robot.entity_id, "mop_intensity", profile.mop_intensity_options, label))

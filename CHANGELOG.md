@@ -11,6 +11,25 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 - Added this central changelog as the release-history index.
 
+## [1.7.1] - 2026-08-20
+
+### Fixed
+
+- Corrected Roborock native mop-only preparation for linked Home Assistant
+  controls. Concrete route and water settings are prepared first, then native
+  **Mop** and suction **Off** are applied and confirmed before dispatch.
+- The 30-second mop-profile deadline now includes service-call latency and
+  safely skips only mopping on timeout or a profile-write failure, rather than
+  raising a scheduler-wide fault.
+
+### Changed
+
+- Rob's dashboard now describes the verified physical contract as **Mop mode
+  with suction off**. The existing one-time route/intensity migration remains
+  unchanged.
+
+Detailed notes: [`docs/releases/v1.7.1.md`](docs/releases/v1.7.1.md).
+
 ## [1.7.0] - 2026-08-20
 
 ### Fixed
