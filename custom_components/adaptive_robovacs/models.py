@@ -992,10 +992,19 @@ def due_at(
     deferred_until: datetime | None,
     now: datetime,
 ) -> datetime:
-    """Return the due time while retaining the established one-day deferral rule."""
+    """Return the cadence due time, accepting only bounded deferrals.
+
+    A cancellation rebase or stale restored Store value must not leave a room
+    deferred beyond one complete cadence.  Deferrals within that horizon still
+    provide the intended short cooldown after a manual clean or cancellation.
+    """
 
     baseline = now if last_completed is None else last_completed + timedelta(hours=interval_hours)
-    return max(baseline, deferred_until) if deferred_until else baseline
+    if deferred_until is None:
+        return baseline
+    if deferred_until > now + timedelta(hours=interval_hours):
+        return baseline
+    return max(baseline, deferred_until)
 
 
 def format_time_until(due_at: datetime, now: datetime) -> str:

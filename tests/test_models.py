@@ -141,6 +141,16 @@ class CadenceTests(unittest.TestCase):
         )
         self.assertEqual(result, self.now + timedelta(hours=10))
 
+    def test_due_at_ignores_a_deferral_beyond_the_cleaning_cadence(self) -> None:
+        last_cleaned = self.now - timedelta(hours=1)
+        result = models.due_at(
+            last_cleaned,
+            48,
+            self.now + timedelta(days=5),
+            self.now,
+        )
+        self.assertEqual(result, last_cleaned + timedelta(hours=48))
+
     def test_time_until_uses_only_the_largest_whole_unit(self) -> None:
         self.assertEqual(
             models.format_time_until(

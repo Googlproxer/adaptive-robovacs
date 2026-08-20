@@ -11,6 +11,15 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 - Added this central changelog as the release-history index.
 
+## [1.7.3] - 2026-08-20
+
+### Fixed
+
+- Prevented stale or cancellation-rebased room deferrals from pushing a room's
+  next due time beyond its configured cleaning cadence.
+
+Detailed notes: [`docs/releases/v1.7.3.md`](docs/releases/v1.7.3.md).
+
 ## [1.7.2] - 2026-08-20
 
 ### Changed
