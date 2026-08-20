@@ -11,6 +11,25 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 - Added this central changelog as the release-history index.
 
+## [1.7.0] - 2026-08-20
+
+### Fixed
+
+- Qualifying Roborock mop stages now use native **Custom** cleaning with
+  suction **Off** and explicit, verified route and water-intensity controls.
+  They never select Mop, Mop-only, or Vacuum-and-mop on this path.
+- The direct profile is retried for 30 seconds and safely skips only mopping
+  when it cannot be confirmed. Ordered programs retain their completed vacuum
+  stage and never repeat it.
+
+### Changed
+
+- Store schema v9 records a one-time, registry-keyed migration from Rob's
+  non-concrete route and water defaults to Standard and Medium. Room overrides
+  are preserved unchanged.
+
+Detailed notes: [`docs/releases/v1.7.0.md`](docs/releases/v1.7.0.md).
+
 ## [1.6.11] - 2026-08-20
 
 ### Fixed

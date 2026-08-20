@@ -83,6 +83,12 @@ unavailable water skips that mop stage without blocking a configured vacuum
 stage or engaging the system-failure latch. Mop-capable robots without water
 telemetry require an explicit one-hour **Confirm water** mobile action; cancel,
 dismissal, timeout, or an unreachable notification safely skips only mopping.
+When a Roborock advertises independent native **Custom** cleaning, mop route,
+and water-intensity controls plus a suction **Off** fan option, its mop stages
+use that direct profile instead of an app routine or a combined clean mode.
+The vacuum card shows the direct Custom/suction-off contract and the resolved
+route and water defaults. Missing or non-concrete controls safely skip only the
+mop stage; they never fall back to vacuum-and-mop cleaning.
 
 The three manual room actions bypass cadence, desired windows, occupancy,
 forecasting, configured enablement, battery thresholds, holds, and scheduler
@@ -128,6 +134,12 @@ Version 1.5.0 adds Store schema v7 for nullable room profile overrides and
 restart-safe `manual_dashboard` occurrence metadata. Existing settings migrate
 to **Robot default**, while accepted occurrences retain their exact resolved
 profile across a restart.
+
+Version 1.7.0 adds Store schema v9 for the one-time, registry-keyed direct
+Custom mopping migration. For qualifying Roborock controls, a robot's own
+  saved non-concrete route and water defaults become **Standard** and
+  **Medium**. Room overrides are not changed because they may be shared by a
+  different vacuum.
 
 ## Releases and upgrades
 

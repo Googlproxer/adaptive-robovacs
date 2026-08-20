@@ -283,6 +283,15 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities.mop_pass_counts, frozenset({1}))
         self.assertEqual(capabilities.native_mop_pass_counts, frozenset())
         self.assertEqual(capabilities.cleaning_depth_options, ("fast", "daily", "fine"))
+        self.assertFalse(capabilities.direct_custom_mop)
+        self.assertIsNone(diagnostic)
+
+    async def test_direct_custom_mop_capability_is_advertised_only_for_qualifying_controls(self) -> None:
+        _adapter, capabilities, diagnostic = await registry.async_resolve_adapter(
+            None, self._direct_custom_mop_context()
+        )
+
+        self.assertTrue(capabilities.direct_custom_mop)
         self.assertIsNone(diagnostic)
 
     def _q10_context(self) -> base.AdapterMatchContext:
@@ -328,6 +337,208 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             supports_send_command=False,
             profile=profile,
         )
+
+    @staticmethod
+    def _direct_custom_mop_context(*, shared_controls: bool = False) -> base.AdapterMatchContext:
+        profile = types.SimpleNamespace(
+            supports_double_pass=False,
+            supports_mopping=True,
+            mode_options=("vacuum", "mop", "vac_and_mop", "custom"),
+            mop_mode_options=("standard", "deep", "deep_plus", "fast", "smart_mode"),
+            mop_intensity_options=("off", "low", "medium", "high", "smart_mode"),
+            mode_select_entity_id="select.test_cleaning_mode",
+            mop_mode_select_entity_id=(
+                "select.test_cleaning_mode"
+                if shared_controls
+                else "select.test_mop_route"
+            ),
+            mop_intensity_select_entity_id=(
+                "select.test_cleaning_mode"
+                if shared_controls
+                else "select.test_water_intensity"
+            ),
+            passes_select_entity_id=None,
+            passes_options=(),
+        )
+        return base.AdapterMatchContext(
+            entity_id="vacuum.test",
+            platform="roborock",
+            supports_area_clean=True,
+            supports_send_command=True,
+            profile=profile,
+            fan_speed_options=("quiet", "balanced", "off", "custom"),
+        )
+
+    @staticmethod
+    def _direct_custom_mop_request(
+        *, route: str = "deep", intensity: str = "high"
+    ) -> base.AdapterDispatchRequest:
+        return base.AdapterDispatchRequest(
+            "vacuum.test",
+            ("room",),
+            "mop",
+            1,
+            {
+                "mode": "custom",
+                "fan_speed": "off",
+                "mop_mode": route,
+                "mop_intensity": intensity,
+            },
+        )
+
+    def _direct_custom_mop_hass(self):
+        states = {
+            "select.test_cleaning_mode": types.SimpleNamespace(
+                state="vac_and_mop",
+                attributes={"options": ["vacuum", "mop", "vac_and_mop", "custom"]},
+            ),
+            "select.test_mop_route": types.SimpleNamespace(
+                state="smart_mode",
+                attributes={"options": ["standard", "deep", "deep_plus", "fast", "smart_mode"]},
+            ),
+            "select.test_water_intensity": types.SimpleNamespace(
+                state="off",
+                attributes={"options": ["off", "low", "medium", "high", "smart_mode"]},
+            ),
+            "vacuum.test": types.SimpleNamespace(
+                state="docked", attributes={"fan_speed": "max"}
+            ),
+        }
+        return states, types.SimpleNamespace(
+            states=types.SimpleNamespace(get=states.get),
+        )
+
+    def test_direct_custom_mop_requires_independent_same_device_controls(self) -> None:
+        self.assertTrue(
+            roborock.supports_roborock_direct_custom_mop(
+                self._direct_custom_mop_context()
+            )
+        )
+        self.assertFalse(
+            roborock.supports_roborock_direct_custom_mop(
+                self._direct_custom_mop_context(shared_controls=True)
+            )
+        )
+
+    async def test_direct_custom_mop_applies_native_controls_in_order_with_suction_off(self) -> None:
+        states, hass = self._direct_custom_mop_hass()
+        calls: list[tuple[str, str, dict[str, object]]] = []
+
+        async def service_call(domain, service, data, *, blocking):
+            self.assertTrue(blocking)
+            calls.append((domain, service, data))
+            if domain == "select":
+                states[data["entity_id"]].state = data["option"]
+            else:
+                states[data["entity_id"]].attributes["fan_speed"] = data["fan_speed"]
+
+        hass.services = types.SimpleNamespace(async_call=service_call)
+        result = await roborock.RoborockVacuumAdapter(
+            generic.GenericVacuumAdapter()
+        ).async_apply_profile(
+            hass,
+            self._direct_custom_mop_context(),
+            self._direct_custom_mop_request(),
+        )
+
+        self.assertTrue(result.ready)
+        self.assertEqual(
+            calls,
+            [
+                ("select", "select_option", {"entity_id": "select.test_cleaning_mode", "option": "custom"}),
+                ("select", "select_option", {"entity_id": "select.test_mop_route", "option": "deep"}),
+                ("select", "select_option", {"entity_id": "select.test_water_intensity", "option": "high"}),
+                ("vacuum", "set_fan_speed", {"entity_id": "vacuum.test", "fan_speed": "off"}),
+            ],
+        )
+        self.assertEqual(states["vacuum.test"].attributes["fan_speed"], "off")
+        self.assertNotIn(
+            "mop",
+            {data.get("option") for _domain, _service, data in calls},
+        )
+        self.assertNotIn(
+            "vac_and_mop",
+            {data.get("option") for _domain, _service, data in calls},
+        )
+
+    async def test_direct_custom_mop_retries_the_entire_profile_until_observed(self) -> None:
+        states, hass = self._direct_custom_mop_hass()
+        calls: list[tuple[str, str, dict[str, object]]] = []
+
+        async def service_call(domain, service, data, *, blocking):
+            self.assertTrue(blocking)
+            calls.append((domain, service, data))
+            if len(calls) <= 4:
+                return
+            if domain == "select":
+                states[data["entity_id"]].state = data["option"]
+            else:
+                states[data["entity_id"]].attributes["fan_speed"] = data["fan_speed"]
+
+        sleep = AsyncMock()
+        original_sleep = roborock.asyncio.sleep
+        roborock.asyncio.sleep = sleep
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
+        hass.services = types.SimpleNamespace(async_call=service_call)
+        result = await roborock.RoborockVacuumAdapter(
+            generic.GenericVacuumAdapter()
+        ).async_apply_profile(
+            hass,
+            self._direct_custom_mop_context(),
+            self._direct_custom_mop_request(),
+        )
+
+        self.assertTrue(result.ready)
+        self.assertEqual(len(calls), 8)
+        sleep.assert_awaited_once_with(
+            roborock.DIRECT_CUSTOM_MOP_RETRY_INTERVAL_SECONDS
+        )
+
+    async def test_direct_custom_mop_timeout_blocks_before_any_clean_dispatch(self) -> None:
+        _states, hass = self._direct_custom_mop_hass()
+        calls: list[tuple[str, str, dict[str, object]]] = []
+
+        async def service_call(domain, service, data, *, blocking):
+            self.assertTrue(blocking)
+            calls.append((domain, service, data))
+
+        sleep = AsyncMock()
+        original_sleep = roborock.asyncio.sleep
+        roborock.asyncio.sleep = sleep
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
+        hass.services = types.SimpleNamespace(async_call=service_call)
+        result = await roborock.RoborockVacuumAdapter(
+            generic.GenericVacuumAdapter()
+        ).async_apply_profile(
+            hass,
+            self._direct_custom_mop_context(),
+            self._direct_custom_mop_request(),
+        )
+
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.code, "direct_custom_mop_unconfirmed")
+        self.assertEqual(len(calls), 28)
+        self.assertEqual(sleep.await_count, 6)
+        self.assertNotIn(
+            ("vacuum", "clean_area"),
+            {(domain, service) for domain, service, _data in calls},
+        )
+
+    async def test_direct_custom_mop_rejects_nonconcrete_route_or_water(self) -> None:
+        _states, hass = self._direct_custom_mop_hass()
+        hass.services = types.SimpleNamespace(async_call=AsyncMock())
+
+        result = await roborock.RoborockVacuumAdapter(
+            generic.GenericVacuumAdapter()
+        ).async_validate_profile(
+            hass,
+            self._direct_custom_mop_context(),
+            self._direct_custom_mop_request(route="smart_mode"),
+        )
+
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.code, "direct_custom_mop_profile_invalid")
+        hass.services.async_call.assert_not_awaited()
 
     async def test_mop_profile_applies_shared_operation_selector_once(self) -> None:
         state = types.SimpleNamespace(

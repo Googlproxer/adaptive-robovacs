@@ -342,6 +342,102 @@ class CleaningProfileTests(unittest.TestCase):
             )
         )
 
+    def test_direct_custom_mop_resolves_explicit_native_controls(self) -> None:
+        capabilities = models.AdapterCapabilities(
+            adapter_id="roborock",
+            schema_version=7,
+            portable_area_clean=True,
+            supported_pass_counts=frozenset({1}),
+            supported_operations=frozenset({"vacuum", "mop"}),
+            fan_speed_options=("quiet", "off", "custom"),
+            mode_options=("vacuum", "mop", "vac_and_mop", "custom"),
+            mop_mode_options=("standard", "deep", "deep_plus", "fast", "smart_mode"),
+            mop_intensity_options=("off", "low", "medium", "high", "smart_mode"),
+            direct_custom_mop=True,
+        )
+
+        resolved = models.resolve_cleaning_profile(
+            "mop", {}, {}, capabilities
+        )
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.mode, "custom")
+        self.assertEqual(resolved.fan_speed, "off")
+        self.assertEqual(resolved.mop_mode, "standard")
+        self.assertEqual(resolved.mop_intensity, "medium")
+
+    def test_direct_custom_mop_preserves_a_nonconcrete_room_override_for_safe_blocking(self) -> None:
+        capabilities = models.AdapterCapabilities(
+            adapter_id="roborock",
+            schema_version=7,
+            portable_area_clean=True,
+            supported_pass_counts=frozenset({1}),
+            supported_operations=frozenset({"vacuum", "mop"}),
+            fan_speed_options=("quiet", "off"),
+            mode_options=("vacuum", "custom"),
+            mop_mode_options=("standard", "deep", "smart_mode"),
+            mop_intensity_options=("off", "medium", "smart_mode"),
+            direct_custom_mop=True,
+        )
+
+        resolved = models.resolve_cleaning_profile(
+            "mop",
+            {"mop_mode": "smart_mode", "mop_intensity": "smart_mode"},
+            {"mop_mode": "standard", "mop_intensity": "medium"},
+            capabilities,
+        )
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.mode, "custom")
+        self.assertEqual(resolved.fan_speed, "off")
+        self.assertEqual(resolved.mop_mode, "smart_mode")
+        self.assertEqual(resolved.mop_intensity, "smart_mode")
+
+    def test_direct_custom_mop_migration_normalizes_only_robot_defaults_once(self) -> None:
+        migrated = models.direct_custom_mop_default_migration(
+            {"mop_mode": "smart_mode", "mop_intensity": "off"}
+        )
+
+        self.assertEqual(
+            migrated,
+            {
+                "direct_custom_mop_migrated": True,
+                "mop_mode": "standard",
+                "mop_intensity": "medium",
+            },
+        )
+        self.assertEqual(
+            models.direct_custom_mop_default_migration(
+                {"mop_mode": "deep", "mop_intensity": "high"}
+            ),
+            {"direct_custom_mop_migrated": True},
+        )
+        self.assertIsNone(
+            models.direct_custom_mop_default_migration(
+                {
+                    "direct_custom_mop_migrated": True,
+                    "mop_mode": "deep",
+                    "mop_intensity": "high",
+                }
+            )
+        )
+
+    def test_direct_custom_mop_controls_accept_only_concrete_route_and_water_values(self) -> None:
+        for value in ("standard", "deep", "deep_plus", "fast"):
+            self.assertTrue(models.is_direct_custom_mop_value("mop_mode", value))
+        for value in ("low", "medium", "high"):
+            self.assertTrue(
+                models.is_direct_custom_mop_value("mop_intensity", value)
+            )
+        for key, value in (
+            ("mop_mode", "custom"),
+            ("mop_mode", "smart_mode"),
+            ("mop_intensity", "off"),
+            ("mop_intensity", "custom"),
+            ("mop_intensity", None),
+        ):
+            self.assertFalse(models.is_direct_custom_mop_value(key, value))
+
     def test_vacuum_profile_ignores_retained_mop_only_values(self) -> None:
         resolved = models.resolve_cleaning_profile(
             "vacuum",

@@ -22,6 +22,14 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 SERVICE_CALL_TIMEOUT_SECONDS = 35
+SAFE_MOP_PROFILE_BLOCK_CODES = frozenset(
+    {
+        "mop_only_mode_unconfirmed",
+        "direct_custom_mop_profile_invalid",
+        "direct_custom_mop_control_unavailable",
+        "direct_custom_mop_unconfirmed",
+    }
+)
 
 
 class HomeAssistantRuntime:
@@ -266,6 +274,15 @@ class HomeAssistantRuntime:
             )
             return False, fault_summary("profile_validation_failed")
         if not profile_preflight.ready:
+            if (
+                profile_preflight.blocked
+                and candidate.get("operation") == "mop"
+                and profile_preflight.code in SAFE_MOP_PROFILE_BLOCK_CODES
+            ):
+                await coordinator._async_handle_mop_mode_unconfirmed(
+                    robot, candidate, profile_preflight.code, now
+                )
+                return True, f"skipped mopping {room.name}: mop profile unavailable"
             await coordinator._async_latch_scheduler_fault(
                 robot,
                 room,
@@ -304,10 +321,10 @@ class HomeAssistantRuntime:
             if (
                 profile_apply.blocked
                 and candidate.get("operation") == "mop"
-                and profile_apply.code == "mop_only_mode_unconfirmed"
+                and profile_apply.code in SAFE_MOP_PROFILE_BLOCK_CODES
             ):
                 _LOGGER.warning(
-                    "Adaptive RoboVacs skipped an unconfirmed mop-only stage: robot=%s room=%s adapter=%s",
+                    "Adaptive RoboVacs skipped an unconfirmed mop profile: robot=%s room=%s adapter=%s",
                     robot.entity_id,
                     room.name,
                     robot.adapter_id,
@@ -315,7 +332,7 @@ class HomeAssistantRuntime:
                 await coordinator._async_handle_mop_mode_unconfirmed(
                     robot, candidate, profile_apply.code, now
                 )
-                return True, f"skipped mopping {room.name}: mop-only mode unavailable"
+                return True, f"skipped mopping {room.name}: mop profile unavailable"
             await coordinator._async_latch_scheduler_fault(
                 robot,
                 room,

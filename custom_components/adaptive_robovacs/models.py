@@ -15,6 +15,8 @@ from typing import Iterable, Literal, Mapping
 
 VALID_OCCUPANCY_STATES = {"on", "off"}
 DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+DIRECT_CUSTOM_MOP_ROUTES = frozenset({"standard", "deep", "deep_plus", "fast"})
+DIRECT_CUSTOM_MOP_INTENSITIES = frozenset({"low", "medium", "high"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +165,7 @@ class AdapterCapabilities:
     native_vacuum_pass_counts: frozenset[int] = frozenset()
     native_mop_pass_counts: frozenset[int] = frozenset()
     watched_entity_ids: tuple[str, ...] = ()
+    direct_custom_mop: bool = False
 
     def __post_init__(self) -> None:
         """Normalize schema-one adapter snapshots during a rolling upgrade."""
@@ -323,6 +326,42 @@ def requested_cleaning_profile(
     )
 
 
+def direct_custom_mop_default_migration(
+    robot_settings: Mapping[str, object],
+) -> dict[str, str | bool] | None:
+    """Return the one-time direct-custom defaults for one robot's own settings.
+
+    This deliberately accepts no room data: those overrides can belong to
+    another vacuum and must remain untouched.  A caller keys the marker by the
+    robot's stable registry identity, so a user's later concrete choices are
+    never rewritten.
+    """
+
+    if bool(robot_settings.get("direct_custom_mop_migrated", False)):
+        return None
+    migration: dict[str, str | bool] = {"direct_custom_mop_migrated": True}
+    route = robot_settings.get("mop_mode")
+    if not is_direct_custom_mop_value("mop_mode", route):
+        migration["mop_mode"] = "standard"
+    intensity = robot_settings.get("mop_intensity")
+    if not is_direct_custom_mop_value("mop_intensity", intensity):
+        migration["mop_intensity"] = "medium"
+    return migration
+
+
+def is_direct_custom_mop_value(key: str, value: object) -> bool:
+    """Return whether one direct Custom mop control has a concrete value."""
+
+    allowed = (
+        DIRECT_CUSTOM_MOP_ROUTES
+        if key == "mop_mode"
+        else DIRECT_CUSTOM_MOP_INTENSITIES
+        if key == "mop_intensity"
+        else frozenset()
+    )
+    return isinstance(value, str) and _normalized_profile_option(value) in allowed
+
+
 def cleaning_profile_sources(
     room_settings: Mapping[str, object],
 ) -> dict[str, str]:
@@ -378,6 +417,60 @@ def resolve_cleaning_profile(
     }
     requested = requested_cleaning_profile(room_settings, robot_settings)
     values = {key: getattr(requested, key) for key in PROFILE_SETTING_KEYS}
+    if operation == "mop" and capabilities.direct_custom_mop:
+        # A direct-custom Roborock mop stage has a different, verifiable
+        # safety contract to a generic operation selector.  The adapter owns
+        # the custom-mode write and sets suction Off, while the persisted
+        # route/intensity values remain visible for diagnostics.  Non-concrete
+        # shared room values intentionally survive into the stage so the
+        # adapter can skip only mopping without preventing an earlier vacuum
+        # stage from being scheduled.
+        custom_mode = next(
+            (
+                option
+                for option in capabilities.mode_options
+                if _normalized_profile_option(option) == "custom"
+            ),
+            None,
+        )
+        fan_off = next(
+            (
+                option
+                for option in capabilities.fan_speed_options
+                if _normalized_profile_option(option) == "off"
+            ),
+            None,
+        )
+        if not custom_mode or not fan_off:
+            return None
+        # Robot defaults are migrated when the integration discovers this
+        # capability.  These fallbacks also make a newly discovered robot's
+        # first direct-custom mop explicit without modifying a shared room
+        # override.  A non-concrete override still reaches the adapter and is
+        # blocked safely there.
+        mop_route = values["mop_mode"] or next(
+            (
+                option
+                for option in capabilities.mop_mode_options
+                if _normalized_profile_option(option) == "standard"
+            ),
+            None,
+        )
+        mop_intensity = values["mop_intensity"] or next(
+            (
+                option
+                for option in capabilities.mop_intensity_options
+                if _normalized_profile_option(option) == "medium"
+            ),
+            None,
+        )
+        return ResolvedCleaningProfile(
+            operation=operation,
+            fan_speed=fan_off,
+            mode=custom_mode,
+            mop_mode=mop_route,
+            mop_intensity=mop_intensity,
+        )
     applicable_keys = (
         ("fan_speed", "mode", "mop_mode", "mop_intensity")
         if operation == "mop"

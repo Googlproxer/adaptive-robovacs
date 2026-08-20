@@ -31,7 +31,7 @@ from .const import (
 from .models import is_valid_daily_time
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 DAILY_WINDOW_VERSION = 1
 
 
@@ -531,6 +531,7 @@ class RobotSettings:
     fan_speed: str | None = None
     cleaning_depth: str | None = None
     cleaning_depth_configured: bool = False
+    direct_custom_mop_migrated: bool = False
 
     @classmethod
     def defaults(cls, supports_mopping: bool) -> RobotSettings:
@@ -573,6 +574,9 @@ class RobotSettings:
                     "cleaning_depth_configured",
                     value.get("cleaning_depth") is not None,
                 )
+            ),
+            direct_custom_mop_migrated=bool(
+                value.get("direct_custom_mop_migrated", False)
             ),
         )
 
@@ -1186,7 +1190,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v8 or convert older shapes, returning whether a save is required."""
+        """Load v9 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -1194,7 +1198,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5, 6, 7}:
+        if schema_version in {2, 3, 4, 5, 6, 7, 8}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -1416,7 +1420,7 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v8 codec, and platform entities use
+        persistent I/O stays on the typed v9 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 

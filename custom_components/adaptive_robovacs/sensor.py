@@ -104,6 +104,7 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             "adapter_id": state["adapter_id"],
             "adapter_schema_version": state["adapter_schema_version"],
             "adapter_capabilities": state["adapter_capabilities"],
+            "mop_profile_summary": state["mop_profile_summary"],
             "water_readiness": state["adapter_capabilities"].get("water_readiness"),
             "adapter_diagnostic": state["adapter_diagnostic"],
             "failure_code": failure.get("failure_code") if failure else None,

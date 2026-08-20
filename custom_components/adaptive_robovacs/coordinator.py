@@ -56,9 +56,11 @@ from .models import (
     cleaning_profile_is_supported,
     cleaning_profile_sources,
     desired_window_allows,
+    direct_custom_mop_default_migration,
     due_at,
     forecast_vacancy,
     held_job_transition,
+    is_direct_custom_mop_value,
     in_daytime_window,
     learned_duration_minutes,
     manual_clean_robot_is_docked,
@@ -728,6 +730,7 @@ class AdaptiveRoboVacCoordinator:
                 "cleaning_depth_configured": bool(
                     robot.adapter_capabilities.cleaning_depth_options
                 ),
+                "direct_custom_mop_migrated": False,
             },
         )
         if "cleaning_program" not in settings:
@@ -754,6 +757,15 @@ class AdaptiveRoboVacCoordinator:
             settings["cleaning_depth_configured"] = True
         else:
             settings.setdefault("cleaning_depth_configured", False)
+        settings.setdefault("direct_custom_mop_migrated", False)
+        migration = (
+            direct_custom_mop_default_migration(settings)
+            if robot.adapter_capabilities.direct_custom_mop
+            else None
+        )
+        if migration is not None:
+            settings.update(migration)
+            self._identity_migrated = True
         settings["mopping_enabled"] = settings["cleaning_program"] != "vacuum_only"
         return settings
 
@@ -1175,7 +1187,8 @@ class AdaptiveRoboVacCoordinator:
             "cleaning_depth",
         }:
             raise ValueError(f"Unknown robot setting: {key}")
-        settings = self._robot_settings(self.discovery.robots[entity_id])
+        robot = self.discovery.robots[entity_id]
+        settings = self._robot_settings(robot)
         if key == "cleaning_program" and value not in {
             "vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"
         }:
@@ -1188,6 +1201,14 @@ class AdaptiveRoboVacCoordinator:
             "cleaning_depth",
         } and not (value is None or isinstance(value, str)):
             raise ValueError("Robot cleaning profile options must be strings or Not configured")
+        if (
+            robot.adapter_capabilities.direct_custom_mop
+            and key in {"mop_mode", "mop_intensity"}
+            and not is_direct_custom_mop_value(key, value)
+        ):
+            raise ValueError(
+                "Direct Custom mopping requires a concrete route and water intensity"
+            )
         if key == "mopping_enabled":
             settings["cleaning_program"] = "vacuum_then_mop" if value else "vacuum_only"
         else:
@@ -2535,7 +2556,7 @@ class AdaptiveRoboVacCoordinator:
         reason: str,
         now: datetime,
     ) -> None:
-        """Safely skip one mop stage that cannot prove mop-only operation."""
+        """Safely skip one mop stage whose no-vacuum profile is unavailable."""
 
         room: DiscoveredRoom = candidate["room"]
         occurrence = self.data.get("occurrences", {}).get(room.area_id)
@@ -2550,7 +2571,7 @@ class AdaptiveRoboVacCoordinator:
         )
         await self._async_save()
         _LOGGER.warning(
-            "Adaptive RoboVacs skipped mopping because mop-only mode was not confirmed: robot=%s room=%s",
+            "Adaptive RoboVacs skipped mopping because its no-vacuum profile was unavailable: robot=%s room=%s",
             robot.entity_id,
             room.name,
         )

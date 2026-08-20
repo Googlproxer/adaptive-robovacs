@@ -52,6 +52,24 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertFalse(legacy.cleaning_depth_configured)
         self.assertTrue(reset.cleaning_depth_configured)
 
+    def test_direct_custom_mop_migration_marker_round_trips_with_robot_settings(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        settings = state.ensure_robot("registry-rob", supports_mopping=True)
+        settings.mop_mode = "standard"
+        settings.mop_intensity = "medium"
+        settings.direct_custom_mop_migrated = True
+
+        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
+
+        self.assertFalse(migrated)
+        self.assertTrue(
+            restored.robot_settings["registry-rob"].direct_custom_mop_migrated
+        )
+        self.assertEqual(restored.robot_settings["registry-rob"].mop_mode, "standard")
+        self.assertEqual(
+            restored.robot_settings["registry-rob"].mop_intensity, "medium"
+        )
+
     def test_robot_identity_migration_preserves_settings_jobs_and_unique_alias(self) -> None:
         data = {
             "settings": {
