@@ -554,12 +554,12 @@ class RoborockVacuumAdapter(VacuumAdapter):
         hass: Any,
         context: AdapterMatchContext,
         request: AdapterDispatchRequest,
-    ) -> None:
+    ) -> AdapterDispatchResult:
         """Leave Q10 custom values for its immediate pre-start sequence."""
 
         if self._is_q10_request(hass, context, request):
-            return
-        await super().async_apply_profile(hass, context, request)
+            return AdapterDispatchResult("ready", "ready", "Ready")
+        return await super().async_apply_profile(hass, context, request)
 
     async def async_preflight(
         self,

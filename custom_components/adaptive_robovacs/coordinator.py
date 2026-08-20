@@ -2528,6 +2528,36 @@ class AdaptiveRoboVacCoordinator:
             self.async_evaluate(reason="mop-final-preflight-skipped")
         )
 
+    async def _async_handle_mop_mode_unconfirmed(
+        self,
+        robot: DiscoveredRobot,
+        candidate: dict[str, Any],
+        reason: str,
+        now: datetime,
+    ) -> None:
+        """Safely skip one mop stage that cannot prove mop-only operation."""
+
+        room: DiscoveredRoom = candidate["room"]
+        occurrence = self.data.get("occurrences", {}).get(room.area_id)
+        if not occurrence:
+            return
+        self._skip_occurrence_stage(
+            room.area_id,
+            int(candidate.get("stage_index", occurrence.get("current_stage", 0))),
+            "skipped_no_mop",
+            reason,
+            now,
+        )
+        await self._async_save()
+        _LOGGER.warning(
+            "Adaptive RoboVacs skipped mopping because mop-only mode was not confirmed: robot=%s room=%s",
+            robot.entity_id,
+            room.name,
+        )
+        self._async_create_task(
+            self.async_evaluate(reason="mop-only-mode-unconfirmed")
+        )
+
     async def _async_apply_profile(
         self, robot: DiscoveredRobot, operation: str, passes: int = 1
     ) -> None:

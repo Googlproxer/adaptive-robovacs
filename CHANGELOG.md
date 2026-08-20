@@ -11,6 +11,17 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 - Added this central changelog as the release-history index.
 
+## [1.6.11] - 2026-08-20
+
+### Fixed
+
+- Mop stages now confirm an exact Mop-only operating mode before starting. If
+  the robot cannot settle in that mode within 30 seconds, only mopping is
+  skipped; combined vacuum-and-mop cleaning is never started in its place.
+- A shared Roborock operation/mop selector can no longer overwrite Mop-only
+  with a saved combined-mode value. This applies to standalone mop runs and
+  the mop stage of Vacuum then mop programs.
+
 ## [1.6.10] - 2026-08-19
 
 ### Fixed

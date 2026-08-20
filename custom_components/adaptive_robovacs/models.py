@@ -342,14 +342,15 @@ def _operation_mode_option(
     options: Iterable[str], operation: str
 ) -> str | None:
     wanted = (
-        {"vacuum", "vacuum_only"}
+        ("vacuum_only", "vacuum")
         if operation == "vacuum"
-        else {"mop", "mop_only"}
+        else ("mop_only", "mop")
     )
-    return next(
-        (option for option in options if _normalized_profile_option(option) in wanted),
-        None,
-    )
+    normalized = {
+        _normalized_profile_option(option): option
+        for option in options
+    }
+    return next((normalized[option] for option in wanted if option in normalized), None)
 
 
 def resolve_cleaning_profile(
@@ -428,6 +429,13 @@ def resolve_cleaning_profile(
         mode = operation_mode or values["mode"]
 
     mop_mode = values["mop_mode"] if operation == "mop" else None
+    if (
+        operation == "mop"
+        and mop_mode is not None
+        and _normalized_profile_option(mop_mode) in explicit_modes
+        and _normalized_profile_option(mop_mode) not in wanted
+    ):
+        return None
     if operation == "mop" and mop_mode is None:
         mop_mode = _operation_mode_option(capabilities.mop_mode_options, operation)
 

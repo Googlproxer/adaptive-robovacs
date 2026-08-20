@@ -50,6 +50,7 @@ registry = _load(
     f"{PACKAGE_NAME}.adapters.registry", PACKAGE_PATH / "adapters" / "registry.py"
 )
 base = sys.modules[f"{PACKAGE_NAME}.adapters.base"]
+generic = sys.modules[f"{PACKAGE_NAME}.adapters.generic"]
 
 
 class RoborockMappingTests(unittest.TestCase):
@@ -305,6 +306,126 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
         )
+
+    @staticmethod
+    def _mop_mode_context() -> base.AdapterMatchContext:
+        profile = types.SimpleNamespace(
+            supports_double_pass=False,
+            supports_mopping=True,
+            mode_options=("vacuum", "mop", "mop_only", "vac_and_mop"),
+            mop_mode_options=("vacuum", "mop", "mop_only", "vac_and_mop"),
+            mop_intensity_options=(),
+            mode_select_entity_id="select.test_operation_mode",
+            mop_mode_select_entity_id="select.test_operation_mode",
+            mop_intensity_select_entity_id=None,
+            passes_select_entity_id=None,
+            passes_options=(),
+        )
+        return base.AdapterMatchContext(
+            entity_id="vacuum.test",
+            platform="generic",
+            supports_area_clean=True,
+            supports_send_command=False,
+            profile=profile,
+        )
+
+    async def test_mop_profile_applies_shared_operation_selector_once(self) -> None:
+        state = types.SimpleNamespace(
+            state="vac_and_mop",
+            attributes={"options": ["vacuum", "mop", "mop_only", "vac_and_mop"]},
+        )
+
+        async def service_call(_domain, _service, data, *, blocking):
+            self.assertTrue(blocking)
+            state.state = data["option"]
+
+        hass = types.SimpleNamespace(
+            states=types.SimpleNamespace(get=lambda _entity_id: state),
+            services=types.SimpleNamespace(async_call=service_call),
+        )
+        result = await generic.GenericVacuumAdapter().async_apply_profile(
+            hass,
+            self._mop_mode_context(),
+            base.AdapterDispatchRequest(
+                "vacuum.test",
+                ("room",),
+                "mop",
+                1,
+                {"mode": "mop_only", "mop_mode": "vac_and_mop"},
+            ),
+        )
+
+        self.assertTrue(result.ready)
+        self.assertEqual(state.state, "mop_only")
+
+    async def test_mop_profile_retries_until_mop_only_mode_is_observed(self) -> None:
+        state = types.SimpleNamespace(
+            state="vac_and_mop",
+            attributes={"options": ["vacuum", "mop", "mop_only", "vac_and_mop"]},
+        )
+        calls: list[tuple[str, str, dict[str, object]]] = []
+
+        async def service_call(domain, service, data, *, blocking):
+            self.assertTrue(blocking)
+            calls.append((domain, service, data))
+            if len(calls) == 3:
+                state.state = "mop_only"
+
+        sleep = AsyncMock()
+        original_sleep = base.asyncio.sleep
+        base.asyncio.sleep = sleep
+        self.addCleanup(setattr, base.asyncio, "sleep", original_sleep)
+        hass = types.SimpleNamespace(
+            states=types.SimpleNamespace(get=lambda _entity_id: state),
+            services=types.SimpleNamespace(async_call=service_call),
+        )
+
+        result = await generic.GenericVacuumAdapter().async_apply_profile(
+            hass,
+            self._mop_mode_context(),
+            base.AdapterDispatchRequest(
+                "vacuum.test", ("room",), "mop", 1, {"mode": "mop_only"}
+            ),
+        )
+
+        self.assertTrue(result.ready)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(domain == "select" for domain, _service, _data in calls))
+        self.assertEqual(sleep.await_count, 2)
+
+    async def test_mop_profile_timeout_never_dispatches_a_clean_area(self) -> None:
+        state = types.SimpleNamespace(
+            state="vac_and_mop",
+            attributes={"options": ["vacuum", "mop", "mop_only", "vac_and_mop"]},
+        )
+        calls: list[tuple[str, str, dict[str, object]]] = []
+
+        async def service_call(domain, service, data, *, blocking):
+            self.assertTrue(blocking)
+            calls.append((domain, service, data))
+
+        sleep = AsyncMock()
+        original_sleep = base.asyncio.sleep
+        base.asyncio.sleep = sleep
+        self.addCleanup(setattr, base.asyncio, "sleep", original_sleep)
+        hass = types.SimpleNamespace(
+            states=types.SimpleNamespace(get=lambda _entity_id: state),
+            services=types.SimpleNamespace(async_call=service_call),
+        )
+
+        result = await generic.GenericVacuumAdapter().async_apply_profile(
+            hass,
+            self._mop_mode_context(),
+            base.AdapterDispatchRequest(
+                "vacuum.test", ("room",), "mop", 1, {"mode": "mop_only"}
+            ),
+        )
+
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.code, "mop_only_mode_unconfirmed")
+        self.assertEqual(len(calls), 7)
+        self.assertTrue(all(domain == "select" for domain, _service, _data in calls))
+        self.assertEqual(sleep.await_count, 6)
 
     async def test_unprefixed_segment_mapping_uses_clean_area_for_one_pass(self) -> None:
         original_async_get = roborock.er.async_get

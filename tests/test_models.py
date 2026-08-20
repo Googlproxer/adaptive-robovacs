@@ -322,6 +322,26 @@ class CleaningProfileTests(unittest.TestCase):
             )
         )
 
+    def test_mop_only_is_preferred_and_combined_mop_mode_is_rejected(self) -> None:
+        capabilities = models.AdapterCapabilities(
+            adapter_id="roborock",
+            schema_version=2,
+            portable_area_clean=True,
+            supported_pass_counts=frozenset({1}),
+            supported_operations=frozenset({"vacuum", "mop"}),
+            mode_options=("vacuum", "mop", "mop_only", "vac_and_mop"),
+            mop_mode_options=("mop", "mop_only", "vac_and_mop"),
+        )
+        resolved = models.resolve_cleaning_profile("mop", {}, {}, capabilities)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.mode, "mop_only")
+        self.assertEqual(resolved.mop_mode, "mop_only")
+        self.assertIsNone(
+            models.resolve_cleaning_profile(
+                "mop", {"mop_mode": "vac_and_mop"}, {}, capabilities
+            )
+        )
+
     def test_vacuum_profile_ignores_retained_mop_only_values(self) -> None:
         resolved = models.resolve_cleaning_profile(
             "vacuum",

@@ -37,6 +37,16 @@ class WaterMoppingContractTests(unittest.TestCase):
         self.assertIn("_async_handle_mop_preflight_blocked", section)
         self.assertNotIn("_async_latch_scheduler_fault", section)
 
+    def test_unconfirmed_mop_only_mode_skips_before_dispatch_without_a_fault(self) -> None:
+        runtime = (PACKAGE / "runtime.py").read_text(encoding="utf-8")
+        handler = runtime.index('profile_apply.code == "mop_only_mode_unconfirmed"')
+        fault = runtime.index("_async_latch_scheduler_fault", handler)
+        section = runtime[handler:fault]
+        self.assertIn("return True, f\"skipped mopping", section)
+        self.assertIn("_async_handle_mop_mode_unconfirmed", section)
+        self.assertIn("profile_apply = await adapter.async_apply_profile", runtime)
+        self.assertLess(handler, runtime.index("result = await adapter.async_dispatch"))
+
     def test_vacuum_stage_does_not_apply_mop_only_profile_controls(self) -> None:
         runtime = (PACKAGE / "runtime.py").read_text(encoding="utf-8")
         apply_profile = runtime.index("async def async_apply_profile")

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 _LOGGER = logging.getLogger(__name__)
-SERVICE_CALL_TIMEOUT_SECONDS = 30
+SERVICE_CALL_TIMEOUT_SECONDS = 35
 
 
 class HomeAssistantRuntime:
@@ -56,7 +56,7 @@ class HomeAssistantRuntime:
         operation: str,
         passes: int,
         cleaning_profile: dict[str, object] | None = None,
-    ) -> None:
+    ) -> AdapterDispatchResult:
         """Delegate exact profile application to the selected adapter."""
 
         profile = robot.profile
@@ -76,7 +76,7 @@ class HomeAssistantRuntime:
             passes=passes,
             cleaning_profile=settings,
         )
-        await adapter_for_id(robot.adapter_id).async_apply_profile(
+        return await adapter_for_id(robot.adapter_id).async_apply_profile(
             self._coordinator.hass, self._adapter_context(robot), request
         )
 
@@ -279,7 +279,7 @@ class HomeAssistantRuntime:
             if coordinator._closing:
                 return False, "coordinator shutting down"
             async with asyncio.timeout(SERVICE_CALL_TIMEOUT_SECONDS):
-                await adapter.async_apply_profile(
+                profile_apply = await adapter.async_apply_profile(
                     coordinator.hass, context, request
                 )
         except Exception:  # ServiceValidationError varies between HA versions.
@@ -299,6 +299,32 @@ class HomeAssistantRuntime:
                 outcome_uncertain=False,
             )
             return False, fault_summary("profile_apply_failed")
+
+        if not profile_apply.ready:
+            if (
+                profile_apply.blocked
+                and candidate.get("operation") == "mop"
+                and profile_apply.code == "mop_only_mode_unconfirmed"
+            ):
+                _LOGGER.warning(
+                    "Adaptive RoboVacs skipped an unconfirmed mop-only stage: robot=%s room=%s adapter=%s",
+                    robot.entity_id,
+                    room.name,
+                    robot.adapter_id,
+                )
+                await coordinator._async_handle_mop_mode_unconfirmed(
+                    robot, candidate, profile_apply.code, now
+                )
+                return True, f"skipped mopping {room.name}: mop-only mode unavailable"
+            await coordinator._async_latch_scheduler_fault(
+                robot,
+                room,
+                profile_apply.code,
+                "profile_apply",
+                native_command_may_have_started=False,
+                outcome_uncertain=False,
+            )
+            return False, fault_summary(profile_apply.code)
 
         if coordinator._closing:
             return False, "coordinator shutting down"
