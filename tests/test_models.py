@@ -706,6 +706,27 @@ class ActiveJobHoldTests(unittest.TestCase):
             )
         self.assertTrue(models.detailed_status_is_dispatchable(None, required=False))
 
+    def test_mop_washing_confirms_only_an_adapter_opted_in_mop_stage(self) -> None:
+        mop_start_states = frozenset({"washing_the_mop"})
+        self.assertTrue(
+            models.mop_stage_start_is_observed(
+                "mop", "Washing the Mop", mop_start_states
+            )
+        )
+        self.assertFalse(
+            models.mop_stage_start_is_observed(
+                "vacuum", "washing_the_mop", mop_start_states
+            )
+        )
+        self.assertFalse(
+            models.mop_stage_start_is_observed("mop", "charging", mop_start_states)
+        )
+        self.assertFalse(
+            models.mop_stage_start_is_observed(
+                "mop", "washing_the_mop", frozenset()
+            )
+        )
+
     def test_ready_confirmation_requires_the_full_ten_seconds(self) -> None:
         now = datetime(2026, 8, 21, 10, 0)
         delay = timedelta(seconds=10)

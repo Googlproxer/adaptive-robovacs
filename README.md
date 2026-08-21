@@ -66,14 +66,14 @@ room's start and end can independently use the global value or select a
 a room's **Ignore desired cleaning window** switch to permit its otherwise-safe
 clean outside those hours. A room with unresolved occupancy is retried only in
 that room's effective window, and bedroom-transit rooms remain excluded from
-that exception. A failed scheduler start is treated as a system failure. The
-first adapter preflight, profile, service, or start-confirmation failure
-persistently halts new dispatch across every robot and creates a Home Assistant
-**Repair** with a safe explanation. A late robot state cannot clear that halt
-automatically. Resolve the underlying availability or mapping problem, then
-use the Repair flow or the dashboard's confirmed **Recheck and resume** action.
-The recheck never sends a test clean, and the failed room remains due after
-scheduling is explicitly resumed.
+that exception. A failed scheduler start holds only the affected robot; mapping
+and saved room-profile failures block only the affected room. Each creates a
+scoped Home Assistant **Repair** with a safe explanation while unaffected
+compatible work continues. A late robot state cannot clear its fault
+automatically. Resolve the underlying availability or mapping problem, then use
+the scoped Repair flow or the dashboard's confirmed **Recheck and resume**
+action. The recheck never sends a test clean, and the failed room remains due
+after scheduling is explicitly resumed.
 
 Each room now has one cadence and one ordered program: vacuum only, mop only,
 vacuum then mop, or mop then vacuum. Every stage is a separate physical start
@@ -146,6 +146,11 @@ Version 1.8.0 adds Store schema v10. Roborock follow-up stages wait for a
 same-device status sensor to leave emptying or washing and then remain ready
 for ten seconds. Dispatch faults now hold only their robot; mapping and saved
 profile faults block only their room.
+
+Version 1.8.1 treats a same-device Roborock `washing_the_mop` transition as
+start evidence for an accepted Mop stage. The stage remains in progress while
+the robot prepares at the dock and is only credited after the usual observed
+room-cleaning lifecycle.
 
 ## Releases and upgrades
 

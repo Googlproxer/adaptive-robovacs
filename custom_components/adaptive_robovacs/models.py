@@ -171,6 +171,7 @@ class AdapterCapabilities:
     native_mop_profile: bool = False
     readiness_entity_id: str | None = None
     readiness_states: frozenset[str] = frozenset()
+    mop_start_states: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         """Normalize schema-one adapter snapshots during a rolling upgrade."""
@@ -822,6 +823,34 @@ def detailed_status_is_dispatchable(
     if not required:
         return True
     return str(status or "").strip().lower() in ready_states
+
+
+def mop_stage_start_is_observed(
+    operation: str | None,
+    detailed_status: str | None,
+    mop_start_states: frozenset[str],
+) -> bool:
+    """Return whether vendor status proves an accepted Mop stage has begun.
+
+    A Roborock can wash its mop at the dock before changing its primary vacuum
+    entity to ``cleaning``.  That preparation is positive command-start
+    evidence, not post-dispatch servicing or a completion signal.  Adapters
+    opt in explicitly so generic vacuums retain the normal raw-state
+    confirmation behaviour.
+    """
+
+    normalized_status = (
+        str(detailed_status or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    return (
+        operation == "mop"
+        and bool(mop_start_states)
+        and normalized_status in mop_start_states
+    )
 
 
 def ready_confirmation_elapsed(

@@ -753,6 +753,7 @@ class ActiveJob:
     requested_operations: list[str] = field(default_factory=list)
     manual_context_id: str | None = None
     accepted_at: datetime | None = None
+    mop_washing_at: datetime | None = None
     observed_started_at: datetime | None = None
     recovered_at: datetime | None = None
     cleaning_finished_at: datetime | None = None
@@ -802,6 +803,7 @@ class ActiveJob:
             requested_operations=_string_list(value.get("requested_operations")),
             manual_context_id=_string(value.get("manual_context_id")),
             accepted_at=_timestamp(value.get("accepted_at")),
+            mop_washing_at=_timestamp(value.get("mop_washing_at")),
             observed_started_at=_timestamp(value.get("observed_started")),
             recovered_at=_timestamp(value.get("recovered_at")),
             cleaning_finished_at=_timestamp(value.get("cleaning_finished")),
@@ -846,6 +848,7 @@ class ActiveJob:
             "requested_operations": self.requested_operations,
             "manual_context_id": self.manual_context_id,
             "accepted_at": _iso(self.accepted_at),
+            "mop_washing_at": _iso(self.mop_washing_at),
             "observed_started": _iso(self.observed_started_at),
             "recovered_at": _iso(self.recovered_at),
             "cleaning_finished": _iso(self.cleaning_finished_at),

@@ -276,6 +276,37 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities.fan_speed_options, ("quiet", "max"))
         self.assertIsNone(diagnostic)
 
+    async def test_roborock_mop_start_evidence_uses_its_discovered_status_sensor(self) -> None:
+        context = self._context("roborock", send_command=True)
+        context = base.AdapterMatchContext(
+            entity_id=context.entity_id,
+            platform=context.platform,
+            supports_area_clean=context.supports_area_clean,
+            supports_send_command=context.supports_send_command,
+            profile=context.profile,
+            fan_speed_options=context.fan_speed_options,
+            entities=(
+                base.AdapterEntityEvidence(
+                    entity_id="sensor.test_status",
+                    domain="sensor",
+                    platform="roborock",
+                    translation_key="status",
+                    device_class="enum",
+                    state="washing_the_mop",
+                ),
+            ),
+        )
+
+        _adapter, capabilities, diagnostic = await registry.async_resolve_adapter(
+            None, context
+        )
+
+        self.assertEqual(capabilities.readiness_entity_id, "sensor.test_status")
+        self.assertEqual(
+            capabilities.mop_start_states, roborock.ROBOROCK_MOP_START_STATES
+        )
+        self.assertIsNone(diagnostic)
+
     async def test_unprefixed_segment_mapping_does_not_advertise_two_pass(self) -> None:
         original_async_get = roborock.er.async_get
         registry_entry = types.SimpleNamespace(

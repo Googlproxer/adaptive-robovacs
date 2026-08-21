@@ -263,6 +263,7 @@ class SchedulerStateTests(unittest.TestCase):
             source="scheduler",
             expected_minutes=25,
             expected_end=datetime(2026, 8, 3, 9, 25, tzinfo=timezone.utc),
+            mop_washing_at=datetime(2026, 8, 3, 9, 1, tzinfo=timezone.utc),
             adapter_id="roborock",
             adapter_schema_version=1,
             cleaning_profile={"operation": "vacuum", "fan_speed": "max"},
@@ -325,6 +326,10 @@ class SchedulerStateTests(unittest.TestCase):
             datetime(2026, 8, 2, tzinfo=timezone.utc),
         )
         self.assertEqual(restored.active_jobs["vacuum.beta"].expected_minutes, 25)
+        self.assertEqual(
+            restored.active_jobs["vacuum.beta"].mop_washing_at,
+            datetime(2026, 8, 3, 9, 1, tzinfo=timezone.utc),
+        )
         self.assertEqual(restored.active_jobs["vacuum.beta"].adapter_id, "roborock")
         self.assertEqual(restored.room_settings["study"].pass_count, 2)
         self.assertEqual(restored.room_settings["study"].fan_speed, "max")

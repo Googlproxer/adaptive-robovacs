@@ -99,6 +99,16 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertNotIn("Confirm held clean cancelled", button)
         self.assertNotIn("async_confirm_held_clean_cancelled", coordinator)
 
+    def test_mop_washing_is_start_evidence_without_claiming_room_completion(self) -> None:
+        coordinator = COORDINATOR_PATH.read_text(encoding="utf-8")
+        models = COORDINATOR_PATH.with_name("models.py").read_text(encoding="utf-8")
+        self.assertIn("def mop_stage_start_is_observed", models)
+        self.assertIn("def _mop_washing_is_observed", coordinator)
+        self.assertIn('active["phase"] = "mop_washing"', coordinator)
+        self.assertIn('active["mop_washing_at"]', coordinator)
+        self.assertIn("self._cancel_start_confirmation(robot.entity_id)", coordinator)
+        self.assertIn('state_text not in {"cleaning", "returning"}', coordinator)
+
 
 if __name__ == "__main__":
     unittest.main()

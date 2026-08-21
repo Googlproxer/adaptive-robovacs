@@ -66,6 +66,7 @@ from .models import (
     learned_duration_minutes,
     manual_clean_robot_is_docked,
     manual_deferral,
+    mop_stage_start_is_observed,
     pending_completion_is_docked,
     resolve_daily_window,
     resolve_cleaning_profile,
@@ -1185,6 +1186,58 @@ class AdaptiveRoboVacCoordinator:
             self.hass, check_start, deadline
         )
 
+    def _mop_washing_is_observed(
+        self, robot: DiscoveredRobot | None, active: Mapping[str, Any] | None
+    ) -> bool:
+        """Return whether one accepted Roborock Mop command is washing first."""
+
+        if (
+            robot is None
+            or active is None
+            or active.get("seen_cleaning")
+            or active.get("phase") not in {"accepted", "mop_washing"}
+        ):
+            return False
+        readiness_entity_id = robot.adapter_capabilities.readiness_entity_id
+        detailed_state = (
+            self.hass.states.get(readiness_entity_id)
+            if readiness_entity_id
+            else None
+        )
+        return mop_stage_start_is_observed(
+            str(active.get("operation", "")),
+            detailed_state.state if detailed_state else None,
+            robot.adapter_capabilities.mop_start_states,
+        )
+
+    def _mark_mop_washing_started(
+        self,
+        robot: DiscoveredRobot,
+        active: dict[str, Any],
+        now: datetime,
+    ) -> bool:
+        """Record Mop washing as command-start evidence, not room completion."""
+
+        if active.get("phase") == "mop_washing":
+            return False
+        readiness_entity_id = robot.adapter_capabilities.readiness_entity_id
+        detailed_state = (
+            self.hass.states.get(readiness_entity_id)
+            if readiness_entity_id
+            else None
+        )
+        active["phase"] = "mop_washing"
+        active["mop_washing_at"] = _iso(
+            detailed_state.last_changed if detailed_state else now
+        )
+        self._cancel_start_confirmation(robot.entity_id)
+        _LOGGER.info(
+            "Adaptive RoboVacs confirmed Mop start from dock washing: robot=%s room=%s",
+            robot.entity_id,
+            active.get("room"),
+        )
+        return True
+
     async def async_set_global(self, key: str, value: Any) -> None:
         """Update a global control exposed by a native entity."""
 
@@ -1379,6 +1432,20 @@ class AdaptiveRoboVacCoordinator:
             state = self.hass.states.get(entity_id)
             state_text = state.state if state else "unavailable"
             hold = self.data["robot_holds"].get(entity_id)
+
+            robot = self.discovery.robots.get(entity_id)
+            if active and self._mop_washing_is_observed(robot, active):
+                if robot:
+                    self._mark_mop_washing_started(robot, active, now)
+                continue
+            if (
+                active
+                and active.get("phase") == "mop_washing"
+                and state_text not in {"cleaning", "returning"}
+            ):
+                # A restarted coordinator must keep the accepted Mop stage
+                # while Roborock performs its dock wash before room cleaning.
+                continue
 
             if active and pending_completion_is_docked(
                 state_text, str(active.get("phase"))
@@ -2792,6 +2859,12 @@ class AdaptiveRoboVacCoordinator:
             if active and state_text not in {"unavailable", "unknown"}:
                 active["last_observed_at"] = _iso(now)
                 changed = True
+
+            robot = self.discovery.robots.get(robot_id)
+            if active and self._mop_washing_is_observed(robot, active):
+                if robot and self._mark_mop_washing_started(robot, active, now):
+                    changed = True
+                continue
 
             if (
                 active

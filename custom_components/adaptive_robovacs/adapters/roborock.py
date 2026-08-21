@@ -75,6 +75,7 @@ Q10_FAN_LEVELS = {
 NATIVE_MOP_PROFILE_TIMEOUT_SECONDS = 30
 NATIVE_MOP_PROFILE_RETRY_INTERVAL_SECONDS = 5
 NATIVE_MOP_PROFILE_RETRY_ATTEMPTS = 6
+ROBOROCK_MOP_START_STATES = frozenset({"washing_the_mop"})
 NATIVE_MOP_PROFILE_BLOCK_CODES = frozenset(
     {
         "native_mop_profile_invalid",
@@ -520,7 +521,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
     """Enhance compatible Roborock vacuums with native cross-hatching."""
 
     adapter_id = "roborock"
-    schema_version = 8
+    schema_version = 9
     priority = 100
     platforms = frozenset({"roborock"})
 
@@ -597,6 +598,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 frozenset({"idle", "docked", "charging", "charging_complete"})
                 if readiness_entity_id
                 else frozenset()
+            ),
+            mop_start_states=(
+                ROBOROCK_MOP_START_STATES if readiness_entity_id else frozenset()
             ),
         )
 

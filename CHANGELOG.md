@@ -7,6 +7,17 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-08-21
+
+### Fixed
+
+- Roborock Mop stages now recognise the discovered same-device
+  `washing_the_mop` transition as positive start evidence. This prevents the
+  two-minute raw-vacuum confirmation from incorrectly faulting while Rob
+  prepares the mop at the dock before room cleaning begins.
+
+Detailed notes: [`docs/releases/v1.8.1.md`](docs/releases/v1.8.1.md).
+
 ## [1.8.0] - 2026-08-21
 
 ### Fixed
