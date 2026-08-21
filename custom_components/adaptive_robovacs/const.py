@@ -18,6 +18,7 @@ HISTORY_DAYS: Final = 56
 FALLBACK_SAMPLE_COUNT: Final = 6
 EXTRA_CLEAR_MINUTES: Final = 10
 START_CONFIRMATION_TIMEOUT: Final = timedelta(minutes=2)
+READY_CONFIRMATION_DELAY: Final = timedelta(seconds=10)
 
 # Home Assistant normalizes label IDs from display names with underscores.
 # The documented labels may be shown as ``robovac-bedroom`` in the UI, but

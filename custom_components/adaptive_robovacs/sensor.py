@@ -21,8 +21,8 @@ class _SchedulerSensor(AdaptiveEntity, SensorEntity):
 
     @property
     def native_value(self) -> str:
-        if self.coordinator.scheduler_halted:
-            return "Scheduler halted"
+        if self.coordinator.scheduler_limited:
+            return "Scheduler limited"
         if self.coordinator.observe_only:
             return "observe-only"
         if self.coordinator.party_mode:
@@ -58,7 +58,7 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
     def native_value(self) -> str:
         state = self.coordinator.robot_state(self.robot_entity_id)
         if state["failure"]:
-            return "Scheduler halted"
+            return "Scheduler held"
         return state["state"]
 
     @property
@@ -123,7 +123,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
     def native_value(self) -> str:
         state = self.coordinator.room_state(self.area_id)
         if state["failure"]:
-            return "Scheduler halted"
+            return "Room blocked"
         if state["active"]:
             if state["active"].get("phase") == "recovery_waiting":
                 return "Completion pending"

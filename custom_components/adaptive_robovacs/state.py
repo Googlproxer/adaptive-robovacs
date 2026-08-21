@@ -31,7 +31,7 @@ from .const import (
 from .models import is_valid_daily_time
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 DAILY_WINDOW_VERSION = 1
 
 
@@ -1056,7 +1056,7 @@ class WaterNotificationEpisode:
 
 @dataclass(slots=True)
 class SchedulerFault:
-    """Durable global dispatch halt without raw vendor or exception data."""
+    """Durable scoped dispatch fault without raw vendor or exception data."""
 
     reason_code: str
     robot_registry_id: str
@@ -1177,7 +1177,8 @@ class SchedulerState:
     robot_holds: dict[str, RobotHold] = field(default_factory=dict)
     audit: AuditState = field(default_factory=AuditState)
     evaluation: EvaluationState = field(default_factory=EvaluationState)
-    scheduler_fault: SchedulerFault | None = None
+    robot_faults: dict[str, SchedulerFault] = field(default_factory=dict)
+    room_faults: dict[str, SchedulerFault] = field(default_factory=dict)
     occurrences: dict[str, CleaningOccurrence] = field(default_factory=dict)
     water_confirmations: dict[str, WaterConfirmation] = field(default_factory=dict)
     water_notification_episodes: dict[str, WaterNotificationEpisode] = field(default_factory=dict)
@@ -1190,7 +1191,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v9 or convert older shapes, returning whether a save is required."""
+        """Load v10 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -1198,7 +1199,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5, 6, 7, 8}:
+        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -1221,6 +1222,13 @@ class SchedulerState:
         raw_occurrences = _mapping_or_empty(data.get("occurrences"))
         raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
+        raw_robot_faults = _mapping_or_empty(data.get("robot_faults"))
+        raw_room_faults = _mapping_or_empty(data.get("room_faults"))
+        legacy_fault = (
+            SchedulerFault.from_mapping(value)
+            if isinstance((value := data.get("scheduler_fault")), Mapping)
+            else None
+        )
         return cls(
             global_settings=global_settings,
             room_settings={
@@ -1251,11 +1259,26 @@ class SchedulerState:
                 recovery_events=_event_list(data.get("recovery_events")),
             ),
             evaluation=EvaluationState.from_mapping(data),
-            scheduler_fault=(
-                SchedulerFault.from_mapping(value)
-                if isinstance((value := data.get("scheduler_fault")), Mapping)
-                else None
+            robot_faults={
+                registry_id: fault
+                for registry_id, value in raw_robot_faults.items()
+                if isinstance(registry_id, str)
+                and isinstance(value, Mapping)
+                and (fault := SchedulerFault.from_mapping(value)) is not None
+                and fault.robot_registry_id == registry_id
+            } or (
+                {legacy_fault.robot_registry_id: legacy_fault}
+                if legacy_fault is not None
+                else {}
             ),
+            room_faults={
+                area_id: fault
+                for area_id, value in raw_room_faults.items()
+                if isinstance(area_id, str)
+                and isinstance(value, Mapping)
+                and (fault := SchedulerFault.from_mapping(value)) is not None
+                and fault.room_area_id == area_id
+            },
             occurrences={
                 area_id: occurrence
                 for area_id, value in raw_occurrences.items()
@@ -1304,6 +1327,21 @@ class SchedulerState:
         raw_occurrences = _mapping_or_empty(data.get("occurrences"))
         raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
+        if data.get("schema_version") == SCHEMA_VERSION:
+            raw_robot_faults = _mapping(data.get("robot_faults"), "robot_faults")
+            raw_room_faults = _mapping(data.get("room_faults"), "room_faults")
+        else:
+            legacy_fault = (
+                SchedulerFault.from_mapping(value)
+                if isinstance((value := data.get("scheduler_fault")), Mapping)
+                else None
+            )
+            raw_robot_faults = (
+                {legacy_fault.robot_registry_id: legacy_fault.to_store()}
+                if legacy_fault is not None
+                else {}
+            )
+            raw_room_faults = {}
         return cls(
             global_settings=GlobalSettings.from_mapping(raw_global, defaults),
             room_settings={
@@ -1335,11 +1373,22 @@ class SchedulerState:
             },
             audit=AuditState.from_mapping(raw_audit),
             evaluation=EvaluationState.from_mapping(raw_evaluation),
-            scheduler_fault=(
-                SchedulerFault.from_mapping(value)
-                if isinstance((value := data.get("scheduler_fault")), Mapping)
-                else None
-            ),
+            robot_faults={
+                registry_id: fault
+                for registry_id, value in raw_robot_faults.items()
+                if isinstance(registry_id, str)
+                and isinstance(value, Mapping)
+                and (fault := SchedulerFault.from_mapping(value)) is not None
+                and fault.robot_registry_id == registry_id
+            },
+            room_faults={
+                area_id: fault
+                for area_id, value in raw_room_faults.items()
+                if isinstance(area_id, str)
+                and isinstance(value, Mapping)
+                and (fault := SchedulerFault.from_mapping(value)) is not None
+                and fault.room_area_id == area_id
+            },
             occurrences={
                 area_id: occurrence
                 for area_id, value in raw_occurrences.items()
@@ -1398,9 +1447,14 @@ class SchedulerState:
             },
             "audit": self.audit.to_store(),
             "evaluation": self.evaluation.to_store(),
-            "scheduler_fault": (
-                self.scheduler_fault.to_store() if self.scheduler_fault else None
-            ),
+            "robot_faults": {
+                registry_id: fault.to_store()
+                for registry_id, fault in self.robot_faults.items()
+            },
+            "room_faults": {
+                area_id: fault.to_store()
+                for area_id, fault in self.room_faults.items()
+            },
             "occurrences": {
                 area_id: occurrence.to_store()
                 for area_id, occurrence in self.occurrences.items()
@@ -1420,7 +1474,7 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v9 codec, and platform entities use
+        persistent I/O stays on the typed v10 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 
@@ -1478,9 +1532,14 @@ class SchedulerState:
             "recovery_events": self.audit.recovery_events,
             "last_evaluation": _iso(self.evaluation.last_evaluation_at),
             "last_preview": self.evaluation.last_preview,
-            "scheduler_fault": (
-                self.scheduler_fault.to_store() if self.scheduler_fault else None
-            ),
+            "robot_faults": {
+                registry_id: fault.to_store()
+                for registry_id, fault in self.robot_faults.items()
+            },
+            "room_faults": {
+                area_id: fault.to_store()
+                for area_id, fault in self.room_faults.items()
+            },
             "occurrences": {
                 area_id: occurrence.to_store()
                 for area_id, occurrence in self.occurrences.items()

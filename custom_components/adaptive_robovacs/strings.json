@@ -16,6 +16,37 @@
     }
   },
   "issues": {
+    "robot_dispatch_fault": {
+      "title": "Adaptive RoboVacs vacuum held",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Recheck held vacuum",
+            "description": "Adaptive RoboVacs held {robot} after a cleaning request for {room} failed. {reason}\n\nOnly this vacuum is held; other compatible vacuums and rooms remain schedulable. When {robot} is docked, submitting this Repair clears this vacuum's fault without sending a cleaning command. If it is already cleaning and the integration cannot confirm which room it is cleaning, that clean is treated as native-app activity and is not credited to the scheduled room."
+          }
+        },
+        "error": {
+          "no_scheduler_halt": "This vacuum hold is already cleared. Close this Repair and refresh the Scheduler status.",
+          "recovery_target_unavailable": "The affected vacuum or room is no longer available to Home Assistant. Restore it, then try again.",
+          "robot_state_unavailable": "Home Assistant cannot read the vacuum's current state. Wait for its integration to reconnect, then try again.",
+          "robot_not_docked_or_cleaning": "The vacuum is neither docked nor cleaning. Wait until it docks, or confirm a native-app clean has started, then try again."
+        }
+      }
+    },
+    "room_dispatch_fault": {
+      "title": "Adaptive RoboVacs room is blocked",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Recheck blocked room",
+            "description": "Adaptive RoboVacs blocked {room} because its saved room mapping or cleaning profile could not be used. {reason}\n\nThis affects only {room}; vacuums remain available for other compatible rooms. Submitting this Repair refreshes discovery and validates the room without starting a clean."
+          }
+        },
+        "error": {
+          "recheck_failed": "No compatible vacuum can currently validate this room's mapping and cleaning profile. Restore the mapping or update the room settings, then try again."
+        }
+      }
+    },
     "scheduler_halted": {
       "title": "Adaptive RoboVacs scheduler halted",
       "fix_flow": {

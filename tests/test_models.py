@@ -695,6 +695,28 @@ class ActiveJobHoldTests(unittest.TestCase):
         self.assertFalse(models.can_start_scheduled_clean("returning"))
         self.assertFalse(models.can_start_scheduled_clean(None))
 
+    def test_roborock_status_must_be_terminal_before_dispatch(self) -> None:
+        for status in ("idle", "docked", "charging", "charging_complete"):
+            self.assertTrue(
+                models.detailed_status_is_dispatchable(status, required=True)
+            )
+        for status in ("emptying_the_bin", "washing_the_mop", "docking", None):
+            self.assertFalse(
+                models.detailed_status_is_dispatchable(status, required=True)
+            )
+        self.assertTrue(models.detailed_status_is_dispatchable(None, required=False))
+
+    def test_ready_confirmation_requires_the_full_ten_seconds(self) -> None:
+        now = datetime(2026, 8, 21, 10, 0)
+        delay = timedelta(seconds=10)
+        self.assertFalse(models.ready_confirmation_elapsed(now, now, delay))
+        self.assertFalse(
+            models.ready_confirmation_elapsed(now, now + timedelta(seconds=9), delay)
+        )
+        self.assertTrue(
+            models.ready_confirmation_elapsed(now, now + timedelta(seconds=10), delay)
+        )
+
     def test_idle_does_not_close_a_held_cancellation(self) -> None:
         self.assertEqual(models.held_job_transition("idle", "cancelling", False), "held")
 

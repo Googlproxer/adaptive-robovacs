@@ -202,6 +202,37 @@ class RoborockWaterTests(unittest.TestCase):
             self.assertFalse(readiness.ready)
 
 
+class RoborockReadinessTests(unittest.TestCase):
+    def test_exactly_one_same_device_status_sensor_is_watched(self) -> None:
+        status = base.AdapterEntityEvidence(
+            entity_id="sensor.test_status",
+            domain="sensor",
+            platform="roborock",
+            translation_key="status",
+            device_class="enum",
+            state="emptying_the_bin",
+        )
+        selected, watched = roborock.resolve_roborock_dispatch_readiness((status,))
+        self.assertEqual(selected, "sensor.test_status")
+        self.assertEqual(watched, ("sensor.test_status",))
+
+    def test_missing_or_ambiguous_status_sensor_uses_generic_fallback(self) -> None:
+        status = base.AdapterEntityEvidence(
+            entity_id="sensor.test_status",
+            domain="sensor",
+            platform="roborock",
+            translation_key="status",
+            device_class="enum",
+            state="charging",
+        )
+        self.assertEqual(
+            roborock.resolve_roborock_dispatch_readiness(()), (None, ())
+        )
+        self.assertEqual(
+            roborock.resolve_roborock_dispatch_readiness((status, status)), (None, ())
+        )
+
+
 class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _context(platform: str, *, send_command: bool):

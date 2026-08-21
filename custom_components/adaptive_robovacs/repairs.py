@@ -10,7 +10,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
-from .repairs_manager import scheduler_halted_issue_id
+from .repairs_manager import robot_dispatch_fault_issue_id
+from .repairs_manager import room_dispatch_fault_issue_id
 from .repairs_manager import two_pass_issue_id
 from .repairs_manager import notification_delivery_issue_id
 from .repairs_manager import cleaning_program_issue_id
@@ -24,11 +25,12 @@ def _description_placeholders(flow: RepairsFlow) -> dict[str, str] | None:
     return issue.translation_placeholders if issue else None
 
 
-class SchedulerHaltedRepairFlow(RepairsFlow):
-    """Recheck without dispatching, then explicitly resume scheduling."""
+class RobotDispatchFaultRepairFlow(RepairsFlow):
+    """Recheck one held robot without dispatching cleaning work."""
 
-    def __init__(self, coordinator) -> None:
+    def __init__(self, coordinator, robot_registry_id: str) -> None:
         self._coordinator = coordinator
+        self._robot_registry_id = robot_registry_id
 
     async def async_step_init(
         self, user_input: dict[str, str] | None = None
@@ -45,10 +47,36 @@ class SchedulerHaltedRepairFlow(RepairsFlow):
 
         errors: dict[str, str] = {}
         if user_input is not None:
-            result = await self._coordinator.async_recheck_and_resume()
+            result = await self._coordinator.async_recheck_and_resume(
+                self._robot_registry_id
+            )
             if result.cleared:
                 return self.async_create_entry(title="", data={})
             errors["base"] = result.reason
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            errors=errors,
+            description_placeholders=_description_placeholders(self),
+        )
+
+
+class RoomDispatchFaultRepairFlow(RepairsFlow):
+    """Recheck one blocked room configuration without dispatching work."""
+
+    def __init__(self, coordinator, area_id: str) -> None:
+        self._coordinator = coordinator
+        self._area_id = area_id
+
+    async def async_step_init(self, user_input=None) -> data_entry_flow.FlowResult:
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(self, user_input=None) -> data_entry_flow.FlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if await self._coordinator.async_recheck_room_fault(self._area_id):
+                return self.async_create_entry(title="", data={})
+            errors["base"] = "recheck_failed"
         return self.async_show_form(
             step_id="confirm",
             data_schema=vol.Schema({}),
@@ -142,11 +170,14 @@ async def async_create_fix_flow(
     coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
     if coordinator is None:
         raise ValueError("The Adaptive RoboVacs repair is no longer available")
-    if issue_id == scheduler_halted_issue_id(entry_id):
-        return SchedulerHaltedRepairFlow(coordinator)
+    robot_registry_id = str((data or {}).get("robot_registry_id", ""))
+    if issue_id == robot_dispatch_fault_issue_id(entry_id, robot_registry_id):
+        return RobotDispatchFaultRepairFlow(coordinator, robot_registry_id)
     if issue_id == notification_delivery_issue_id(entry_id):
         return NotificationDeliveryRepairFlow(coordinator)
     area_id = str((data or {}).get("area_id", ""))
+    if issue_id == room_dispatch_fault_issue_id(entry_id, area_id):
+        return RoomDispatchFaultRepairFlow(coordinator, area_id)
     if issue_id == cleaning_program_issue_id(entry_id, area_id):
         return CleaningProgramCompatibilityRepairFlow(coordinator, area_id)
     if issue_id == two_pass_issue_id(entry_id, area_id):

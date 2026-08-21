@@ -7,6 +7,26 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-08-21
+
+### Fixed
+
+- Roborock clean stages now wait through post-dock emptying and mop-washing,
+  then require ten uninterrupted seconds of confirmed readiness before a new
+  command is sent. Delayed ordered programs resume their exact pending stage.
+- Dispatch and start-confirmation failures now hold only the affected robot;
+  mapping and saved-profile failures block only the affected room. Other
+  compatible robots and rooms remain schedulable.
+
+### Changed
+
+- Store schema v10 migrates the former global scheduler fault into a
+  registry-keyed robot fault and adds durable room-scoped configuration faults.
+  Repairs and dashboard status now report the affected scope rather than a
+  scheduler-wide halt.
+
+Detailed notes: [`docs/releases/v1.8.0.md`](docs/releases/v1.8.0.md).
+
 ### Added
 
 - Added this central changelog as the release-history index.

@@ -17,6 +17,9 @@ VALID_OCCUPANCY_STATES = {"on", "off"}
 DAILY_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 NATIVE_MOP_PROFILE_ROUTES = frozenset({"standard", "deep", "deep_plus", "fast"})
 NATIVE_MOP_PROFILE_INTENSITIES = frozenset({"low", "medium", "high"})
+ROBOROCK_DISPATCHABLE_STATES = frozenset(
+    {"idle", "docked", "charging", "charging_complete"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +169,8 @@ class AdapterCapabilities:
     native_mop_pass_counts: frozenset[int] = frozenset()
     watched_entity_ids: tuple[str, ...] = ()
     native_mop_profile: bool = False
+    readiness_entity_id: str | None = None
+    readiness_states: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         """Normalize schema-one adapter snapshots during a rolling upgrade."""
@@ -797,6 +802,34 @@ def can_start_scheduled_clean(robot_state: str | None) -> bool:
     """Return whether the robot is physically safe to start scheduled work."""
 
     return robot_state == "docked"
+
+
+def detailed_status_is_dispatchable(
+    status: str | None,
+    *,
+    required: bool,
+    ready_states: frozenset[str] = ROBOROCK_DISPATCHABLE_STATES,
+) -> bool:
+    """Return whether an adapter's detailed post-dock state permits dispatch.
+
+    Generic robots do not expose a reliable post-dock servicing sensor and
+    retain the established docked-state behaviour.  A discovered Roborock
+    status sensor is authoritative: unavailable and unfamiliar values are
+    deliberately treated as not ready rather than risking a second command
+    while the dock is emptying or washing the robot.
+    """
+
+    if not required:
+        return True
+    return str(status or "").strip().lower() in ready_states
+
+
+def ready_confirmation_elapsed(
+    ready_since: datetime | None, now: datetime, delay: timedelta
+) -> bool:
+    """Require one uninterrupted observed-ready interval before dispatch."""
+
+    return bool(ready_since and now - ready_since >= delay)
 
 
 def scheduler_halt_recheck_result(

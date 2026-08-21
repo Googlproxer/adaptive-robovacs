@@ -236,7 +236,7 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
             if episode else None
         ),
         "failure": (
-            coordinator.scheduler_fault_view()
+            coordinator.room_fault_view(room)
             if coordinator.fault_affects_room(room)
             else None
         ),
@@ -326,7 +326,7 @@ def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict
         },
         "adapter_diagnostic": robot.adapter_diagnostic,
         "failure": (
-            coordinator.scheduler_fault_view()
+            coordinator.robot_fault_view(robot)
             if coordinator.fault_affects_robot(robot)
             else None
         ),

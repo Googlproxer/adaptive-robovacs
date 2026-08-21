@@ -40,6 +40,7 @@ from .const import (
     EXTRA_CLEAR_MINUTES,
     FALLBACK_SAMPLE_COUNT,
     HISTORY_DAYS,
+    READY_CONFIRMATION_DELAY,
     SIGNAL_DISCOVERY_UPDATED,
     START_CONFIRMATION_TIMEOUT,
     STORAGE_KEY,
@@ -77,6 +78,8 @@ from .models import (
     effective_cleaning_program,
     expand_cleaning_program,
     SchedulerHaltRecheckResult,
+    detailed_status_is_dispatchable,
+    ready_confirmation_elapsed,
     scheduler_halt_recheck_result,
     stage_pass_count,
     should_assume_native_app_clean,
@@ -86,8 +89,9 @@ from .projections import robot_state, room_state
 from .state import SchedulerState, StateSchemaError, migrate_runtime_robot_identity
 from .runtime import HomeAssistantRuntime
 from .repairs_manager import (
-    async_create_scheduler_halted_issue,
-    async_delete_scheduler_halted_issue,
+    async_delete_robot_dispatch_fault_issue,
+    async_delete_room_dispatch_fault_issue,
+    async_sync_dispatch_fault_issues,
     async_sync_two_pass_issues,
     async_sync_cleaning_program_issues,
     async_set_notification_delivery_issue,
@@ -163,7 +167,8 @@ def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
         "recovery_events": [],
         "last_evaluation": None,
         "last_preview": {},
-        "scheduler_fault": None,
+        "robot_faults": {},
+        "room_faults": {},
         "occurrences": {},
         "water_confirmations": {},
         "water_notification_episodes": {},
@@ -189,6 +194,8 @@ class AdaptiveRoboVacCoordinator:
         self._watch_entity_ids: set[str] = set()
         self._recovery_timers: dict[str, Callable[[], None]] = {}
         self._start_confirmation_timers: dict[str, Callable[[], None]] = {}
+        self._ready_confirmation_timers: dict[str, Callable[[], None]] = {}
+        self._ready_since: dict[str, datetime] = {}
         self._water_confirmation_timers: dict[str, Callable[[], None]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closing = False
@@ -219,8 +226,8 @@ class AdaptiveRoboVacCoordinator:
         await self.async_refresh_discovery()
         if migrated or self._identity_migrated:
             await self._async_save()
-        if self.data.get("scheduler_fault"):
-            async_create_scheduler_halted_issue(self)
+        if self.data.get("robot_faults") or self.data.get("room_faults"):
+            async_sync_dispatch_fault_issues(self)
         await self._async_recover_active_jobs()
         self._unsubscribers.extend(
             [
@@ -265,6 +272,8 @@ class AdaptiveRoboVacCoordinator:
             self._recovery_timers.popitem()[1]()
         while self._start_confirmation_timers:
             self._start_confirmation_timers.popitem()[1]()
+        while self._ready_confirmation_timers:
+            self._ready_confirmation_timers.popitem()[1]()
         while self._water_confirmation_timers:
             self._water_confirmation_timers.popitem()[1]()
         while self._unsubscribers:
@@ -803,7 +812,13 @@ class AdaptiveRoboVacCoordinator:
 
     @property
     def scheduler_halted(self) -> bool:
-        return bool(self.data.get("scheduler_fault"))
+        """Retain the legacy accessor; scoped faults limit, not halt, dispatch."""
+
+        return self.scheduler_limited
+
+    @property
+    def scheduler_limited(self) -> bool:
+        return bool(self.data.get("robot_faults") or self.data.get("room_faults"))
 
     def get_global_setting(self, key: str) -> Any:
         """Return a global control value without exposing mutable Store data."""
@@ -855,6 +870,8 @@ class AdaptiveRoboVacCoordinator:
             "last_evaluation": self.data.get("last_evaluation"),
             "preview": self.data.get("last_preview", {}),
             "scheduler_fault": self.scheduler_fault_view(),
+            "robot_faults": self._fault_views("robot_faults"),
+            "room_faults": self._fault_views("room_faults"),
         }
 
     def robot_for_registry_id(self, registry_id: str) -> DiscoveredRobot | None:
@@ -870,11 +887,20 @@ class AdaptiveRoboVacCoordinator:
         )
 
     def scheduler_fault_view(self) -> dict[str, Any] | None:
-        """Project the durable dispatch fault without sensitive adapter data."""
+        """Preserve the legacy singular view when exactly one fault exists."""
 
-        fault = self.data.get("scheduler_fault")
-        if not fault:
+        faults = [
+            fault
+            for section in ("robot_faults", "room_faults")
+            for fault in self.data.get(section, {}).values()
+        ]
+        if len(faults) != 1:
             return None
+        return self._fault_view(faults[0])
+
+    def _fault_view(self, fault: Mapping[str, Any]) -> dict[str, Any]:
+        """Project one durable fault without exposing adapter errors."""
+
         robot = self.robot_for_registry_id(str(fault.get("robot_registry_id", "")))
         room = self.discovery.rooms.get(str(fault.get("room_area_id", "")))
         reason_code = str(fault.get("reason_code", "start_outcome_uncertain"))
@@ -888,13 +914,25 @@ class AdaptiveRoboVacCoordinator:
             "room": room.name if room else None,
         }
 
+    def _fault_views(self, section: str) -> list[dict[str, Any]]:
+        return [
+            self._fault_view(fault)
+            for _, fault in sorted(self.data.get(section, {}).items())
+        ]
+
     def fault_affects_robot(self, robot: DiscoveredRobot) -> bool:
-        fault = self.data.get("scheduler_fault")
-        return bool(fault and fault.get("robot_registry_id") == robot.registry_id)
+        return robot.registry_id in self.data.get("robot_faults", {})
 
     def fault_affects_room(self, room: DiscoveredRoom) -> bool:
-        fault = self.data.get("scheduler_fault")
-        return bool(fault and fault.get("room_area_id") == room.area_id)
+        return room.area_id in self.data.get("room_faults", {})
+
+    def robot_fault_view(self, robot: DiscoveredRobot) -> dict[str, Any] | None:
+        fault = self.data.get("robot_faults", {}).get(robot.registry_id)
+        return self._fault_view(fault) if fault else None
+
+    def room_fault_view(self, room: DiscoveredRoom) -> dict[str, Any] | None:
+        fault = self.data.get("room_faults", {}).get(room.area_id)
+        return self._fault_view(fault) if fault else None
 
     async def _async_latch_scheduler_fault(
         self,
@@ -906,12 +944,26 @@ class AdaptiveRoboVacCoordinator:
         native_command_may_have_started: bool,
         outcome_uncertain: bool,
     ) -> None:
-        """Persist the first start failure before any later dispatch can occur."""
+        """Persist a robot or room scoped fault before later dispatches."""
 
-        if self.data.get("scheduler_fault"):
+        room_scoped_codes = {
+            "area_mapping_missing",
+            "area_mapping_stale",
+            "area_mapping_ambiguous",
+            "two_pass_no_longer_supported",
+            "adapter_request_unsupported",
+            "adapter_preflight_failed",
+            "profile_validation_failed",
+            "profile_option_unsupported",
+            "profile_control_unavailable",
+        }
+        section = "room_faults" if reason_code in room_scoped_codes else "robot_faults"
+        scope_key = room.area_id if section == "room_faults" else robot.registry_id
+        faults = self.data.setdefault(section, {})
+        if scope_key in faults:
             return
         occurred_at = _now()
-        self.data["scheduler_fault"] = {
+        faults[scope_key] = {
             "reason_code": reason_code,
             "robot_registry_id": robot.registry_id,
             "room_area_id": room.area_id,
@@ -936,19 +988,26 @@ class AdaptiveRoboVacCoordinator:
                     occurrence["stages"][stage_index]["status"] = "pending"
                     occurrence["stages"][stage_index]["started_at"] = None
             self.data["active"][robot.entity_id] = None
-        detail = self._room_data(room.area_id)
-        detail["map_status"] = "error"
-        detail["map_error"] = fault_summary(reason_code)
+        if section == "room_faults":
+            detail = self._room_data(room.area_id)
+            detail["map_status"] = "error"
+            detail["map_error"] = fault_summary(reason_code)
         self._cancel_start_confirmation(robot.entity_id)
+        self._reset_ready_confirmation(robot.entity_id)
         await self._async_save()
-        async_create_scheduler_halted_issue(self)
+        async_sync_dispatch_fault_issues(self)
         self._notify_listeners()
 
-    async def async_recheck_and_resume(self) -> SchedulerHaltRecheckResult:
-        """Acknowledge a stale halt without dispatching cleaning work."""
+    async def async_recheck_and_resume(
+        self, robot_registry_id: str | None = None
+    ) -> SchedulerHaltRecheckResult:
+        """Acknowledge one robot fault without dispatching cleaning work."""
 
         async with self._lock:
-            fault = self.data.get("scheduler_fault")
+            faults = self.data.get("robot_faults", {})
+            if robot_registry_id is None and len(faults) == 1:
+                robot_registry_id = next(iter(faults))
+            fault = faults.get(robot_registry_id) if robot_registry_id else None
             if not fault:
                 return SchedulerHaltRecheckResult(False, "no_scheduler_halt")
             await self.async_refresh_discovery()
@@ -966,15 +1025,15 @@ class AdaptiveRoboVacCoordinator:
                 # physical clean; keep it outside scheduler tracking instead.
                 if should_assume_native_app_clean(
                     state.state,
-                    self.data.get("scheduler_fault"),
+                    fault,
                     robot.registry_id,
                     self.data["active"].get(robot.entity_id),
                 ):
                     self._discard_unconfirmed_scheduler_job(robot, room)
-                await self._async_clear_scheduler_fault(room)
+                await self._async_clear_robot_fault(robot, room)
                 return result
             self._discard_unconfirmed_scheduler_job(robot, room)
-            await self._async_clear_scheduler_fault(room)
+            await self._async_clear_robot_fault(robot, room)
             return result
 
     def _discard_unconfirmed_scheduler_job(
@@ -1001,16 +1060,61 @@ class AdaptiveRoboVacCoordinator:
         self.data["active"][robot.entity_id] = None
         self._cancel_start_confirmation(robot.entity_id)
 
-    async def _async_clear_scheduler_fault(self, room: DiscoveredRoom) -> None:
-        """Clear the global dispatch halt without changing a physical clean."""
+    async def _async_clear_robot_fault(
+        self, robot: DiscoveredRobot, room: DiscoveredRoom
+    ) -> None:
+        """Clear one robot fault without changing a physical clean."""
 
-        self.data["scheduler_fault"] = None
-        detail = self._room_data(room.area_id)
-        detail["map_status"] = "mapped"
-        detail["map_error"] = None
+        self.data.get("robot_faults", {}).pop(robot.registry_id, None)
+        self._reset_ready_confirmation(robot.entity_id)
         await self._async_save()
-        async_delete_scheduler_halted_issue(self)
+        async_delete_robot_dispatch_fault_issue(self, robot.registry_id)
         self._notify_listeners()
+
+    async def async_recheck_room_fault(self, area_id: str) -> bool:
+        """Recheck one room configuration fault without starting a clean."""
+
+        async with self._lock:
+            fault = self.data.get("room_faults", {}).get(area_id)
+            if not fault:
+                return True
+            await self.async_refresh_discovery()
+            room = self.discovery.rooms.get(area_id)
+            if room is None:
+                return False
+            base = {
+                "room": room,
+                "occurrence": self.data.get("occurrences", {}).get(area_id),
+                "due_at": _now(),
+                "confidence": 1.0,
+                "reason": "room fault repair recheck",
+            }
+            for robot in self.discovery.robots.values():
+                if robot.floor_id != room.floor_id:
+                    continue
+                candidate = self._candidate_for_robot(base, robot)
+                if candidate is None:
+                    continue
+                try:
+                    preflight = await self.runtime.async_preflight(robot, candidate)
+                    profile = await self.runtime.async_validate_profile(robot, candidate)
+                except Exception:
+                    _LOGGER.exception(
+                        "Adaptive RoboVacs room fault recheck failed: room=%s robot=%s",
+                        room.name,
+                        robot.entity_id,
+                    )
+                    continue
+                if preflight.ready and profile.ready:
+                    self.data["room_faults"].pop(area_id, None)
+                    detail = self._room_data(area_id)
+                    detail["map_status"] = "mapped"
+                    detail["map_error"] = None
+                    await self._async_save()
+                    async_delete_room_dispatch_fault_issue(self, area_id)
+                    self._notify_listeners()
+                    return True
+            return False
 
     async def async_recheck_room_compatibility(self, area_id: str) -> bool:
         """Recheck a saved two-pass room without sending a clean."""
@@ -1373,7 +1477,11 @@ class AdaptiveRoboVacCoordinator:
             ):
                 robot = self.discovery.robots.get(entity_id)
                 room = self.discovery.rooms.get(str(active.get("room", "")))
-                if robot and room and not self.data.get("scheduler_fault"):
+                if (
+                    robot
+                    and room
+                    and robot.registry_id not in self.data.get("robot_faults", {})
+                ):
                     await self._async_latch_scheduler_fault(
                         robot,
                         room,
@@ -1774,12 +1882,17 @@ class AdaptiveRoboVacCoordinator:
         except (TypeError, ValueError):
             return None
 
-    def _robot_ready(
+    def _robot_technically_ready(
         self, robot: DiscoveredRobot, *, ignore_scheduler_fault: bool = False
     ) -> tuple[bool, str]:
+        """Check every immediate physical and scheduler gate except the delay."""
+
         settings = self._robot_settings(robot)
-        if self.data.get("scheduler_fault") and not ignore_scheduler_fault:
-            return False, "scheduler dispatch halted"
+        if (
+            robot.registry_id in self.data.get("robot_faults", {})
+            and not ignore_scheduler_fault
+        ):
+            return False, "scheduler held after robot dispatch fault"
         if not settings.get("enabled", True):
             return False, "robot disabled"
         if not robot.supports_area_clean:
@@ -1807,23 +1920,92 @@ class AdaptiveRoboVacCoordinator:
         state = self.hass.states.get(robot.entity_id)
         if not state or not can_start_scheduled_clean(state.state):
             return False, f"robot is {state.state if state else 'unavailable'}"
+        readiness_entity_id = robot.adapter_capabilities.readiness_entity_id
+        readiness_state = (
+            self.hass.states.get(readiness_entity_id).state
+            if readiness_entity_id and self.hass.states.get(readiness_entity_id)
+            else None
+        )
+        if not detailed_status_is_dispatchable(
+            readiness_state,
+            required=bool(readiness_entity_id),
+            ready_states=robot.adapter_capabilities.readiness_states,
+        ):
+            return False, "awaiting robot servicing"
         battery = self._robot_battery(robot)
         if battery is None:
             return False, "battery unavailable"
         if battery < float(settings.get("minimum_battery", DEFAULT_MINIMUM_BATTERY)):
             return False, "battery below minimum"
+        return True, "dispatchable"
+
+    def _robot_ready(
+        self, robot: DiscoveredRobot, *, ignore_scheduler_fault: bool = False
+    ) -> tuple[bool, str]:
+        """Return whether a robot has remained dispatchable for ten seconds."""
+
+        technical_ready, reason = self._robot_technically_ready(
+            robot, ignore_scheduler_fault=ignore_scheduler_fault
+        )
+        if not technical_ready:
+            return False, reason
+        now = _now()
+        ready_since = self._ready_since.get(robot.entity_id)
+        if not ready_confirmation_elapsed(
+            ready_since, now, READY_CONFIRMATION_DELAY
+        ):
+            return False, "confirming robot readiness"
         return True, "ready"
 
-    def _manual_robot_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]:
-        """Apply the intentionally minimal readiness check for a manual clean."""
+    def _reset_ready_confirmation(self, robot_id: str) -> None:
+        """Forget a readiness interval when any prerequisite is no longer true."""
 
-        if not robot.supports_area_clean:
-            return False, "does not support Home Assistant area cleaning"
-        state = self.hass.states.get(robot.entity_id)
-        state_text = state.state if state else None
-        if not manual_clean_robot_is_docked(state_text):
-            return False, f"robot is {state_text or 'unavailable'}"
-        return True, "docked"
+        self._ready_since.pop(robot_id, None)
+        unsubscribe = self._ready_confirmation_timers.pop(robot_id, None)
+        if unsubscribe:
+            unsubscribe()
+
+    def _schedule_ready_confirmation(
+        self, robot_id: str, ready_since: datetime
+    ) -> None:
+        self._reset_ready_confirmation_timer(robot_id)
+        deadline = ready_since + READY_CONFIRMATION_DELAY
+
+        @callback
+        def check_ready(_timestamp: datetime) -> None:
+            self._ready_confirmation_timers.pop(robot_id, None)
+            self._async_create_task(
+                self.async_evaluate(
+                    dry_run=False, reason=f"ready-confirmation:{robot_id}"
+                )
+            )
+
+        self._ready_confirmation_timers[robot_id] = async_track_point_in_utc_time(
+            self.hass, check_ready, deadline
+        )
+
+    def _reset_ready_confirmation_timer(self, robot_id: str) -> None:
+        unsubscribe = self._ready_confirmation_timers.pop(robot_id, None)
+        if unsubscribe:
+            unsubscribe()
+
+    def _refresh_robot_readiness(self, now: datetime) -> None:
+        """Start or reset transient continuous-ready timers for all robots."""
+
+        for robot in self.discovery.robots.values():
+            ready, _ = self._robot_technically_ready(robot)
+            if not ready:
+                self._reset_ready_confirmation(robot.entity_id)
+                continue
+            if robot.entity_id in self._ready_since:
+                continue
+            self._ready_since[robot.entity_id] = now
+            self._schedule_ready_confirmation(robot.entity_id, now)
+
+    def _manual_robot_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]:
+        """Manual dashboard work uses the same confirmed-ready safety gate."""
+
+        return self._robot_ready(robot)
 
     def _mop_ready(self, robot: DiscoveredRobot) -> bool:
         """Return whether the selected adapter verifies a mop operation."""
@@ -1954,6 +2136,8 @@ class AdaptiveRoboVacCoordinator:
 
         settings = self._room_settings(room)
         detail = self._room_data(room.area_id)
+        if room.area_id in self.data.get("room_faults", {}):
+            return None, "room dispatch blocked pending Repair"
         occurrence = self.data.get("occurrences", {}).get(room.area_id)
         manual_override = bool(occurrence and occurrence.get("manual_override"))
         if not settings.get("enabled", True) and not manual_override:
@@ -2705,8 +2889,11 @@ class AdaptiveRoboVacCoordinator:
             if not active:
                 continue
 
-            fault = self.data.get("scheduler_fault")
-            robot = self.discovery.robots.get(robot_id)
+            fault = (
+                self.data.get("robot_faults", {}).get(robot.registry_id)
+                if (robot := self.discovery.robots.get(robot_id))
+                else None
+            )
             fault_room = self.discovery.rooms.get(
                 str(fault.get("room_area_id", ""))
             ) if fault else None
@@ -2888,6 +3075,7 @@ class AdaptiveRoboVacCoordinator:
             await self.async_refresh_discovery(notify=False)
             self._observe_occupancy(now)
             await self._async_reconcile_jobs(now, transition)
+            self._refresh_robot_readiness(now)
             candidates: list[dict[str, Any]] = []
             reasons: dict[str, str] = {}
             for room in self.discovery.rooms.values():
@@ -2944,7 +3132,8 @@ class AdaptiveRoboVacCoordinator:
                 "reason": reason,
                 "observe_only": self.observe_only,
                 "party_mode": self.party_mode,
-                "dispatch_halted": bool(self.data.get("scheduler_fault")),
+                "dispatch_halted": False,
+                "dispatch_limited": self.scheduler_limited,
                 "scheduler_fault": self.scheduler_fault_view(),
                 "candidates": [
                     {
@@ -2994,11 +3183,6 @@ class AdaptiveRoboVacCoordinator:
                 for robot, candidate in assignments:
                     if self._closing:
                         break
-                    if self.data.get("scheduler_fault") and not candidate.get(
-                        "manual_override"
-                    ):
-                        dispatches.append("scheduler dispatch halted")
-                        continue
                     # Earlier assignments may have awaited service calls. Recheck
                     # every room and robot gate before creating an occurrence or
                     # sending a water-confirmation notification.
@@ -3079,9 +3263,9 @@ class AdaptiveRoboVacCoordinator:
                     dispatches.append(message)
                     if not ok:
                         _LOGGER.warning("Adaptive RoboVacs: %s", message)
-                        break
-            elif self.data.get("scheduler_fault"):
-                dispatches.append("scheduler dispatch halted")
+                        continue
+            elif self.scheduler_limited:
+                dispatches.append("scheduler limited to unaffected robots and rooms")
             elif self.observe_only:
                 dispatches.append("observe-only mode")
             elif self.party_mode:
@@ -3170,6 +3354,7 @@ class AdaptiveRoboVacCoordinator:
             await self.async_refresh_discovery()
             self._observe_occupancy(now)
             await self._async_reconcile_jobs(now)
+            self._refresh_robot_readiness(now)
             room = self.discovery.rooms.get(area_id)
             event = {
                 "at": _iso(now),
@@ -3190,6 +3375,8 @@ class AdaptiveRoboVacCoordinator:
 
             if room is None:
                 return await reject("room is not discovered by this config entry")
+            if room.area_id in self.data.get("room_faults", {}):
+                return await reject("room dispatch blocked pending Repair")
             if self.observe_only:
                 return await reject("observe-only mode")
             if self.party_mode:

@@ -49,12 +49,14 @@ class VacuumDispatchContractTests(unittest.TestCase):
         self.assertIn("is_roborock_q10_protocol", source)
         self.assertIn("return await self._generic.async_dispatch", source)
 
-    def test_first_start_failure_halts_later_dispatches(self) -> None:
+    def test_start_failure_holds_only_its_robot_and_later_assignments_continue(self) -> None:
         source = COORDINATOR_PATH.read_text(encoding="utf-8")
-        self.assertIn('self.data["scheduler_fault"] = {', source)
-        self.assertIn('and not self.data.get("scheduler_fault")', source)
-        self.assertIn("if not ok:", source)
-        self.assertIn("break", source[source.index("if not ok:"):])
+        self.assertIn('section = "room_faults" if reason_code in room_scoped_codes else "robot_faults"', source)
+        self.assertIn('robot.registry_id in self.data.get("robot_faults", {})', source)
+        dispatch_loop = source[source.index("                    if not ok:"):]
+        dispatch_loop = dispatch_loop[:dispatch_loop.index("            elif self.scheduler_limited:")]
+        self.assertIn("continue", dispatch_loop)
+        self.assertNotIn("break", dispatch_loop)
 
     def test_q10_max_plus_failure_downgrades_only_the_effective_setting(self) -> None:
         coordinator = COORDINATOR_PATH.read_text(encoding="utf-8")

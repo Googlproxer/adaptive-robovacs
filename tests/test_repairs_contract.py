@@ -17,7 +17,8 @@ class RepairsContractTests(unittest.TestCase):
         self.assertEqual(strings, translations)
         self.assertNotIn("repairs", translations)
         for key in (
-            "scheduler_halted",
+            "robot_dispatch_fault",
+            "room_dispatch_fault",
             "two_pass_no_longer_supported",
             "notification_delivery_failed",
             "cleaning_program_incompatible",
@@ -30,7 +31,7 @@ class RepairsContractTests(unittest.TestCase):
                 "confirm",
                 issue["fix_flow"]["step"],
             )
-            if key == "scheduler_halted":
+            if key == "robot_dispatch_fault":
                 self.assertTrue(
                     {
                         "no_scheduler_halt",
@@ -42,19 +43,20 @@ class RepairsContractTests(unittest.TestCase):
             else:
                 self.assertIn("recheck_failed", issue["fix_flow"]["error"])
 
-    def test_scheduler_halt_issue_is_persistent_fixable_and_error_severity(self) -> None:
+    def test_scoped_fault_issues_are_persistent_fixable_and_error_severity(self) -> None:
         source = (PACKAGE / "repairs_manager.py").read_text(encoding="utf-8")
         self.assertIn("is_fixable=True", source)
         self.assertIn("is_persistent=True", source)
         self.assertIn("severity=ir.IssueSeverity.ERROR", source)
-        self.assertIn('translation_key="scheduler_halted"', source)
+        self.assertIn('translation_key="robot_dispatch_fault"', source)
+        self.assertIn('translation_key="room_dispatch_fault"', source)
 
     def test_repair_flow_uses_the_same_non_dispatching_resume_method(self) -> None:
         repairs = (PACKAGE / "repairs.py").read_text(encoding="utf-8")
         coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
         self.assertIn("async_recheck_and_resume", repairs)
         method = coordinator[coordinator.index("    async def async_recheck_and_resume"):]
-        method = method[:method.index("    def _cancel_start_confirmation")]
+        method = method[:method.index("    def _discard_unconfirmed_scheduler_job")]
         self.assertIn("scheduler_halt_recheck_result", method)
         self.assertNotIn("async_dispatch", method)
         self.assertNotIn("services.async_call", method)
@@ -79,7 +81,7 @@ class RepairsContractTests(unittest.TestCase):
     def test_opening_a_repair_never_submits_its_confirmation(self) -> None:
         repairs = (PACKAGE / "repairs.py").read_text(encoding="utf-8")
         self.assertNotIn("async_step_confirm(user_input)", repairs)
-        self.assertEqual(repairs.count("return await self.async_step_confirm()"), 3)
+        self.assertEqual(repairs.count("return await self.async_step_confirm()"), 4)
 
     def test_repairs_and_public_fault_state_exclude_native_targets_and_raw_errors(self) -> None:
         source = "".join(

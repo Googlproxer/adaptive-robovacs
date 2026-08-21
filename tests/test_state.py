@@ -271,7 +271,7 @@ class SchedulerStateTests(unittest.TestCase):
             manual_mode="configured",
         )
         state.robot_entity_aliases["registry-robot"] = "vacuum.beta"
-        state.scheduler_fault = SchedulerFault(
+        state.robot_faults["registry-robot"] = SchedulerFault(
             reason_code="start_outcome_uncertain",
             robot_registry_id="registry-robot",
             room_area_id="study",
@@ -330,7 +330,10 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertEqual(restored.room_settings["study"].fan_speed, "max")
         self.assertEqual(restored.room_settings["study"].mop_mode, "deep")
         self.assertEqual(restored.room_settings["study"].cleaning_depth, "fine")
-        self.assertEqual(restored.scheduler_fault.robot_registry_id, "registry-robot")
+        self.assertEqual(
+            restored.robot_faults["registry-robot"].robot_registry_id,
+            "registry-robot",
+        )
         self.assertEqual(restored.occurrences["study"].current_stage, 1)
         self.assertEqual(restored.occurrences["study"].stages[0].status, "completed")
         self.assertEqual(
@@ -357,7 +360,7 @@ class SchedulerStateTests(unittest.TestCase):
         )
         self.assertTrue(runtime_migrated)
         self.assertEqual(
-            runtime_restored.scheduler_fault.reason_code,
+            runtime_restored.robot_faults["registry-robot"].reason_code,
             "start_outcome_uncertain",
         )
 
@@ -380,6 +383,53 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertTrue(migrated)
         self.assertIsNone(restored.room_settings["study"].fan_speed)
         self.assertIsNone(restored.room_settings["study"].mode)
+
+    def test_v9_global_fault_migrates_to_its_robot_scope(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.ensure_room("study", is_bedroom=False)
+        payload = state.to_store()
+        payload["schema_version"] = 9
+        payload.pop("robot_faults")
+        payload.pop("room_faults")
+        payload["scheduler_fault"] = SchedulerFault(
+            reason_code="start_confirmation_failed",
+            robot_registry_id="registry-robot",
+            room_area_id="study",
+            occurred_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
+            phase="start_confirmation",
+        ).to_store()
+
+        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertTrue(migrated)
+        self.assertEqual(
+            restored.robot_faults["registry-robot"].reason_code,
+            "start_confirmation_failed",
+        )
+        self.assertEqual(restored.room_faults, {})
+
+    def test_current_schema_preserves_independent_robot_and_room_faults(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.robot_faults["registry-robot"] = SchedulerFault(
+            reason_code="start_confirmation_failed",
+            robot_registry_id="registry-robot",
+            room_area_id="study",
+            occurred_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
+            phase="start_confirmation",
+        )
+        state.room_faults["kitchen"] = SchedulerFault(
+            reason_code="area_mapping_missing",
+            robot_registry_id="registry-other",
+            room_area_id="kitchen",
+            occurred_at=datetime(2026, 8, 3, 9, 5, tzinfo=timezone.utc),
+            phase="adapter_preflight",
+        )
+
+        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
+
+        self.assertFalse(migrated)
+        self.assertEqual(set(restored.robot_faults), {"registry-robot"})
+        self.assertEqual(set(restored.room_faults), {"kitchen"})
 
     def test_current_schema_rejects_malformed_profile_values(self) -> None:
         state = SchedulerState.create(ENTRY_DATA)
@@ -416,8 +466,6 @@ class SchedulerStateTests(unittest.TestCase):
         payload = state.to_store()
         payload["schema_version"] = 3
         payload["room_settings"]["study"].pop("pass_count")
-        payload.pop("scheduler_fault")
-
         restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
 
         self.assertTrue(migrated)

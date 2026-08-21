@@ -202,6 +202,28 @@ def resolve_roborock_water_readiness(
     )
 
 
+def resolve_roborock_dispatch_readiness(
+    entities: Sequence[AdapterEntityEvidence],
+) -> tuple[str | None, tuple[str, ...]]:
+    """Find one authoritative same-device Roborock status sensor.
+
+    The registry translation key is stable vendor metadata.  Requiring exactly
+    one match prevents an arbitrary enum sensor from being treated as a robot
+    readiness signal on devices that expose multiple diagnostics.
+    """
+
+    matches = tuple(
+        evidence
+        for evidence in entities
+        if evidence.domain == "sensor"
+        and evidence.platform == "roborock"
+        and evidence.translation_key in {"status", "robot_status"}
+    )
+    if len(matches) != 1:
+        return None, ()
+    return matches[0].entity_id, (matches[0].entity_id,)
+
+
 def _segment_parts(value: object) -> tuple[str | None, int] | None:
     if isinstance(value, bool):
         return None
@@ -498,7 +520,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
     """Enhance compatible Roborock vacuums with native cross-hatching."""
 
     adapter_id = "roborock"
-    schema_version = 7
+    schema_version = 8
     priority = 100
     platforms = frozenset({"roborock"})
 
@@ -548,6 +570,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
         water, watched = resolve_roborock_water_readiness(
             context.entities, "mop" in generic.supported_operations
         )
+        readiness_entity_id, readiness_watched = resolve_roborock_dispatch_readiness(
+            context.entities
+        )
         return AdapterCapabilities(
             adapter_id=self.adapter_id,
             schema_version=self.schema_version,
@@ -565,8 +590,14 @@ class RoborockVacuumAdapter(VacuumAdapter):
             mop_pass_counts=frozenset(mop_pass_counts),
             native_vacuum_pass_counts=frozenset(native_vacuum_pass_counts),
             native_mop_pass_counts=frozenset(native_mop_pass_counts),
-            watched_entity_ids=watched,
+            watched_entity_ids=tuple(dict.fromkeys((*watched, *readiness_watched))),
             native_mop_profile=native_mop_profile,
+            readiness_entity_id=readiness_entity_id,
+            readiness_states=(
+                frozenset({"idle", "docked", "charging", "charging_complete"})
+                if readiness_entity_id
+                else frozenset()
+            ),
         )
 
     @staticmethod

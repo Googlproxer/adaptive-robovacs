@@ -142,6 +142,11 @@ Version 1.7.1 verifies the stable physical contract—native **Mop** mode with
 suction **Off**—after those concrete settings are applied. Room overrides are
 not changed because they may be shared by a different vacuum.
 
+Version 1.8.0 adds Store schema v10. Roborock follow-up stages wait for a
+same-device status sensor to leave emptying or washing and then remain ready
+for ten seconds. Dispatch faults now hold only their robot; mapping and saved
+profile faults block only their room.
+
 ## Releases and upgrades
 
 Production updates are published as full GitHub Releases with semantic tags

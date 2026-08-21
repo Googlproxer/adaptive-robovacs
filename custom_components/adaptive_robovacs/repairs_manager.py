@@ -47,9 +47,21 @@ def fault_summary(reason_code: str) -> str:
 
 
 def scheduler_halted_issue_id(entry_id: str) -> str:
-    """Return a stable per-config-entry issue ID."""
+    """Return the legacy global-halt issue ID for cleanup during migration."""
 
     return f"scheduler_halted_{entry_id}"
+
+
+def robot_dispatch_fault_issue_id(entry_id: str, robot_registry_id: str) -> str:
+    """Return a stable robot-scoped dispatch Repair ID."""
+
+    return f"robot_dispatch_fault_{entry_id}_{robot_registry_id}"
+
+
+def room_dispatch_fault_issue_id(entry_id: str, area_id: str) -> str:
+    """Return a stable room-scoped configuration Repair ID."""
+
+    return f"room_dispatch_fault_{entry_id}_{area_id}"
 
 
 def two_pass_issue_id(entry_id: str, area_id: str) -> str:
@@ -90,31 +102,59 @@ def async_set_notification_delivery_issue(
     )
 
 
+def async_sync_dispatch_fault_issues(
+    coordinator: AdaptiveRoboVacCoordinator,
+) -> None:
+    """Create scoped Repairs without turning a single robot fault global."""
+
+    ir.async_delete_issue(
+        coordinator.hass, DOMAIN, scheduler_halted_issue_id(coordinator.entry.entry_id)
+    )
+    for registry_id, fault in coordinator.data.get("robot_faults", {}).items():
+        robot = coordinator.robot_for_registry_id(str(registry_id))
+        room = coordinator.discovery.rooms.get(str(fault.get("room_area_id", "")))
+        ir.async_create_issue(
+            coordinator.hass,
+            DOMAIN,
+            robot_dispatch_fault_issue_id(coordinator.entry.entry_id, str(registry_id)),
+            is_fixable=True,
+            is_persistent=True,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="robot_dispatch_fault",
+            translation_placeholders={
+                "robot": robot.name if robot else "the selected vacuum",
+                "room": room.name if room else "the selected room",
+                "reason": fault_summary(str(fault.get("reason_code", ""))),
+            },
+            data={
+                "entry_id": coordinator.entry.entry_id,
+                "robot_registry_id": str(registry_id),
+            },
+        )
+    for area_id, fault in coordinator.data.get("room_faults", {}).items():
+        room = coordinator.discovery.rooms.get(str(area_id))
+        ir.async_create_issue(
+            coordinator.hass,
+            DOMAIN,
+            room_dispatch_fault_issue_id(coordinator.entry.entry_id, str(area_id)),
+            is_fixable=True,
+            is_persistent=True,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="room_dispatch_fault",
+            translation_placeholders={
+                "room": room.name if room else "the selected room",
+                "reason": fault_summary(str(fault.get("reason_code", ""))),
+            },
+            data={"entry_id": coordinator.entry.entry_id, "area_id": str(area_id)},
+        )
+
+
 def async_create_scheduler_halted_issue(
     coordinator: AdaptiveRoboVacCoordinator,
 ) -> None:
-    """Create or refresh the single persistent scheduler halt Repair."""
+    """Compatibility wrapper for the former global-halt call site."""
 
-    fault = coordinator.data.get("scheduler_fault")
-    if not fault:
-        return
-    robot = coordinator.robot_for_registry_id(str(fault["robot_registry_id"]))
-    room = coordinator.discovery.rooms.get(str(fault["room_area_id"]))
-    ir.async_create_issue(
-        coordinator.hass,
-        DOMAIN,
-        scheduler_halted_issue_id(coordinator.entry.entry_id),
-        is_fixable=True,
-        is_persistent=True,
-        severity=ir.IssueSeverity.ERROR,
-        translation_key="scheduler_halted",
-        translation_placeholders={
-            "robot": robot.name if robot else "the selected vacuum",
-            "room": room.name if room else "the selected room",
-            "reason": fault_summary(str(fault["reason_code"])),
-        },
-        data={"entry_id": coordinator.entry.entry_id},
-    )
+    async_sync_dispatch_fault_issues(coordinator)
 
 
 def async_delete_scheduler_halted_issue(
@@ -126,6 +166,26 @@ def async_delete_scheduler_halted_issue(
         coordinator.hass,
         DOMAIN,
         scheduler_halted_issue_id(coordinator.entry.entry_id),
+    )
+
+
+def async_delete_robot_dispatch_fault_issue(
+    coordinator: AdaptiveRoboVacCoordinator, robot_registry_id: str
+) -> None:
+    ir.async_delete_issue(
+        coordinator.hass,
+        DOMAIN,
+        robot_dispatch_fault_issue_id(coordinator.entry.entry_id, robot_registry_id),
+    )
+
+
+def async_delete_room_dispatch_fault_issue(
+    coordinator: AdaptiveRoboVacCoordinator, area_id: str
+) -> None:
+    ir.async_delete_issue(
+        coordinator.hass,
+        DOMAIN,
+        room_dispatch_fault_issue_id(coordinator.entry.entry_id, area_id),
     )
 
 
