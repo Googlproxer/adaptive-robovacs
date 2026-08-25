@@ -58,7 +58,7 @@ def _u16le(data: bytes, offset: int) -> int:
     return int.from_bytes(data[offset : offset + 2], "little")
 
 
-def _read_lz4_block(data: bytes, expected_size: int) -> bytes:
+def _read_lz4_block(data: bytes, expected_size: int | None = None) -> bytes:
     """Decode a raw LZ4 block with strict bounds and output limits.
 
     Q10 packets carry raw LZ4 blocks rather than a frame container.  The
@@ -66,7 +66,8 @@ def _read_lz4_block(data: bytes, expected_size: int) -> bytes:
     original so this integration has no additional runtime dependency.
     """
 
-    if expected_size < 0 or expected_size > MAX_GRID_CELLS + 64 * 1024:
+    maximum_size = expected_size if expected_size is not None else MAX_GRID_CELLS + 64 * 1024
+    if maximum_size < 0 or maximum_size > MAX_GRID_CELLS + 64 * 1024:
         raise Q10MapFrameError("declared map block is too large")
     output = bytearray()
     cursor = 0
@@ -87,8 +88,8 @@ def _read_lz4_block(data: bytes, expected_size: int) -> bytes:
             raise Q10MapFrameError("truncated LZ4 literals")
         output.extend(data[cursor : cursor + literal_length])
         cursor += literal_length
-        if len(output) > expected_size:
-            raise Q10MapFrameError("LZ4 output exceeds declared map size")
+        if len(output) > maximum_size:
+            raise Q10MapFrameError("LZ4 output exceeds the safe map limit")
         if cursor == len(data):
             break
         if cursor + 2 > len(data):
@@ -108,13 +109,13 @@ def _read_lz4_block(data: bytes, expected_size: int) -> bytes:
                 if extension != 255:
                     break
         match_length += 4
-        if len(output) + match_length > expected_size:
-            raise Q10MapFrameError("LZ4 match exceeds declared map size")
+        if len(output) + match_length > maximum_size:
+            raise Q10MapFrameError("LZ4 match exceeds the safe map limit")
         start = len(output) - offset
         for _ in range(match_length):
             output.append(output[start])
             start += 1
-    if len(output) != expected_size:
+    if expected_size is not None and len(output) != expected_size:
         raise Q10MapFrameError("LZ4 output does not match declared map size")
     return bytes(output)
 
@@ -165,23 +166,22 @@ def parse_q10_map_frame(packet: bytes) -> Q10MapFrame:
     # marker can misread an ordinary grid cell as metadata.
     width = _u16be(packet, 7)
     height = _u16be(packet, 9)
-    declared_layout = _u16be(packet, 25)
     compressed_layout = _u16be(packet, 27)
     grid_size = width * height
     if (
         width == 0
         or height == 0
         or grid_size > MAX_GRID_CELLS
-        or declared_layout == 0
-        or declared_layout > MAX_GRID_CELLS + 64 * 1024
-        or declared_layout < grid_size
     ):
         raise Q10MapFrameError("invalid Q10 map dimensions")
     layout_start = 29
     layout_end = layout_start + compressed_layout
     if layout_end > len(packet):
         raise Q10MapFrameError("truncated Q10 compressed layout")
-    layout = _read_lz4_block(packet[layout_start:layout_end], declared_layout)
+    # Bytes 25-26 are not a documented uncompressed-length field on the
+    # current Q10 transport. Treat them as opaque header data: the bounded LZ4
+    # decoder and the dimensions below provide the actual safety proof.
+    layout = _read_lz4_block(packet[layout_start:layout_end])
     grid = layout[:grid_size]
     if len(grid) != grid_size:
         raise Q10MapFrameError("truncated Q10 map grid")

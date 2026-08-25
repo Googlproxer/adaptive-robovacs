@@ -7,6 +7,16 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.9.4] - 2026-08-25
+
+### Fixed
+
+- Q10 frame parsing now treats undocumented header bytes as opaque, matching
+  the current Home Assistant Roborock decoder while retaining strict packet,
+  grid, LZ4, and room-record bounds.
+
+Detailed notes: [`docs/releases/v1.9.4.md`](docs/releases/v1.9.4.md).
+
 ## [1.9.3] - 2026-08-25
 
 ### Fixed
