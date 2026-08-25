@@ -225,6 +225,32 @@ class _RobotSelect(AdaptiveEntity, SelectEntity):
         )
 
 
+class _MapRecoveryPreviewSelect(AdaptiveEntity, SelectEntity):
+    """Select an archived map image only; this never talks to the robot."""
+
+    def __init__(self, coordinator, robot_entity_id: str) -> None:
+        super().__init__(
+            coordinator,
+            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_map_recovery_preview",
+            "map recovery preview",
+            "robot_map_recovery_preview_select",
+            robot_entity_id=robot_entity_id,
+            robot_name_suffix="map recovery preview",
+        )
+        self.robot_entity_id = robot_entity_id
+
+    @property
+    def options(self) -> tuple[str, ...]:
+        return self.coordinator.map_recovery.preview_options(self.robot_entity_id)
+
+    @property
+    def current_option(self) -> str | None:
+        return self.coordinator.map_recovery.selected_preview_option(self.robot_entity_id)
+
+    async def async_select_option(self, option: str) -> None:
+        self.coordinator.map_recovery.select_preview_option(self.robot_entity_id, option)
+
+
 class _RoomProfileSelect(AdaptiveEntity, SelectEntity):
     """One room override backed by the union of same-floor robot options."""
 
@@ -334,6 +360,11 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
                     "cleaning depth",
                 )
             )
+        if (
+            coordinator.map_recovery.capability(robot.entity_id).available
+            and coordinator.map_recovery.preview_options(robot.entity_id)
+        ):
+            entities.append(_MapRecoveryPreviewSelect(coordinator, robot.entity_id))
     for room in coordinator.discovery.rooms.values():
         supports_mopping = any(
             robot.floor_id == room.floor_id

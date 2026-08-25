@@ -28,6 +28,7 @@ SchedulerState = state_module.SchedulerState
 SchedulerFault = state_module.SchedulerFault
 StateSchemaError = state_module.StateSchemaError
 RobotSettings = state_module.RobotSettings
+RobotHold = state_module.RobotHold
 migrate_runtime_robot_identity = state_module.migrate_runtime_robot_identity
 
 
@@ -42,6 +43,21 @@ ENTRY_DATA = {
 
 
 class SchedulerStateTests(unittest.TestCase):
+    def test_map_recovery_hold_round_trips_selected_map_id(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.robot_holds["registry-q10"] = RobotHold(
+            reason="map_recovery_pending",
+            phase="manual_verification",
+            requested_map_id="retained-map-id",
+        )
+
+        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
+
+        self.assertFalse(migrated)
+        hold = restored.robot_holds["registry-q10"]
+        self.assertEqual(hold.reason, "map_recovery_pending")
+        self.assertEqual(hold.requested_map_id, "retained-map-id")
+
     def test_cleaning_depth_initialization_distinguishes_legacy_and_reset_values(self) -> None:
         defaults = RobotSettings.defaults(False)
         legacy = RobotSettings.from_mapping({}, defaults)

@@ -82,6 +82,11 @@ class CadenceTests(unittest.TestCase):
         self.assertFalse(models.can_request_return_to_dock("unavailable"))
         self.assertFalse(models.can_request_return_to_dock(None))
 
+    def test_map_recovery_hold_requires_explicit_verification(self) -> None:
+        self.assertTrue(models.map_recovery_hold_is_manual("map_recovery_pending"))
+        self.assertFalse(models.map_recovery_hold_is_manual("paused"))
+        self.assertFalse(models.map_recovery_hold_is_manual(None))
+
     def test_room_pass_override_never_downgrades_an_unsupported_request(self) -> None:
         self.assertEqual(models.resolve_pass_count(None, False, {1, 2}), 1)
         self.assertEqual(models.resolve_pass_count(None, True, {1, 2}), 2)

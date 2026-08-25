@@ -11,9 +11,13 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import (
     DOMAIN,
+    SERVICE_ACTIVATE_RETAINED_MAP,
+    SERVICE_CAPTURE_MAP_SNAPSHOT,
     SERVICE_EVALUATE,
+    SERVICE_LIST_RETAINED_MAPS,
     SERVICE_MANUAL_CLEAN_ROOM,
     SERVICE_RECORD_MANUAL_CLEAN,
+    SERVICE_VERIFY_MAP_RECOVERY,
 )
 
 
@@ -58,6 +62,28 @@ async def async_register_services(hass: HomeAssistant) -> None:
             user_id=call.context.user_id,
         )
 
+    async def list_retained_maps(call: ServiceCall) -> dict[str, Any]:
+        return await _coordinator(
+            hass, call.data.get("entry_id")
+        ).map_recovery.async_list_maps(call.data["robot_entity_id"])
+
+    async def capture_map_snapshot(call: ServiceCall) -> dict[str, Any]:
+        return await _coordinator(
+            hass, call.data.get("entry_id")
+        ).map_recovery.async_capture(call.data["robot_entity_id"])
+
+    async def activate_retained_map(call: ServiceCall) -> dict[str, Any]:
+        return await _coordinator(
+            hass, call.data.get("entry_id")
+        ).map_recovery.async_activate(
+            call.data["robot_entity_id"], call.data["map_id"], confirm=call.data["confirm"]
+        )
+
+    async def verify_map_recovery(call: ServiceCall) -> dict[str, Any]:
+        return await _coordinator(
+            hass, call.data.get("entry_id")
+        ).map_recovery.async_verify(call.data["robot_entity_id"], confirm=call.data["confirm"])
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_EVALUATE,
@@ -65,6 +91,57 @@ async def async_register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Optional("dry_run", default=False): cv.boolean,
+                vol.Optional("entry_id"): str,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_RETAINED_MAPS,
+        list_retained_maps,
+        schema=vol.Schema(
+            {
+                vol.Required("robot_entity_id"): cv.entity_id,
+                vol.Optional("entry_id"): str,
+            }
+        ),
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CAPTURE_MAP_SNAPSHOT,
+        capture_map_snapshot,
+        schema=vol.Schema(
+            {
+                vol.Required("robot_entity_id"): cv.entity_id,
+                vol.Optional("entry_id"): str,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ACTIVATE_RETAINED_MAP,
+        activate_retained_map,
+        schema=vol.Schema(
+            {
+                vol.Required("robot_entity_id"): cv.entity_id,
+                vol.Required("map_id"): str,
+                vol.Required("confirm"): vol.All(cv.boolean, vol.Equal(True)),
+                vol.Optional("entry_id"): str,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_VERIFY_MAP_RECOVERY,
+        verify_map_recovery,
+        schema=vol.Schema(
+            {
+                vol.Required("robot_entity_id"): cv.entity_id,
+                vol.Required("confirm"): vol.All(cv.boolean, vol.Equal(True)),
                 vol.Optional("entry_id"): str,
             }
         ),

@@ -52,6 +52,24 @@ class _StopAndReturnButton(AdaptiveEntity, ButtonEntity):
         )
 
 
+class _CaptureMapSnapshotButton(AdaptiveEntity, ButtonEntity):
+    """Capture a read-only server-side copy of all retained Q10 maps."""
+
+    def __init__(self, coordinator, robot_entity_id: str) -> None:
+        super().__init__(
+            coordinator,
+            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_capture_map_snapshot",
+            "capture map snapshot",
+            "robot_map_recovery_capture",
+            robot_entity_id=robot_entity_id,
+            robot_name_suffix="capture map snapshot",
+        )
+        self.robot_entity_id = robot_entity_id
+
+    async def async_press(self) -> None:
+        await self.coordinator.map_recovery.async_capture(self.robot_entity_id)
+
+
 class _RoomManualCleanButton(AdaptiveEntity, ButtonEntity):
     """One non-queueing room action with its mode fixed by entity identity."""
 
@@ -91,6 +109,11 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
     entities.extend(
         _StopAndReturnButton(coordinator, robot.entity_id)
         for robot in coordinator.discovery.robots.values()
+    )
+    entities.extend(
+        _CaptureMapSnapshotButton(coordinator, robot.entity_id)
+        for robot in coordinator.discovery.robots.values()
+        if coordinator.map_recovery.capability(robot.entity_id).available
     )
     for room in coordinator.discovery.rooms.values():
         entities.extend(

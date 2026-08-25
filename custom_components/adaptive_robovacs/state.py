@@ -31,7 +31,7 @@ from .const import (
 from .models import is_valid_daily_time
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 DAILY_WINDOW_VERSION = 1
 
 
@@ -1109,6 +1109,7 @@ class RobotHold:
     held_at: datetime | None = None
     last_observed_at: datetime | None = None
     returning_at: datetime | None = None
+    requested_map_id: str | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> RobotHold | None:
@@ -1121,6 +1122,9 @@ class RobotHold:
             held_at=_timestamp(value.get("held_at")),
             last_observed_at=_timestamp(value.get("last_observed_at")),
             returning_at=_timestamp(value.get("returning_at")),
+            requested_map_id=_optional_string(
+                value.get("requested_map_id"), "robot hold requested_map_id"
+            ),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -1130,6 +1134,7 @@ class RobotHold:
             "held_at": _iso(self.held_at),
             "last_observed_at": _iso(self.last_observed_at),
             "returning_at": _iso(self.returning_at),
+            "requested_map_id": self.requested_map_id,
         }
 
 
@@ -1202,7 +1207,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9}:
+        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -1319,7 +1324,7 @@ class SchedulerState:
         raw_robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
         raw_robot_aliases = (
             _mapping(data.get("robot_entity_aliases"), "robot_entity_aliases")
-            if data.get("schema_version") == SCHEMA_VERSION
+            if data.get("schema_version") in {10, SCHEMA_VERSION}
             else _mapping_or_empty(data.get("robot_entity_aliases"))
         )
         raw_history = _mapping(data.get("room_history"), "room_history")
@@ -1330,7 +1335,7 @@ class SchedulerState:
         raw_occurrences = _mapping_or_empty(data.get("occurrences"))
         raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
-        if data.get("schema_version") == SCHEMA_VERSION:
+        if data.get("schema_version") in {10, SCHEMA_VERSION}:
             raw_robot_faults = _mapping(data.get("robot_faults"), "robot_faults")
             raw_room_faults = _mapping(data.get("room_faults"), "room_faults")
         else:
@@ -1477,7 +1482,7 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v10 codec, and platform entities use
+        persistent I/O stays on the typed v11 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 

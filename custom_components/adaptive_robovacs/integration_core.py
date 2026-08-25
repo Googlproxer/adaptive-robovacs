@@ -7,7 +7,14 @@ from collections.abc import Mapping
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, PLATFORMS, STORAGE_KEY, STORE_VERSION
+from .const import (
+    DOMAIN,
+    MAP_RECOVERY_STORAGE_KEY,
+    MAP_RECOVERY_STORE_VERSION,
+    PLATFORMS,
+    STORAGE_KEY,
+    STORE_VERSION,
+)
 from .coordinator import AdaptiveRoboVacCoordinator
 from .services import async_register_services, async_unregister_services
 from .repairs_manager import (
@@ -87,3 +94,7 @@ async def async_remove_entry(
     for issue_id in issue_ids:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
     await store.async_remove()
+    map_store: Store[dict] = Store(
+        hass, MAP_RECOVERY_STORE_VERSION, f"{MAP_RECOVERY_STORAGE_KEY}.{entry.entry_id}"
+    )
+    await map_store.async_remove()

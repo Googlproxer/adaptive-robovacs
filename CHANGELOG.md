@@ -7,6 +7,15 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional non-root Q10/B01 retained-map recovery guard. It reuses Home
+  Assistant's authenticated Roborock runtime to archive retained map frames,
+  expose read-only previews, and manually activate a still-retained map slot.
+  It never imports raw maps or starts a clean. A durable manual-verification
+  hold prevents scheduler dispatch until the robot is relocalized and its
+  current Home Assistant room mapping passes preflight.
+
 ## [1.8.2] - 2026-08-25
 
 ### Fixed

@@ -114,6 +114,32 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
         }
 
 
+class _MapRecoverySensor(AdaptiveEntity, SensorEntity):
+    """Expose optional retained-map recovery without leaking raw map payloads."""
+
+    def __init__(self, coordinator, robot_entity_id: str) -> None:
+        super().__init__(
+            coordinator,
+            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_map_recovery",
+            "map recovery",
+            "robot_map_recovery_status",
+            robot_entity_id=robot_entity_id,
+            robot_name_suffix="map recovery",
+        )
+        self.robot_entity_id = robot_entity_id
+
+    @property
+    def native_value(self) -> str:
+        return str(self.coordinator.map_recovery.summary(self.robot_entity_id)["state"])
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            **super().extra_state_attributes,
+            **self.coordinator.map_recovery.summary(self.robot_entity_id),
+        }
+
+
 class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
     def __init__(self, coordinator, area_id: str, name: str) -> None:
         super().__init__(coordinator, f"room_{area_id}_next_clean", f"{name} next clean", "room_schedule", area_id=area_id)
@@ -298,7 +324,12 @@ class _RoomManualStatusSensor(AdaptiveEntity, SensorEntity):
 def _entities(coordinator) -> list[AdaptiveEntity]:
     entities: list[AdaptiveEntity] = [_SchedulerSensor(coordinator)]
     for robot in coordinator.discovery.robots.values():
-        entities.append(_RobotStatusSensor(coordinator, robot.entity_id))
+        entities.extend(
+            [
+                _RobotStatusSensor(coordinator, robot.entity_id),
+                _MapRecoverySensor(coordinator, robot.entity_id),
+            ]
+        )
     for room in coordinator.discovery.rooms.values():
         entities.extend(
             [

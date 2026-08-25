@@ -65,6 +65,7 @@ from .models import (
     in_daytime_window,
     learned_duration_minutes,
     manual_clean_robot_is_docked,
+    map_recovery_hold_is_manual,
     manual_deferral,
     mop_stage_start_is_observed,
     managed_clean_duration_failed,
@@ -90,6 +91,7 @@ from .models import (
 from .projections import robot_state, room_state
 from .state import SchedulerState, StateSchemaError, migrate_runtime_robot_identity
 from .runtime import HomeAssistantRuntime
+from .map_recovery import MapRecoveryManager
 from .repairs_manager import (
     async_delete_robot_dispatch_fault_issue,
     async_delete_room_dispatch_fault_issue,
@@ -204,6 +206,7 @@ class AdaptiveRoboVacCoordinator:
         self._identity_migrated = False
         self.jobs = JobLifecycle(self)
         self.runtime = HomeAssistantRuntime(self)
+        self.map_recovery = MapRecoveryManager(self)
 
     async def async_initialize(self) -> None:
         """Restore state, discover the house, and begin passive observation."""
@@ -226,6 +229,7 @@ class AdaptiveRoboVacCoordinator:
             self.data = self.state.to_runtime_data()
 
         await self.async_refresh_discovery()
+        await self.map_recovery.async_initialize()
         if migrated or self._identity_migrated:
             await self._async_save()
         if self.data.get("robot_faults") or self.data.get("room_faults"):
@@ -270,6 +274,7 @@ class AdaptiveRoboVacCoordinator:
         """Stop callbacks, drain coordinator work, and persist once."""
 
         self._closing = True
+        await self.map_recovery.async_shutdown()
         while self._recovery_timers:
             self._recovery_timers.popitem()[1]()
         while self._start_confirmation_timers:
@@ -1636,6 +1641,13 @@ class AdaptiveRoboVacCoordinator:
         """Keep observed pauses/errors durable and classify physical follow-up only."""
 
         hold = self.data["robot_holds"].get(robot_id)
+        # Selecting a robot-retained map is a maintenance operation, not a
+        # cleaning lifecycle.  It can only be released by the explicit
+        # map-recovery verification service after mapping has been rechecked.
+        if hold and map_recovery_hold_is_manual(str(hold.get("reason"))):
+            if state_text not in {"unavailable", "unknown"}:
+                hold["last_observed_at"] = _iso(now)
+            return "held"
         if state_text in {"paused", "error"}:
             reason = (
                 "robot_error"
@@ -1897,6 +1909,12 @@ class AdaptiveRoboVacCoordinator:
         if entity_id in self._watch_entity_ids:
             old_state = event.data.get("old_state")
             new_state = event.data.get("new_state")
+            if entity_id in self.discovery.robots:
+                self.map_recovery.handle_state_transition(
+                    entity_id,
+                    old_state.state if old_state else None,
+                    new_state.state if new_state else None,
+                )
             transition = (
                 {
                     "robot": entity_id,
@@ -1983,6 +2001,8 @@ class AdaptiveRoboVacCoordinator:
                 return False, "held clean awaiting physical completion"
             if hold.get("reason") == "robot_error":
                 return False, "scheduler held after robot error"
+            if map_recovery_hold_is_manual(str(hold.get("reason"))):
+                return False, "map recovery verification pending"
             return False, "scheduler held while robot is paused"
         active = self.data["active"].get(robot.entity_id)
         if active:

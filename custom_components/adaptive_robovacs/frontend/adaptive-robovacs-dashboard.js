@@ -14,6 +14,9 @@ const VACUUM_ROLES = new Map([
   ["robot_status", 0],
   ["robot_control", 1],
   ["robot_stop_return_control", 2],
+  ["robot_map_recovery_status", 3],
+  ["robot_map_recovery_capture", 4],
+  ["robot_map_recovery_preview_select", 5],
 ]);
 const ROOM_ROLES = new Map([
   ["room_schedule", 0],
@@ -489,6 +492,50 @@ class AdaptiveRoboVacsVacuumCard extends AdaptiveRoboVacsCardBase {
         entity: status.entityId,
         attribute: "mop_profile_summary",
         name: "Mopping",
+      });
+    }
+    const recovery = entities.find(
+      (item) => item.attrs[ROLE_ATTRIBUTE] === "robot_map_recovery_status"
+    );
+    if (recovery?.attrs?.state === "recovery pending" || recovery?.attrs?.recovery_pending) {
+      entityRows.push({
+        type: "button",
+        name: "Verify recovered map and resume scheduling",
+        icon: "mdi:map-check",
+        tap_action: {
+          action: "perform-action",
+          perform_action: "adaptive_robovacs.verify_map_recovery",
+          data: {
+            entry_id: context.entryId,
+            robot_entity_id: entityId,
+            confirm: true,
+          },
+          confirmation: {
+            text: "Confirm the robot has been manually relocalized and its Home Assistant room mapping is correct. Scheduler dispatch will be rechecked but no clean will start.",
+          },
+        },
+      });
+    }
+    for (const map of recovery?.attrs?.available_maps || []) {
+      if (!map?.map_id) continue;
+      const label = map.name || "Retained map";
+      entityRows.push({
+        type: "button",
+        name: `Activate retained map: ${label}`,
+        icon: "mdi:map-marker",
+        tap_action: {
+          action: "perform-action",
+          perform_action: "adaptive_robovacs.activate_retained_map",
+          data: {
+            entry_id: context.entryId,
+            robot_entity_id: entityId,
+            map_id: map.map_id,
+            confirm: true,
+          },
+          confirmation: {
+            text: "Activate this robot-retained map? The robot will not be started, and Adaptive RoboVacs will hold scheduling until you verify recovery.",
+          },
+        },
       });
     }
     return entityRows.length

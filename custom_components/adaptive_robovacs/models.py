@@ -1148,6 +1148,12 @@ def can_request_return_to_dock(state: str | None) -> bool:
     return state not in {None, "unavailable", "unknown", "docked"}
 
 
+def map_recovery_hold_is_manual(reason: str | None) -> bool:
+    """Return whether a scheduler hold can only be released by verification."""
+
+    return reason == "map_recovery_pending"
+
+
 def learned_duration_minutes(samples: Iterable[float], fallback: float, minimum: int = 3) -> tuple[float, int]:
     """Return a conservative learned duration without letting outliers dominate.
 
