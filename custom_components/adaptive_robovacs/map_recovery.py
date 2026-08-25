@@ -795,13 +795,13 @@ class MapRecoveryManager:
         except ValueError:
             return None
 
-    def preview_options(self, entity_id: str) -> tuple[str, ...]:
-        """Return read-only snapshot/map choices for the preview select."""
+    def _preview_entries(self, entity_id: str) -> tuple[tuple[str, str, str], ...]:
+        """Return display labels paired with their private snapshot identities."""
 
         robot = self.coordinator.discovery.robots.get(entity_id)
         if robot is None:
             return ()
-        options: list[str] = []
+        entries: list[tuple[str, str, str]] = []
         for capture in reversed(self._robot_store(robot).get("capture_sets", [])):
             if not isinstance(capture, Mapping):
                 continue
@@ -809,27 +809,46 @@ class MapRecoveryManager:
             snapshot_id = str(capture.get("snapshot_id", ""))
             for record in capture.get("maps", []):
                 if isinstance(record, Mapping) and record.get("map_id") is not None:
-                    options.append(
-                        f"{snapshot_id}|{record['map_id']}|{captured_at}|{record.get('name', 'map')}"
+                    entries.append(
+                        (
+                            f"{record.get('name', 'map')} - {captured_at}",
+                            snapshot_id,
+                            str(record["map_id"]),
+                        )
                     )
-        return tuple(options)
+        return tuple(entries)
+
+    def preview_options(self, entity_id: str) -> tuple[str, ...]:
+        """Return read-only map-name and timestamp choices for the preview select."""
+
+        return tuple(entry[0] for entry in self._preview_entries(entity_id))
 
     def selected_preview_option(self, entity_id: str) -> str | None:
-        options = self.preview_options(entity_id)
-        if not options:
+        entries = self._preview_entries(entity_id)
+        if not entries:
             return None
         selected = self._preview_selection.get(entity_id)
         if selected:
-            prefix = f"{selected[0]}|{selected[1]}|"
-            match = next((option for option in options if option.startswith(prefix)), None)
+            match = next(
+                (
+                    label
+                    for label, snapshot_id, map_id in entries
+                    if (snapshot_id, map_id) == selected
+                ),
+                None,
+            )
             if match:
                 return match
-        return options[0]
+        return entries[0][0]
 
     def select_preview_option(self, entity_id: str, option: str) -> None:
-        if option not in self.preview_options(entity_id):
+        entry = next(
+            (candidate for candidate in self._preview_entries(entity_id) if candidate[0] == option),
+            None,
+        )
+        if entry is None:
             raise MapRecoveryError("selected map preview is no longer available")
-        snapshot_id, map_id, *_ = option.split("|", 3)
+        _, snapshot_id, map_id = entry
         self._preview_selection[entity_id] = (snapshot_id, map_id)
         self.coordinator._notify_listeners()
 
@@ -837,5 +856,11 @@ class MapRecoveryManager:
         option = self.selected_preview_option(entity_id)
         if not option:
             return None
-        snapshot_id, map_id, *_ = option.split("|", 3)
+        entry = next(
+            (candidate for candidate in self._preview_entries(entity_id) if candidate[0] == option),
+            None,
+        )
+        if entry is None:
+            return None
+        _, snapshot_id, map_id = entry
         return self.preview(entity_id, snapshot_id=snapshot_id, map_id=map_id)

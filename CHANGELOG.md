@@ -7,6 +7,15 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.9.5] - 2026-08-25
+
+### Changed
+
+- Map-recovery preview choices now show only `map name - timestamp`. Snapshot
+  and map identifiers remain private to the integration.
+
+Detailed notes: [`docs/releases/v1.9.5.md`](docs/releases/v1.9.5.md).
+
 ## [1.9.4] - 2026-08-25
 
 ### Fixed

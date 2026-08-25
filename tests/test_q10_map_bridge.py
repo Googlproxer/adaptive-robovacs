@@ -252,6 +252,35 @@ class Q10MapBridgeTests(unittest.IsolatedAsyncioTestCase):
             recovery._FRAME_RETRY_INTERVAL = previous_interval
         self.assertTrue(api.channel.subscriptions[-1].closed)
 
+    async def test_preview_options_hide_private_snapshot_identifiers(self) -> None:
+        robot = types.SimpleNamespace(registry_id="robot-registry", entity_id="vacuum.test")
+        manager = recovery.MapRecoveryManager.__new__(recovery.MapRecoveryManager)
+        manager.coordinator = types.SimpleNamespace(
+            discovery=types.SimpleNamespace(robots={"vacuum.test": robot}),
+            _notify_listeners=lambda: None,
+        )
+        manager._data = {
+            "robots": {
+                "robot-registry": {
+                    "capture_sets": [
+                        {
+                            "snapshot_id": "private-snapshot-id",
+                            "captured_at": "2026-08-25T18:20:00+00:00",
+                            "maps": [{"map_id": "private-map-id", "name": "Map1"}],
+                        }
+                    ]
+                }
+            }
+        }
+        manager._preview_selection = {}
+        manager._storage_error = None
+
+        option = "Map1 - 2026-08-25T18:20:00+00:00"
+        self.assertEqual(manager.preview_options("vacuum.test"), (option,))
+        self.assertEqual(manager.selected_preview_option("vacuum.test"), option)
+        manager.select_preview_option("vacuum.test", option)
+        self.assertEqual(manager._preview_selection["vacuum.test"], ("private-snapshot-id", "private-map-id"))
+
 
 if __name__ == "__main__":
     unittest.main()
