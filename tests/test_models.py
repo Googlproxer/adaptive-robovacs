@@ -280,6 +280,15 @@ class CadenceTests(unittest.TestCase):
         self.assertEqual(duration, 24)
         self.assertEqual(samples, 3)
 
+    def test_zero_native_clean_duration_fails_only_an_attributed_clean(self) -> None:
+        for source in ("scheduler", "manual_dashboard", "manual_home_assistant"):
+            self.assertTrue(models.managed_clean_duration_failed(source, "robot_timer", 0))
+        self.assertTrue(models.managed_clean_duration_failed("scheduler", "robot_timer", -1))
+        self.assertFalse(models.managed_clean_duration_failed("scheduler", "robot_timer", 0.5))
+        self.assertFalse(models.managed_clean_duration_failed("scheduler", "state_transition", 0))
+        self.assertFalse(models.managed_clean_duration_failed("scheduler", "robot_timer", None))
+        self.assertFalse(models.managed_clean_duration_failed("native_app", "robot_timer", 0))
+
 
 class CleaningProfileTests(unittest.TestCase):
     def setUp(self) -> None:

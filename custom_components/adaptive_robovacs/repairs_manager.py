@@ -34,6 +34,7 @@ FAULT_SUMMARIES = {
     "native_dispatch_failed": "The vacuum vendor command could not start the room clean.",
     "start_confirmation_failed": "The vacuum did not confirm that cleaning started.",
     "start_outcome_uncertain": "The integration cannot safely confirm whether the cleaning command started.",
+    "native_cleaning_zero_duration": "The vacuum reported that the room clean took zero minutes.",
 }
 
 

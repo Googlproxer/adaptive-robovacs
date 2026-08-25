@@ -7,6 +7,18 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-08-25
+
+### Fixed
+
+- A zero-minute result from a vacuum's native cleaning-time sensor now fails
+  scheduler, dashboard manual, and Home Assistant robot-control room cleans.
+  The clean is not credited, its pending scheduler stage remains due, and only
+  the affected robot is held for a Repair recheck. Native-app cleans remain
+  untracked.
+
+Detailed notes: [`docs/releases/v1.8.2.md`](docs/releases/v1.8.2.md).
+
 ## [1.8.1] - 2026-08-21
 
 ### Fixed

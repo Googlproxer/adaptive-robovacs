@@ -1170,6 +1170,27 @@ def learned_duration_minutes(samples: Iterable[float], fallback: float, minimum:
     return values[index], len(values)
 
 
+def managed_clean_duration_failed(
+    job_source: object, duration_source: object, measured_minutes: object
+) -> bool:
+    """Return whether an integration-attributed clean did not run.
+
+    A zero (or invalid negative) duration from the vacuum's own clean timer is
+    authoritative evidence that an accepted room-clean request did not run.
+    Timestamp-derived durations are deliberately excluded: Home Assistant may
+    coalesce state transitions at the same instant without indicating a failed
+    clean. Native-app jobs are never attributed, failed, or held by this rule.
+    """
+
+    return (
+        job_source in {"scheduler", "manual_dashboard", "manual_home_assistant"}
+        and duration_source == "robot_timer"
+        and isinstance(measured_minutes, (float, int))
+        and not isinstance(measured_minutes, bool)
+        and measured_minutes <= 0
+    )
+
+
 def is_valid_daily_time(value: object) -> bool:
     """Return whether a value is a zero-padded local ``HH:MM`` time."""
 

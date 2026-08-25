@@ -67,6 +67,7 @@ from .models import (
     manual_clean_robot_is_docked,
     manual_deferral,
     mop_stage_start_is_observed,
+    managed_clean_duration_failed,
     pending_completion_is_docked,
     resolve_daily_window,
     resolve_cleaning_profile,
@@ -1458,7 +1459,9 @@ class AdaptiveRoboVacCoordinator:
                     if active.get("cleaning_finished")
                     else "observed_pending_completion"
                 )
-                self._complete_job(entity_id, active, completion, confidence)
+                if not active.get("cleaning_finished"):
+                    self._mark_observed_completion(entity_id, active, completion)
+                await self._async_complete_job(entity_id, active, completion, confidence)
                 self.data["robot_holds"].pop(entity_id, None)
                 continue
 
@@ -1487,7 +1490,9 @@ class AdaptiveRoboVacCoordinator:
                 if outcome == "complete" and active:
                     expected_end = _as_datetime(active.get("expected_end"))
                     if expected_end:
-                        self._complete_job(
+                        if active.get("timer_start") is not None:
+                            self._mark_observed_completion(entity_id, active, expected_end)
+                        await self._async_complete_job(
                             entity_id,
                             active,
                             expected_end,
@@ -1530,7 +1535,9 @@ class AdaptiveRoboVacCoordinator:
                 if action == "complete":
                     if active:
                         completion = _as_datetime(active.get("cleaning_finished")) or now
-                        self._complete_job(entity_id, active, completion, "observed")
+                        if not active.get("cleaning_finished"):
+                            self._mark_observed_completion(entity_id, active, completion)
+                        await self._async_complete_job(entity_id, active, completion, "observed")
                     self.data["robot_holds"].pop(entity_id, None)
                     continue
             if not active:
@@ -1578,7 +1585,11 @@ class AdaptiveRoboVacCoordinator:
             expected_end = _as_datetime(active.get("expected_end"))
             if active.get("seen_cleaning") and state and state.state == "docked":
                 if expected_end and now >= expected_end:
-                    self._complete_job(entity_id, active, expected_end, "recovered_expected_end")
+                    if active.get("timer_start") is not None:
+                        self._mark_observed_completion(entity_id, active, expected_end)
+                    await self._async_complete_job(
+                        entity_id, active, expected_end, "recovered_expected_end"
+                    )
                 else:
                     self._set_recovery_waiting(entity_id, active, now)
                 continue
@@ -2920,7 +2931,9 @@ class AdaptiveRoboVacCoordinator:
                     if active.get("cleaning_finished")
                     else "observed_pending_completion"
                 )
-                self._complete_job(robot_id, active, completion, confidence)
+                if not active.get("cleaning_finished"):
+                    self._mark_observed_completion(robot_id, active, completion)
+                await self._async_complete_job(robot_id, active, completion, confidence)
                 self.data["robot_holds"].pop(robot_id, None)
                 changed = True
                 continue
@@ -2955,7 +2968,9 @@ class AdaptiveRoboVacCoordinator:
             if hold_action == "complete":
                 if active:
                     completion = _as_datetime(active.get("cleaning_finished")) or now
-                    self._complete_job(robot_id, active, completion, "observed")
+                    if not active.get("cleaning_finished"):
+                        self._mark_observed_completion(robot_id, active, completion)
+                    await self._async_complete_job(robot_id, active, completion, "observed")
                 self.data["robot_holds"].pop(robot_id, None)
                 changed = True
                 continue
@@ -3004,7 +3019,7 @@ class AdaptiveRoboVacCoordinator:
                     active["phase"] = "returning"
                 else:
                     self._mark_observed_completion(robot_id, active, transition_at)
-                    self._complete_job(robot_id, active, transition_at, "observed")
+                    await self._async_complete_job(robot_id, active, transition_at, "observed")
                 changed = True
                 continue
             if state_text == "cleaning":
@@ -3038,7 +3053,11 @@ class AdaptiveRoboVacCoordinator:
                     confidence = "recovered_expected_end"
                 else:
                     confidence = str(active.get("completion_confidence", "observed"))
-                self._complete_job(robot_id, active, completion, confidence)
+                if not active.get("cleaning_finished") and (
+                    confidence == "observed" or active.get("timer_start") is not None
+                ):
+                    self._mark_observed_completion(robot_id, active, completion)
+                await self._async_complete_job(robot_id, active, completion, confidence)
                 changed = True
                 continue
             started = _as_datetime(active.get("started"))
@@ -3112,6 +3131,48 @@ class AdaptiveRoboVacCoordinator:
 
     def _complete_job(self, robot_id: str, active: dict[str, Any], completion: datetime, confidence: str) -> None:
         self.jobs.complete(robot_id, active, completion, confidence)
+
+    async def _async_complete_job(
+        self, robot_id: str, active: dict[str, Any], completion: datetime, confidence: str
+    ) -> bool:
+        """Complete a job unless the vacuum reports that no cleaning occurred."""
+
+        if managed_clean_duration_failed(
+            active.get("source"),
+            active.get("duration_source"),
+            active.get("measured_minutes"),
+        ):
+            robot = self.discovery.robots.get(robot_id)
+            room = self.discovery.rooms.get(str(active.get("room", "")))
+            if robot and room:
+                detail = self._room_data(room.area_id)
+                detail["last_stage_outcome"] = "failed"
+                detail["last_stage_reason"] = "native_cleaning_zero_duration"
+                detail["last_stage_at"] = _iso(completion)
+                _LOGGER.warning(
+                    "Adaptive RoboVacs rejected zero-duration native clean: "
+                    "robot=%s room=%s duration_source=%s measured_minutes=%s",
+                    robot.entity_id,
+                    room.name,
+                    active.get("duration_source"),
+                    active.get("measured_minutes"),
+                )
+                if robot.registry_id in self.data.get("robot_faults", {}):
+                    self._cancel_job(
+                        robot_id, active, completion, "native_cleaning_zero_duration"
+                    )
+                else:
+                    await self._async_latch_scheduler_fault(
+                        robot,
+                        room,
+                        "native_cleaning_zero_duration",
+                        "completion",
+                        native_command_may_have_started=True,
+                        outcome_uncertain=False,
+                    )
+                return False
+        self._complete_job(robot_id, active, completion, confidence)
+        return True
 
     def _apply_manual_deferral(
         self,
