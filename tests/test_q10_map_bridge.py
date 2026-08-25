@@ -112,15 +112,20 @@ class _Command:
     def __init__(self, channel: _Channel) -> None:
         self.channel = channel
         self.calls: list[dict[str, object]] = []
+        self.list_requests = 0
 
     async def send(self, _common: object, payload: dict[str, object]) -> None:
         self.calls.append(payload)
-        request = payload["61"]
+        request = payload.get("61", payload)
         assert isinstance(request, dict)
         if request["op"] == "list":
-            self.channel.queue.put_nowait(
-                {"61": {"data": [{"id": "1234", "name": "Saved map"}]}}
-            )
+            self.list_requests += 1
+            if self.list_requests == 1:
+                self.channel.queue.put_nowait(
+                    {"61": {"op": "list", "data": [{"id": "1234", "name": "Saved map"}]}}
+                )
+            else:
+                self.channel.queue.put_nowait(_packet(1234))
         elif request["op"] == "get":
             self.channel.queue.put_nowait(_packet(int(str(request["id"]))))
 
@@ -147,6 +152,7 @@ class _WireMessage:
 def _bridge(api: _Api):
     bridge = recovery.Q10MapProtocolBridge(api)
     bridge._common = object()
+    bridge._multi_map = object()
     bridge._multi_map_code = "61"
     bridge._channel = api.channel
     bridge._decode_rpc_response = lambda payload: payload
@@ -221,8 +227,8 @@ class Q10MapBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(maps[0].map_id, "1234")
         self.assertEqual(frame.map_id, "1234")
         self.assertEqual(
-            [payload["61"]["op"] for payload in api.command.calls],
-            ["list", "get", "apply"],
+            [(payload.get("61", payload))["op"] for payload in api.command.calls],
+            ["list", "list", "apply"],
         )
         self.assertTrue(all(item.closed for item in api.channel.subscriptions))
 
@@ -234,13 +240,16 @@ class Q10MapBridgeTests(unittest.IsolatedAsyncioTestCase):
             api.channel.queue.put_nowait(_packet(9999))
 
         api.command.send = mismatched_send
-        previous_timeout = recovery._CAPTURE_TIMEOUT
-        recovery._CAPTURE_TIMEOUT = 0.01
+        previous_timeout = recovery._FRAME_TIMEOUT
+        previous_interval = recovery._FRAME_RETRY_INTERVAL
+        recovery._FRAME_TIMEOUT = 0.03
+        recovery._FRAME_RETRY_INTERVAL = 0.001
         try:
             with self.assertRaises(recovery.MapRecoveryError):
                 await bridge.async_get_map("1234")
         finally:
-            recovery._CAPTURE_TIMEOUT = previous_timeout
+            recovery._FRAME_TIMEOUT = previous_timeout
+            recovery._FRAME_RETRY_INTERVAL = previous_interval
         self.assertTrue(api.channel.subscriptions[-1].closed)
 
 

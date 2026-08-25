@@ -7,6 +7,16 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-08-25
+
+### Fixed
+
+- Q10 active-map archival now uses the firmware's read-only direct
+  `MULTI_MAP` frame request rather than the unsupported per-slot `get` request.
+  The response is matched to the retained slot before it can be stored.
+
+Detailed notes: [`docs/releases/v1.9.3.md`](docs/releases/v1.9.3.md).
+
 ## [1.9.2] - 2026-08-25
 
 ### Fixed

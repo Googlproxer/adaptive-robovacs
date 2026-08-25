@@ -38,6 +38,9 @@ _CAPTURE_TIMEOUT = 5.0
 _LIST_TIMEOUT = 15.0
 _LIST_REQUEST_ATTEMPTS = 3
 _LIST_RETRY_INTERVAL = 4.0
+_FRAME_TIMEOUT = 25.0
+_FRAME_REQUEST_ATTEMPTS = 3
+_FRAME_RETRY_INTERVAL = 4.0
 _MAX_MAP_SLOTS = 8
 _SETTLE_DELAY = timedelta(seconds=60)
 
@@ -174,6 +177,7 @@ class Q10MapProtocolBridge:
         self._api = api
         self._lock = asyncio.Lock()
         self._common: Any = None
+        self._multi_map: Any = None
         self._multi_map_code: str | None = None
         self._decode_rpc_response: Any = None
         self._channel: Any = None
@@ -216,6 +220,7 @@ class Q10MapProtocolBridge:
         if channel is None:
             raise MapRecoveryUnavailable("Q10 map stream is unavailable")
         bridge._common = common
+        bridge._multi_map = multi_map
         bridge._multi_map_code = str(code)
         bridge._decode_rpc_response = decode_rpc_response
         bridge._channel = channel
@@ -265,6 +270,17 @@ class Q10MapProtocolBridge:
         except Exception as err:
             raise MapRecoveryError("Roborock rejected the map request") from err
 
+    async def _async_send_active_frame_request(self, value: Mapping[str, object]) -> None:
+        """Request the active Q10 map frame without selecting or editing a map."""
+
+        try:
+            await self._api.command.send(self._multi_map, dict(value))
+            refresh = getattr(self._api, "refresh", None)
+            if callable(refresh):
+                await refresh()
+        except Exception as err:
+            raise MapRecoveryError("Roborock rejected the active map request") from err
+
     async def _async_wait_for(self, predicate, *, timeout: float = _CAPTURE_TIMEOUT) -> object:
         stream = self._async_stream()
         deadline = asyncio.get_running_loop().time() + timeout
@@ -293,22 +309,21 @@ class Q10MapProtocolBridge:
         timeout: float,
         attempts: int = 1,
         retry_interval: float = 0.0,
+        sender: Any | None = None,
     ) -> object:
         """Send a fire-and-forget request while retaining one response stream."""
 
         waiter = asyncio.create_task(self._async_wait_for(predicate, timeout=timeout))
         try:
             await asyncio.sleep(0)
+            send = sender or self._async_send_common
             for attempt in range(attempts):
-                await self._async_send_common(request)
+                await send(request)
                 if attempt + 1 >= attempts:
                     break
-                try:
-                    return await asyncio.wait_for(
-                        asyncio.shield(waiter), timeout=retry_interval
-                    )
-                except TimeoutError:
-                    continue
+                done, _ = await asyncio.wait({waiter}, timeout=retry_interval)
+                if done:
+                    return waiter.result()
             return await waiter
         except BaseException:
             waiter.cancel()
@@ -348,9 +363,12 @@ class Q10MapProtocolBridge:
                 return frame if frame.map_id == expected else None
 
             return await self._async_request_and_wait(
-                {"op": "get", "id": expected},
+                {"op": "list"},
                 match,
-                timeout=_CAPTURE_TIMEOUT,
+                timeout=_FRAME_TIMEOUT,
+                attempts=_FRAME_REQUEST_ATTEMPTS,
+                retry_interval=_FRAME_RETRY_INTERVAL,
+                sender=self._async_send_active_frame_request,
             )
 
     async def async_apply_map(self, map_id: str) -> None:

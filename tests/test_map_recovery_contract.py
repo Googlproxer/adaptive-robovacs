@@ -18,7 +18,10 @@ class MapRecoveryContractTests(unittest.TestCase):
 
         self.assertIn('MAP_RECOVERY_STORAGE_KEY', recovery)
         self.assertIn('"op": "list"', recovery)
-        self.assertIn('"op": "get"', recovery)
+        # Q10 returns an active raw map frame in response to its direct
+        # read-only MULTI_MAP list request; it has no per-slot get operation.
+        self.assertIn('_async_send_active_frame_request', recovery)
+        self.assertNotIn('"op": "get"', recovery)
         self.assertIn('"op": "apply"', recovery)
         self.assertIn('map_recovery_pending', recovery)
         self.assertNotIn("hass.services.async_call", recovery)
