@@ -7,6 +7,17 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-08-25
+
+### Fixed
+
+- Q10 retained-map slot discovery now retries the robot's asynchronous,
+  read-only `MULTI_MAP` list request within a bounded 15-second window. This
+  matches the cloud-delayed Q10 response flow and avoids treating a delayed
+  reply as an unavailable map.
+
+Detailed notes: [`docs/releases/v1.9.2.md`](docs/releases/v1.9.2.md).
+
 ## [1.9.1] - 2026-08-25
 
 ### Fixed

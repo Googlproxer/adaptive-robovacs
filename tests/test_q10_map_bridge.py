@@ -183,6 +183,33 @@ class Q10MapBridgeTests(unittest.IsolatedAsyncioTestCase):
     def test_extract_bytes_ignores_empty_object_attributes(self) -> None:
         self.assertIsNone(recovery._extract_bytes(object()))
 
+    async def test_list_retries_the_read_only_request_until_the_reply_arrives(self) -> None:
+        api = _Api()
+        bridge = _bridge(api)
+        calls = 0
+
+        async def delayed_send(_common: object, payload: dict[str, object]) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                api.channel.queue.put_nowait(
+                    {"61": {"op": "list", "data": [{"id": "1234", "name": "Saved map"}]}}
+                )
+
+        api.command.send = delayed_send
+        previous_timeout = recovery._LIST_TIMEOUT
+        previous_interval = recovery._LIST_RETRY_INTERVAL
+        recovery._LIST_TIMEOUT = 0.1
+        recovery._LIST_RETRY_INTERVAL = 0.01
+        try:
+            maps = await bridge.async_list_maps()
+        finally:
+            recovery._LIST_TIMEOUT = previous_timeout
+            recovery._LIST_RETRY_INTERVAL = previous_interval
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(maps[0].map_id, "1234")
+
     async def test_list_get_apply_and_stream_cleanup(self) -> None:
         api = _Api()
         bridge = _bridge(api)

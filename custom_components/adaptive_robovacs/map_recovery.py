@@ -35,6 +35,9 @@ from .q10_map_frame import Q10MapFrame, Q10MapFrameError, parse_q10_map_frame, r
 
 _LOGGER = logging.getLogger(__name__)
 _CAPTURE_TIMEOUT = 5.0
+_LIST_TIMEOUT = 15.0
+_LIST_REQUEST_ATTEMPTS = 3
+_LIST_RETRY_INTERVAL = 4.0
 _MAX_MAP_SLOTS = 8
 _SETTLE_DELAY = timedelta(seconds=60)
 
@@ -90,6 +93,9 @@ def _extract_map_list(value: object, multi_map_code: str) -> list[RetainedMap] |
 
     source = _mapping(value)
     if source is None:
+        return None
+    operation = source.get("op")
+    if operation is not None and operation != "list":
         return None
     for key in (multi_map_code, int(multi_map_code), "data", "dps"):
         nested = source.get(key)
@@ -259,9 +265,9 @@ class Q10MapProtocolBridge:
         except Exception as err:
             raise MapRecoveryError("Roborock rejected the map request") from err
 
-    async def _async_wait_for(self, predicate) -> object:
+    async def _async_wait_for(self, predicate, *, timeout: float = _CAPTURE_TIMEOUT) -> object:
         stream = self._async_stream()
-        deadline = asyncio.get_running_loop().time() + _CAPTURE_TIMEOUT
+        deadline = asyncio.get_running_loop().time() + timeout
         try:
             while True:
                 remaining = deadline - asyncio.get_running_loop().time()
@@ -279,23 +285,47 @@ class Q10MapProtocolBridge:
         finally:
             await stream.aclose()
 
+    async def _async_request_and_wait(
+        self,
+        request: Mapping[str, object],
+        predicate,
+        *,
+        timeout: float,
+        attempts: int = 1,
+        retry_interval: float = 0.0,
+    ) -> object:
+        """Send a fire-and-forget request while retaining one response stream."""
+
+        waiter = asyncio.create_task(self._async_wait_for(predicate, timeout=timeout))
+        try:
+            await asyncio.sleep(0)
+            for attempt in range(attempts):
+                await self._async_send_common(request)
+                if attempt + 1 >= attempts:
+                    break
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(waiter), timeout=retry_interval
+                    )
+                except TimeoutError:
+                    continue
+            return await waiter
+        except BaseException:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+            raise
+
     async def async_list_maps(self) -> list[RetainedMap]:
         async with self._lock:
-            waiter = asyncio.create_task(
-                self._async_wait_for(
-                    lambda message: _extract_map_list(
-                        self._decode_message(message), self._multi_map_code or "61"
-                    )
-                )
+            result = await self._async_request_and_wait(
+                {"op": "list"},
+                lambda message: _extract_map_list(
+                    self._decode_message(message), self._multi_map_code or "61"
+                ),
+                timeout=_LIST_TIMEOUT,
+                attempts=_LIST_REQUEST_ATTEMPTS,
+                retry_interval=_LIST_RETRY_INTERVAL,
             )
-            try:
-                await asyncio.sleep(0)
-                await self._async_send_common({"op": "list"})
-                result = await waiter
-            except BaseException:
-                waiter.cancel()
-                await asyncio.gather(waiter, return_exceptions=True)
-                raise
             maps = result if isinstance(result, list) else []
             if not maps:
                 raise MapRecoveryError("the robot did not report any retained maps")
@@ -317,15 +347,11 @@ class Q10MapProtocolBridge:
                     return None
                 return frame if frame.map_id == expected else None
 
-            waiter = asyncio.create_task(self._async_wait_for(match))
-            try:
-                await asyncio.sleep(0)
-                await self._async_send_common({"op": "get", "id": expected})
-                return await waiter
-            except BaseException:
-                waiter.cancel()
-                await asyncio.gather(waiter, return_exceptions=True)
-                raise
+            return await self._async_request_and_wait(
+                {"op": "get", "id": expected},
+                match,
+                timeout=_CAPTURE_TIMEOUT,
+            )
 
     async def async_apply_map(self, map_id: str) -> None:
         async with self._lock:
