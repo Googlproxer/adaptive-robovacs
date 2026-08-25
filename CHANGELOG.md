@@ -7,6 +7,21 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-08-25
+
+### Fixed
+
+- Q10 retained-map requests now subscribe to the raw response stream already
+  associated with Home Assistant's authenticated Roborock session. This keeps
+  the original map packet and recognises typed Q10 DPS map-list updates on
+  Home Assistant 2026.8's bundled `python-roborock` runtime.
+- Corrected Q10 full-map frame dimensions to use their documented wire-header
+  offsets, avoiding false room-table detection during archival.
+
+Detailed notes: [`docs/releases/v1.9.1.md`](docs/releases/v1.9.1.md).
+
+## [1.9.0] - 2026-08-25
+
 ### Added
 
 - Optional non-root Q10/B01 retained-map recovery guard. It reuses Home
@@ -15,6 +30,8 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
   It never imports raw maps or starts a clean. A durable manual-verification
   hold prevents scheduler dispatch until the robot is relocalized and its
   current Home Assistant room mapping passes preflight.
+
+Detailed notes: [`docs/releases/v1.9.0.md`](docs/releases/v1.9.0.md).
 
 ## [1.8.2] - 2026-08-25
 

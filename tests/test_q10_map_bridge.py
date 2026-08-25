@@ -75,7 +75,8 @@ def _packet(map_id: int) -> bytes:
     header = bytearray(29)
     header[0:2] = b"\x01\x01"
     header[2:6] = map_id.to_bytes(4, "big")
-    header[8:10] = (2).to_bytes(2, "little")
+    header[7:9] = (2).to_bytes(2, "big")
+    header[9:11] = (2).to_bytes(2, "big")
     header[25:27] = len(layout).to_bytes(2, "big")
     header[27:29] = len(compressed).to_bytes(2, "big")
     return bytes(header) + compressed
@@ -130,6 +131,19 @@ class _Api:
         self.command = _Command(self.channel)
 
 
+class _DpsKey:
+    code = 61
+
+
+class _DpsUpdate:
+    def __init__(self) -> None:
+        self.dps = {_DpsKey(): {"data": [{"id": "1234", "name": "Saved map"}]}}
+
+
+class _WireMessage:
+    payload = b'{"dps":{"101":{"61":{"data":[]}}}}'
+
+
 def _bridge(api: _Api):
     bridge = recovery.Q10MapProtocolBridge(api)
     bridge._common = object()
@@ -140,6 +154,35 @@ def _bridge(api: _Api):
 
 
 class Q10MapBridgeTests(unittest.IsolatedAsyncioTestCase):
+    def test_decodes_typed_dps_updates(self) -> None:
+        bridge = _bridge(_Api())
+
+        decoded = bridge._decode_message(_DpsUpdate())
+
+        self.assertEqual(
+            recovery._extract_map_list(decoded, "61")[0].map_id,
+            "1234",
+        )
+
+    def test_decodes_a_raw_wire_message_before_its_payload(self) -> None:
+        bridge = _bridge(_Api())
+        message = _WireMessage()
+        bridge._decode_rpc_response = lambda value: (
+            {_DpsKey(): {"data": [{"id": "1234", "name": "Saved map"}]}}
+            if value is message
+            else (_ for _ in ()).throw(TypeError("expected wire message"))
+        )
+
+        decoded = bridge._decode_message(message)
+
+        self.assertEqual(
+            recovery._extract_map_list(decoded, "61")[0].map_id,
+            "1234",
+        )
+
+    def test_extract_bytes_ignores_empty_object_attributes(self) -> None:
+        self.assertIsNone(recovery._extract_bytes(object()))
+
     async def test_list_get_apply_and_stream_cleanup(self) -> None:
         api = _Api()
         bridge = _bridge(api)

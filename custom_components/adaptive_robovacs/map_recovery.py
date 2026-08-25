@@ -121,10 +121,14 @@ def _extract_map_list(value: object, multi_map_code: str) -> list[RetainedMap] |
 def _extract_bytes(message: object) -> bytes | None:
     """Find a binary Q10 map payload without assuming one library message class."""
 
+    if message is None:
+        return None
     if isinstance(message, bytes):
         return message
     if isinstance(message, bytearray):
         return bytes(message)
+    if isinstance(message, memoryview):
+        return message.tobytes()
     if isinstance(message, tuple):
         for item in message:
             found = _extract_bytes(item)
@@ -137,10 +141,24 @@ def _extract_bytes(message: object) -> bytes | None:
                 if found is not None:
                     return found
     for name in ("payload", "data", "raw"):
-        found = _extract_bytes(getattr(message, name, None))
-        if found is not None:
-            return found
+        value = getattr(message, name, None)
+        if value is not None and value is not message:
+            found = _extract_bytes(value)
+            if found is not None:
+                return found
     return None
+
+
+def _normalise_dps(value: object) -> Mapping[str, Any] | None:
+    """Return a string-keyed DPS mapping from current library message shapes."""
+
+    source = getattr(value, "dps", value)
+    if not isinstance(source, Mapping):
+        return None
+    return {
+        str(getattr(key, "code", key)): item
+        for key, item in source.items()
+    }
 
 
 class Q10MapProtocolBridge:
@@ -170,15 +188,21 @@ class Q10MapProtocolBridge:
         code = getattr(multi_map, "code", None)
         if common is None or code is None:
             raise MapRecoveryUnavailable("Q10 multi-map protocol is unavailable")
+        channel_roots = (
+            getattr(api, "channel", None),
+            getattr(api, "_channel", None),
+            getattr(getattr(api, "_api", None), "channel", None),
+            getattr(getattr(api, "_api", None), "_channel", None),
+        )
+        # Q10PropertiesApi exposes a decoded stream whose map parser discards the
+        # original wire packet. Prefer its already-connected MQTT transport so we
+        # can retain the opaque response unchanged, while still sharing HA's one
+        # authenticated session.
         channel = next(
             (
                 candidate
-                for candidate in (
-                    getattr(api, "channel", None),
-                    getattr(api, "_channel", None),
-                    getattr(getattr(api, "_api", None), "channel", None),
-                    getattr(getattr(api, "_api", None), "_channel", None),
-                )
+                for root in channel_roots
+                for candidate in (getattr(root, "_mqtt_channel", None), root)
                 if callable(getattr(candidate, "subscribe_stream", None))
             ),
             None,
@@ -214,13 +238,20 @@ class Q10MapProtocolBridge:
     def _decode_message(self, message: object) -> object:
         if isinstance(message, Mapping):
             return message
+        dps = _normalise_dps(message)
+        if dps is not None:
+            return dps
         payload = _extract_bytes(message)
         if payload is None or payload[:2] == b"\x01\x01":
             return message
         try:
-            return self._decode_rpc_response(payload)
+            decoded = self._decode_rpc_response(message)
         except Exception:  # Third-party protocol errors are never dashboard text.
-            return message
+            try:
+                decoded = self._decode_rpc_response(payload)
+            except Exception:
+                return message
+        return _normalise_dps(decoded) or decoded
 
     async def _async_send_common(self, value: Mapping[str, object]) -> None:
         try:

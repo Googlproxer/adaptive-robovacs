@@ -119,27 +119,21 @@ def _read_lz4_block(data: bytes, expected_size: int) -> bytes:
     return bytes(output)
 
 
-def _parse_rooms(layout: bytes, grid: bytes) -> tuple[Q10MapRoom, ...]:
-    """Parse observed fixed-size room records without trusting unknown tails."""
+def _parse_rooms(room_data: bytes, grid: bytes) -> tuple[Q10MapRoom, ...]:
+    """Parse the bounded room table after the known-size occupancy grid."""
 
-    # The observed room table is introduced by 01 <count> after the grid.  A
-    # false-positive marker is harmless: every candidate record is fully bounds
-    # checked and an invalid candidate simply yields no decoded room metadata.
-    marker = None
-    for offset in range(len(layout) - 1, -1, -1):
-        if layout[offset] != 1:
-            continue
-        count = layout[offset + 1] if offset + 1 < len(layout) else 0
-        if count and offset + 2 + count * 47 <= len(layout):
-            marker = offset
-            break
-    if marker is None:
+    if not room_data:
         return ()
-    count = layout[marker + 1]
+    if len(room_data) < 2 or room_data[0] != 1:
+        return ()
+    count = room_data[1]
+    required = 2 + count * 47
+    if required > len(room_data):
+        raise Q10MapFrameError("truncated Q10 room metadata")
     rooms: list[Q10MapRoom] = []
     for index in range(count):
-        offset = marker + 2 + index * 47
-        record = layout[offset : offset + 47]
+        offset = 2 + index * 47
+        record = room_data[offset : offset + 47]
         room_id = _u16be(record, 0)
         order_hint = _u16le(record, 2)
         name_length = min(record[26], MAX_ROOM_NAME_BYTES, len(record) - 27)
@@ -156,18 +150,6 @@ def _parse_rooms(layout: bytes, grid: bytes) -> tuple[Q10MapRoom, ...]:
     return tuple(rooms)
 
 
-def _room_metadata_start(layout: bytes) -> int:
-    """Find a fully bounded room table nearest the observed packet tail."""
-
-    for offset in range(len(layout) - 1, -1, -1):
-        if layout[offset] != 1 or offset + 2 > len(layout):
-            continue
-        count = layout[offset + 1]
-        if count and offset + 2 + count * 47 <= len(layout):
-            return offset
-    return len(layout)
-
-
 def parse_q10_map_frame(packet: bytes) -> Q10MapFrame:
     """Validate and decode one complete ``01 01`` Q10 map packet."""
 
@@ -178,25 +160,32 @@ def parse_q10_map_frame(packet: bytes) -> Q10MapFrame:
     if len(packet) < 29 or packet[:2] != b"\x01\x01":
         raise Q10MapFrameError("not a Q10 full-map packet")
     map_id = str(int.from_bytes(packet[2:6], "big"))
-    width = _u16le(packet, 8)
+    # The Q10 wire header stores two consecutive big-endian dimensions at
+    # offsets 7 (width) and 9 (height). Deriving height by scanning for a room
+    # marker can misread an ordinary grid cell as metadata.
+    width = _u16be(packet, 7)
+    height = _u16be(packet, 9)
     declared_layout = _u16be(packet, 25)
     compressed_layout = _u16be(packet, 27)
-    if width == 0 or declared_layout == 0 or declared_layout > MAX_GRID_CELLS + 64 * 1024:
+    grid_size = width * height
+    if (
+        width == 0
+        or height == 0
+        or grid_size > MAX_GRID_CELLS
+        or declared_layout == 0
+        or declared_layout > MAX_GRID_CELLS + 64 * 1024
+        or declared_layout < grid_size
+    ):
         raise Q10MapFrameError("invalid Q10 map dimensions")
     layout_start = 29
     layout_end = layout_start + compressed_layout
     if layout_end > len(packet):
         raise Q10MapFrameError("truncated Q10 compressed layout")
     layout = _read_lz4_block(packet[layout_start:layout_end], declared_layout)
-    # The first section begins with the occupancy grid and ends with metadata.
-    # The Q10 protocol does not expose a separate grid-length field; derive it
-    # from the room table marker, falling back to the entire decompressed block.
-    metadata_start = _room_metadata_start(layout)
-    grid = layout[:metadata_start]
-    if not grid or len(grid) > MAX_GRID_CELLS or len(grid) % width:
-        raise Q10MapFrameError("invalid Q10 map grid dimensions")
-    height = len(grid) // width
-    rooms = _parse_rooms(layout, grid)
+    grid = layout[:grid_size]
+    if len(grid) != grid_size:
+        raise Q10MapFrameError("truncated Q10 map grid")
+    rooms = _parse_rooms(layout[grid_size:], grid)
     return Q10MapFrame(
         map_id=map_id,
         width=width,

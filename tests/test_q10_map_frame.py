@@ -41,7 +41,8 @@ def _packet(*, width: int = 2, grid: bytes = b"\x04\x04\x08\x08") -> bytes:
     header = bytearray(29)
     header[0:2] = b"\x01\x01"
     header[2:6] = (1234).to_bytes(4, "big")
-    header[8:10] = width.to_bytes(2, "little")
+    header[7:9] = width.to_bytes(2, "big")
+    header[9:11] = (2).to_bytes(2, "big")
     header[25:27] = len(layout).to_bytes(2, "big")
     header[27:29] = len(compressed).to_bytes(2, "big")
     return bytes(header) + compressed
@@ -63,7 +64,7 @@ class Q10MapFrameTests(unittest.TestCase):
         with self.assertRaises(frame.Q10MapFrameError):
             frame.parse_q10_map_frame(b"not-a-map")
         with self.assertRaises(frame.Q10MapFrameError):
-            frame.parse_q10_map_frame(_packet(width=3))
+            frame.parse_q10_map_frame(_packet(width=100))
 
     def test_lz4_decoder_rejects_invalid_match_offset(self) -> None:
         with self.assertRaises(frame.Q10MapFrameError):
