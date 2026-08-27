@@ -232,10 +232,10 @@ class _MapRecoveryPreviewSelect(AdaptiveEntity, SelectEntity):
         super().__init__(
             coordinator,
             f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_map_recovery_preview",
-            "map recovery preview",
-            "robot_map_recovery_preview_select",
+            "map snapshot preview",
+            "robot_map_snapshot_preview_select",
             robot_entity_id=robot_entity_id,
-            robot_name_suffix="map recovery preview",
+            robot_name_suffix="map snapshot preview",
         )
         self.robot_entity_id = robot_entity_id
 

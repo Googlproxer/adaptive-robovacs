@@ -7,11 +7,23 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.9.6] - 2026-08-27
+
+### Changed
+
+- Renamed the experimental Q10 interface to **map inspection**, **map capture**,
+  and **map selection**. The service to release its scheduler hold is now
+  `confirm_map_selection`.
+- Clarified that the feature does not duplicate, preserve, import, or restore
+  robot maps. It must not be treated as map protection.
+
+Detailed notes: [`docs/releases/v1.9.6.md`](docs/releases/v1.9.6.md).
+
 ## [1.9.5] - 2026-08-25
 
 ### Changed
 
-- Map-recovery preview choices now show only `map name - timestamp`. Snapshot
+- Map snapshot preview choices now show only `map name - timestamp`. Snapshot
   and map identifiers remain private to the integration.
 
 Detailed notes: [`docs/releases/v1.9.5.md`](docs/releases/v1.9.5.md).
@@ -64,12 +76,13 @@ Detailed notes: [`docs/releases/v1.9.1.md`](docs/releases/v1.9.1.md).
 
 ### Added
 
-- Optional non-root Q10/B01 retained-map recovery guard. It reuses Home
-  Assistant's authenticated Roborock runtime to archive retained map frames,
-  expose read-only previews, and manually activate a still-retained map slot.
-  It never imports raw maps or starts a clean. A durable manual-verification
-  hold prevents scheduler dispatch until the robot is relocalized and its
-  current Home Assistant room mapping passes preflight.
+- Optional non-root Q10/B01 map-inspection interface. It reuses Home
+  Assistant's authenticated Roborock runtime to request map data, expose
+  read-only previews, and manually select a map the robot still holds. It does
+  not duplicate, preserve, import, or restore maps, and it never starts a
+  clean. A durable manual-confirmation hold prevents scheduler dispatch until
+  the robot is relocalized and its current Home Assistant room mapping passes
+  preflight.
 
 Detailed notes: [`docs/releases/v1.9.0.md`](docs/releases/v1.9.0.md).
 

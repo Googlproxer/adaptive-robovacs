@@ -37,10 +37,12 @@ class MapRecoveryContractTests(unittest.TestCase):
             "list_retained_maps",
             "capture_map_snapshot",
             "activate_retained_map",
-            "verify_map_recovery",
+            "confirm_map_selection",
         ):
             self.assertIn(name, services)
             self.assertIn(f"{name}:", descriptions)
+        self.assertNotIn("verify_map_recovery", services)
+        self.assertNotIn("verify_map_recovery:", descriptions)
         self.assertIn('"after_dependencies": ["roborock"]', manifest)
         self.assertIn('"camera"', (PACKAGE / "const.py").read_text(encoding="utf-8"))
 

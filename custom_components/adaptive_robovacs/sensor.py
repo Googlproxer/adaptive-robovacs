@@ -115,16 +115,16 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
 
 
 class _MapRecoverySensor(AdaptiveEntity, SensorEntity):
-    """Expose optional retained-map recovery without leaking raw map payloads."""
+    """Expose optional map-capture state without leaking raw map payloads."""
 
     def __init__(self, coordinator, robot_entity_id: str) -> None:
         super().__init__(
             coordinator,
             f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_map_recovery",
-            "map recovery",
-            "robot_map_recovery_status",
+            "map capture status",
+            "robot_map_capture_status",
             robot_entity_id=robot_entity_id,
-            robot_name_suffix="map recovery",
+            robot_name_suffix="map capture status",
         )
         self.robot_entity_id = robot_entity_id
 

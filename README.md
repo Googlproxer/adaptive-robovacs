@@ -104,28 +104,28 @@ clean.
 
 Native map and segment identifiers used for scheduling are read transiently
 from the selected vacuum entity's current Home Assistant area mapping. They are
-never copied into scheduler state, Repairs, or logs. The optional Q10 recovery
-archive separately stores the robot-reported retained-map IDs only because they
-are needed to present and activate an archived robot-held map. See the
-[v1.3 troubleshooting guide](docs/setup.md#v130-troubleshooting) for recovery
-steps.
+never copied into scheduler state, Repairs, or logs. The optional Q10 map-data
+store separately keeps robot-reported map IDs only to display them and select a
+map the robot still holds. See the
+[v1.3 troubleshooting guide](docs/setup.md#v130-troubleshooting) for scheduler
+hold steps.
 
-### Q10 retained-map recovery
+### Q10 map inspection
 
-For compatible Roborock Q10/B01 vacuums, Adaptive RoboVacs can make a
-read-only server-side capture of every map the robot currently retains. It
-reuses Home Assistant's existing Roborock connection; it does not require
-root, SSH, a local MQTT broker, or a second Roborock login. The latest ten
-capture sets are stored through Home Assistant's storage subsystem and include
-the original map frame and a preview image.
+For compatible Roborock Q10/B01 vacuums, Adaptive RoboVacs can list robot-held
+map metadata and request a read-only server-side map-data capture. It reuses
+Home Assistant's existing Roborock connection; it does not require root, SSH,
+a local MQTT broker, or a second Roborock login. When a map frame is returned
+and parsed, the latest ten captures are stored through Home Assistant's storage
+subsystem with a preview image.
 
-This is intentionally a **retained-map recovery guard**, not a raw map import
-feature. If the robot still retains a prior map, the vacuum card can activate
-that slot while docked; no cleaning command is sent. Adaptive RoboVacs then
-holds scheduling until the robot is manually relocalized and the user verifies
-the current Home Assistant room mapping. A lost or overwritten map cannot be
-written back from a server-side capture. MapLoader is not used because it needs
-root-level access to the robot filesystem.
+This is an **inspection and map-selection aid only**. It cannot duplicate,
+export, preserve, import, or write a map. Do not rely on a server-side capture
+to protect robot map state. If the robot still holds a map, the vacuum card can
+select that slot while docked; no cleaning command is sent. Adaptive RoboVacs
+then holds scheduling until the robot is manually relocalized and the user
+confirms the current Home Assistant room mapping. MapLoader is not used because
+it needs root-level access to the robot filesystem.
 
 An observed robot pause or error creates a durable per-robot scheduler hold.
 The hold survives automatic idle transitions and Home Assistant restarts, so an

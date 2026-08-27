@@ -1643,7 +1643,7 @@ class AdaptiveRoboVacCoordinator:
         hold = self.data["robot_holds"].get(robot_id)
         # Selecting a robot-retained map is a maintenance operation, not a
         # cleaning lifecycle.  It can only be released by the explicit
-        # map-recovery verification service after mapping has been rechecked.
+        # map-selection confirmation service after mapping has been rechecked.
         if hold and map_recovery_hold_is_manual(str(hold.get("reason"))):
             if state_text not in {"unavailable", "unknown"}:
                 hold["last_observed_at"] = _iso(now)
@@ -2002,7 +2002,7 @@ class AdaptiveRoboVacCoordinator:
             if hold.get("reason") == "robot_error":
                 return False, "scheduler held after robot error"
             if map_recovery_hold_is_manual(str(hold.get("reason"))):
-                return False, "map recovery verification pending"
+                return False, "map selection confirmation pending"
             return False, "scheduler held while robot is paused"
         active = self.data["active"].get(robot.entity_id)
         if active:

@@ -1,4 +1,4 @@
-"""Read-only map-recovery previews."""
+"""Read-only map snapshot previews."""
 
 from __future__ import annotations
 
@@ -20,10 +20,10 @@ class _MapRecoveryCamera(AdaptiveEntity, Camera):
             self,
             coordinator,
             f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_map_recovery_preview",
-            "map recovery preview",
-            "robot_map_recovery_preview",
+            "map snapshot preview",
+            "robot_map_snapshot_preview",
             robot_entity_id=robot_entity_id,
-            robot_name_suffix="map recovery preview",
+            robot_name_suffix="map snapshot preview",
         )
         Camera.__init__(self)
         self.robot_entity_id = robot_entity_id

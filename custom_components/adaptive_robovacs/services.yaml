@@ -86,7 +86,7 @@ list_retained_maps:
           integration: adaptive_robovacs
 capture_map_snapshot:
   name: Capture map snapshot
-  description: Reads every retained map while the robot is docked or idle and stores the capture set on the Home Assistant server.
+  description: Requests map data while the robot is docked or idle and stores the returned snapshot on the Home Assistant server. It does not copy, export, or restore robot maps.
   fields:
     robot_entity_id:
       name: Robot
@@ -102,7 +102,7 @@ capture_map_snapshot:
           integration: adaptive_robovacs
 activate_retained_map:
   name: Activate retained map
-  description: Selects a map that the robot still retains. It does not start a clean and scheduler dispatch remains held until recovery is verified.
+  description: Selects a map that the robot still retains. It does not start a clean and scheduler dispatch remains held until the map selection is confirmed.
   fields:
     robot_entity_id:
       name: Robot
@@ -127,9 +127,9 @@ activate_retained_map:
       selector:
         config_entry:
           integration: adaptive_robovacs
-verify_map_recovery:
-  name: Verify map recovery
-  description: Releases the manual map-recovery scheduler hold after the robot has been relocalized and Home Assistant mapping has been rechecked.
+confirm_map_selection:
+  name: Confirm map selection and resume scheduling
+  description: Releases the manual map-selection scheduler hold after the robot has been relocalized and Home Assistant mapping has been rechecked.
   fields:
     robot_entity_id:
       name: Robot

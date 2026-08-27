@@ -9,5 +9,5 @@
   "issue_tracker": "https://github.com/Googlproxer/adaptive-robovacs/issues",
   "after_dependencies": ["roborock"],
   "requirements": [],
-  "version": "1.9.5"
+  "version": "1.9.6"
 }

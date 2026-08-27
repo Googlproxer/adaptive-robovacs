@@ -1,4 +1,4 @@
-"""Non-root, capability-gated retained-map recovery for B01/Q10 vacuums.
+"""Non-root, capability-gated map capture and selection for B01/Q10 vacuums.
 
 This module deliberately has one narrow vendor boundary.  It reuses the
 already-authenticated Home Assistant Roborock runtime when that private runtime
@@ -46,11 +46,11 @@ _SETTLE_DELAY = timedelta(seconds=60)
 
 
 class MapRecoveryError(RuntimeError):
-    """A safe, user-presentable recovery failure."""
+    """A safe, user-presentable map operation failure."""
 
 
 class MapRecoveryUnavailable(MapRecoveryError):
-    """The installed HA Roborock runtime cannot provide Q10 map recovery."""
+    """The installed HA Roborock runtime cannot provide Q10 map capture."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +67,7 @@ class RetainedMap:
 
 @dataclass(frozen=True, slots=True)
 class RecoveryCapability:
-    """A stable, redaction-safe description of the optional bridge state."""
+    """A stable, redaction-safe description of the optional map bridge state."""
 
     state: str
     reason: str | None = None
@@ -416,7 +416,7 @@ class Q10RuntimeResolver:
 
 
 class MapRecoveryManager:
-    """Persist capture sets and coordinate safe, no-motion recovery actions."""
+    """Persist map captures and coordinate safe, no-motion selection actions."""
 
     def __init__(self, coordinator: Any) -> None:
         self.coordinator = coordinator
@@ -438,8 +438,8 @@ class MapRecoveryManager:
         try:
             stored = await self.store.async_load()
         except Exception:
-            _LOGGER.exception("Adaptive RoboVacs could not load map recovery storage")
-            self._storage_error = "map recovery storage could not be loaded"
+            _LOGGER.exception("Adaptive RoboVacs could not load map capture storage")
+            self._storage_error = "map capture storage could not be loaded"
             return
         if stored is None:
             return
@@ -455,8 +455,8 @@ class MapRecoveryManager:
         ):
             self._data = {"schema_version": 1, "robots": dict(stored["robots"])}
             return
-        _LOGGER.error("Adaptive RoboVacs map recovery storage is malformed; recovery is disabled")
-        self._storage_error = "map recovery storage is malformed"
+        _LOGGER.error("Adaptive RoboVacs map capture storage is malformed; map capture is disabled")
+        self._storage_error = "map capture storage is malformed"
 
     async def async_shutdown(self) -> None:
         for task in self._settle_tasks.values():
@@ -512,7 +512,7 @@ class MapRecoveryManager:
                 "reason": self._storage_error,
                 "retention": MAP_RECOVERY_RETENTION,
                 "capture_count": 0,
-                "recovery_pending": self._is_held(entity_id),
+                "map_selection_pending": self._is_held(entity_id),
                 "capture_sets": [],
                 "available_maps": [],
             }
@@ -520,13 +520,13 @@ class MapRecoveryManager:
         capture_sets = stored.get("capture_sets", [])
         latest = capture_sets[-1] if capture_sets and isinstance(capture_sets[-1], Mapping) else {}
         return {
-            "state": "recovery pending" if self._is_held(entity_id) else capability.state,
+            "state": "map selection pending" if self._is_held(entity_id) else capability.state,
             "reason": capability.reason,
             "retention": MAP_RECOVERY_RETENTION,
             "capture_count": len(capture_sets) if isinstance(capture_sets, list) else 0,
             "last_capture": capture_sets[-1].get("captured_at") if capture_sets else None,
             "last_error": stored.get("last_error"),
-            "recovery_pending": self._is_held(entity_id),
+            "map_selection_pending": self._is_held(entity_id),
             "capture_sets": [
                 {
                     "snapshot_id": item.get("snapshot_id"),
@@ -641,12 +641,12 @@ class MapRecoveryManager:
         if self.coordinator.data.get("active", {}).get(entity_id):
             raise MapRecoveryError("robot has an active scheduler job")
         if self._is_held(entity_id):
-            raise MapRecoveryError("map recovery verification is already pending")
+            raise MapRecoveryError("map selection confirmation is already pending")
         if not self._terminal(entity_id):
             raise MapRecoveryError("robot must be docked or idle to activate a map")
         lock = self._lock(robot)
         if lock.locked():
-            raise MapRecoveryError("another map recovery operation is already running")
+            raise MapRecoveryError("another map operation is already running")
         async with lock:
             bridge = self._resolver.async_resolve(robot)
             maps = await bridge.async_list_maps()
@@ -683,20 +683,20 @@ class MapRecoveryManager:
             "pre_activation_snapshot_id": before.get("snapshot_id"),
             "requested_map_id": str(map_id),
             "activation": "confirmed" if confirmed else "requested_unverified",
-            "recovery_pending": True,
+            "map_selection_pending": True,
         }
 
     async def async_verify(self, entity_id: str, *, confirm: bool) -> dict[str, Any]:
         if not confirm:
             raise MapRecoveryError("verification requires confirm: true")
         if not self._is_held(entity_id):
-            raise MapRecoveryError("no map recovery verification is pending")
+            raise MapRecoveryError("no map selection confirmation is pending")
         if not self._terminal(entity_id) or self.coordinator.data.get("active", {}).get(entity_id):
             raise MapRecoveryError("robot must be docked or idle with no active job")
         robot = self._robot(entity_id)
         lock = self._lock(robot)
         if lock.locked():
-            raise MapRecoveryError("another map recovery operation is already running")
+            raise MapRecoveryError("another map operation is already running")
         async with lock:
             # Refresh registry-derived robot mapping before releasing the
             # explicit hold, then prove that the selected retained frame and
@@ -706,7 +706,7 @@ class MapRecoveryManager:
             hold = self.coordinator.data.get("robot_holds", {}).get(entity_id, {})
             requested_map_id = str(hold.get("requested_map_id", ""))
             if not requested_map_id:
-                raise MapRecoveryError("the pending recovery has no selected map")
+                raise MapRecoveryError("the pending map selection has no selected map")
             bridge = self._resolver.async_resolve(robot)
             retained = await bridge.async_list_maps()
             if requested_map_id not in {item.map_id for item in retained}:
@@ -717,7 +717,7 @@ class MapRecoveryManager:
             self._preflight_room_mapping(robot)
             self.coordinator.data["robot_holds"].pop(entity_id, None)
             await self.coordinator._async_save()
-        result = await self.coordinator.async_evaluate(dry_run=True, reason="map-recovery-verified")
+        result = await self.coordinator.async_evaluate(dry_run=True, reason="map-selection-confirmed")
         self.coordinator._notify_listeners()
         return {"verified": True, "preview": result}
 

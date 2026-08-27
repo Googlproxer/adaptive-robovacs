@@ -13,11 +13,11 @@ from .const import (
     DOMAIN,
     SERVICE_ACTIVATE_RETAINED_MAP,
     SERVICE_CAPTURE_MAP_SNAPSHOT,
+    SERVICE_CONFIRM_MAP_SELECTION,
     SERVICE_EVALUATE,
     SERVICE_LIST_RETAINED_MAPS,
     SERVICE_MANUAL_CLEAN_ROOM,
     SERVICE_RECORD_MANUAL_CLEAN,
-    SERVICE_VERIFY_MAP_RECOVERY,
 )
 
 
@@ -79,7 +79,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             call.data["robot_entity_id"], call.data["map_id"], confirm=call.data["confirm"]
         )
 
-    async def verify_map_recovery(call: ServiceCall) -> dict[str, Any]:
+    async def confirm_map_selection(call: ServiceCall) -> dict[str, Any]:
         return await _coordinator(
             hass, call.data.get("entry_id")
         ).map_recovery.async_verify(call.data["robot_entity_id"], confirm=call.data["confirm"])
@@ -136,8 +136,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN,
-        SERVICE_VERIFY_MAP_RECOVERY,
-        verify_map_recovery,
+        SERVICE_CONFIRM_MAP_SELECTION,
+        confirm_map_selection,
         schema=vol.Schema(
             {
                 vol.Required("robot_entity_id"): cv.entity_id,

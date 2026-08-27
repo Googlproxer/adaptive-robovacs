@@ -53,14 +53,14 @@ class _StopAndReturnButton(AdaptiveEntity, ButtonEntity):
 
 
 class _CaptureMapSnapshotButton(AdaptiveEntity, ButtonEntity):
-    """Capture a read-only server-side copy of all retained Q10 maps."""
+    """Request a read-only server-side capture of the robot's map data."""
 
     def __init__(self, coordinator, robot_entity_id: str) -> None:
         super().__init__(
             coordinator,
             f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_capture_map_snapshot",
             "capture map snapshot",
-            "robot_map_recovery_capture",
+            "robot_map_capture",
             robot_entity_id=robot_entity_id,
             robot_name_suffix="capture map snapshot",
         )
