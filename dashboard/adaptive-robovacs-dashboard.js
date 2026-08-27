@@ -23,21 +23,21 @@ const ROOM_ROLES = new Map([
   ["room_last_cleaned", 1],
   ["room_occupancy", 2],
   ["room_cleaning_period_control", 3],
-  ["room_cleaning_profile_control", 3.5],
-  ["room_cleaning_program_control", 4],
-  ["room_pass_count_control", 5],
-  ["room_mop_pass_count_control", 6],
-  ["room_fan_speed_control", 7],
-  ["room_mode_control", 8],
-  ["room_mop_mode_control", 9],
-  ["room_mop_intensity_control", 10],
-  ["room_cleaning_depth_control", 11],
-  ["room_window_start_control", 12],
-  ["room_window_end_control", 13],
-  ["room_control", 14],
-  ["room_manual_clean_control", 15],
-  ["room_manual_vacuum_control", 16],
-  ["room_manual_mop_control", 17],
+  ["room_cleaning_profile_control", 4],
+  ["room_cleaning_program_control", 5],
+  ["room_pass_count_control", 6],
+  ["room_mop_pass_count_control", 7],
+  ["room_fan_speed_control", 8],
+  ["room_mode_control", 9],
+  ["room_mop_mode_control", 10],
+  ["room_mop_intensity_control", 11],
+  ["room_cleaning_depth_control", 12],
+  ["room_window_start_control", 13],
+  ["room_window_end_control", 14],
+  ["room_control", 15],
+  ["room_manual_clean_control", 16],
+  ["room_manual_vacuum_control", 17],
+  ["room_manual_mop_control", 18],
 ]);
 const ROOM_HIDDEN_ROLES = new Set(["room_manual_status"]);
 const ROOM_PROFILE_OVERRIDE_ROLES = new Set([
@@ -49,6 +49,10 @@ const ROOM_PROFILE_OVERRIDE_ROLES = new Set([
   "room_mop_mode_control",
   "room_mop_intensity_control",
   "room_cleaning_depth_control",
+]);
+const ROOM_WINDOW_OVERRIDE_ROLES = new Set([
+  "room_window_start_control",
+  "room_window_end_control",
 ]);
 const EMPTY_ADAPTIVE_ENTITY_INDEX = {
   entities: [],
@@ -597,9 +601,18 @@ class AdaptiveRoboVacsRoomCard extends AdaptiveRoboVacsCardBase {
     const profileMode = entities.find(
       (item) => item.attrs[ROLE_ATTRIBUTE] === "room_cleaning_profile_control"
     );
-    const visibleEntities = !profileMode || profileMode.state?.state === "Custom"
-      ? entities
-      : entities.filter((item) => !ROOM_PROFILE_OVERRIDE_ROLES.has(item.attrs[ROLE_ATTRIBUTE]));
+    const periodMode = entities.find(
+      (item) => item.attrs[ROLE_ATTRIBUTE] === "room_cleaning_period_control"
+    );
+    const profileIsCustom = profileMode?.state?.state === "Custom";
+    const periodIsCustom = periodMode?.state?.state === "Custom";
+    const visibleEntities = entities.filter((item) => {
+      const role = item.attrs[ROLE_ATTRIBUTE];
+      return (
+        (!profileMode || profileIsCustom || !ROOM_PROFILE_OVERRIDE_ROLES.has(role))
+        && (!periodMode || periodIsCustom || !ROOM_WINDOW_OVERRIDE_ROLES.has(role))
+      );
+    });
     const roomName = visibleEntities.find((item) => item.attrs.room)?.attrs.room || this._defaultTitle();
     const entityRows = this._targetEntityRows(visibleEntities, ROOM_ROLES, roomName);
     return entityRows.length

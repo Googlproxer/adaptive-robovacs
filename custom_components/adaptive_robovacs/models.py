@@ -266,6 +266,7 @@ ROOM_PROFILE_OVERRIDE_KEYS = (
     *PROFILE_SETTING_KEYS,
 )
 ROOM_CLEANING_PERIOD_OPTIONS = (
+    "Default",
     "Off",
     "Night",
     "Morning",
@@ -410,6 +411,8 @@ def room_cleaning_period(room_settings: Mapping[str, object]) -> str:
         room_settings.get("desired_window_start"),
         room_settings.get("desired_window_end"),
     )
+    if bounds == (None, None):
+        return "Default"
     for option, window in ROOM_CLEANING_PERIOD_WINDOWS.items():
         if bounds == window:
             return option
@@ -423,6 +426,12 @@ def room_cleaning_period_update(option: str) -> dict[str, object]:
         raise ValueError(f"Unknown room cleaning period: {option}")
     if option == "Off":
         return {"enabled": False}
+    if option == "Default":
+        return {
+            "enabled": True,
+            "desired_window_start": None,
+            "desired_window_end": None,
+        }
     start, end = (
         CUSTOM_ROOM_CLEANING_WINDOW
         if option == "Custom"

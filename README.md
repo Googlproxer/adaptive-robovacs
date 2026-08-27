@@ -56,12 +56,12 @@ or choose an exact value advertised by a robot on that floor. The resolved
 profile is saved with the occurrence and reapplied before every physical stage,
 so one room cannot inherit controls left behind by another.
 
-Each room also provides a compact **Cleaning period** selector for Off, Night,
-Morning, Afternoon, Evening, or Custom windows, plus a **Cleaning profile**
-selector for Robot default or Custom. The simple profile view hides detailed
-room program, pass, and power overrides until Custom is selected; the entities
-remain available for automations and existing custom room profiles stay Custom
-after upgrading.
+Each room also provides compact **Cleaning period** and **Cleaning profile**
+selectors directly below Occupancy. Cleaning period offers Default (the global
+Desired bounds), Off, named periods, and Custom; only Custom shows detailed
+room Desired bounds. The simple profile view hides detailed room program, pass,
+and power overrides until Custom is selected; the entities remain available for
+automations and existing custom room profiles stay Custom after upgrading.
 
 ## Safety
 

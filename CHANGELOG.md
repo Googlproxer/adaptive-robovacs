@@ -7,6 +7,18 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-08-27
+
+### Fixed
+
+- Put Cleaning period and Cleaning profile directly below room occupancy, hide
+  profile overrides unless the profile is Custom, and hide detailed Desired
+  bounds unless the period is Custom.
+- Added the Cleaning period **Default** option for rooms inheriting both global
+  Desired bounds.
+
+Detailed notes: [`docs/releases/v1.10.1.md`](docs/releases/v1.10.1.md).
+
 ## [1.10.0] - 2026-08-27
 
 ### Added

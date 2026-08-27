@@ -209,6 +209,14 @@ class CadenceTests(unittest.TestCase):
         self.assertTrue(models.desired_window_allows(True, after_hours, "09:00", "20:00"))
 
     def test_simple_cleaning_periods_translate_to_the_existing_room_settings(self) -> None:
+        self.assertEqual(
+            models.room_cleaning_period_update("Default"),
+            {
+                "enabled": True,
+                "desired_window_start": None,
+                "desired_window_end": None,
+            },
+        )
         self.assertEqual(models.room_cleaning_period_update("Off"), {"enabled": False})
         self.assertEqual(
             models.room_cleaning_period_update("Night"),
@@ -235,15 +243,15 @@ class CadenceTests(unittest.TestCase):
         self.assertEqual(models.room_cleaning_period({"enabled": False}), "Off")
         self.assertEqual(
             models.room_cleaning_period(
-                {"enabled": True, "desired_window_start": "00:00", "desired_window_end": "06:00"}
+                {"enabled": True, "desired_window_start": None, "desired_window_end": None}
             ),
-            "Night",
+            "Default",
         )
         self.assertEqual(
             models.room_cleaning_period(
-                {"enabled": True, "desired_window_start": None, "desired_window_end": None}
+                {"enabled": True, "desired_window_start": "00:00", "desired_window_end": "06:00"}
             ),
-            "Custom",
+            "Night",
         )
         self.assertEqual(
             models.room_cleaning_period(

@@ -147,6 +147,14 @@ const baseStates = () => ({
     area_id: "kitchen",
     friendly_name: "Kitchen cleaning passes",
   }),
+  "select.kitchen_mop_passes": adaptiveState("room_mop_pass_count_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen mop passes",
+  }),
+  "select.kitchen_program": adaptiveState("room_cleaning_program_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen cleaning program",
+  }),
   "select.kitchen_fan": adaptiveState("room_fan_speed_control", {
     area_id: "kitchen",
     friendly_name: "Kitchen fan speed",
@@ -154,6 +162,18 @@ const baseStates = () => ({
   "select.kitchen_mode": adaptiveState("room_mode_control", {
     area_id: "kitchen",
     friendly_name: "Kitchen mode",
+  }),
+  "select.kitchen_mop_mode": adaptiveState("room_mop_mode_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen mop mode",
+  }),
+  "select.kitchen_mop_intensity": adaptiveState("room_mop_intensity_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen mop intensity",
+  }),
+  "select.kitchen_depth": adaptiveState("room_cleaning_depth_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen cleaning depth",
   }),
   "number.kitchen_cadence": adaptiveState("room_control", {
     area_id: "kitchen",
@@ -302,8 +322,13 @@ test("room card contains one selected room with simple controls before advanced 
   assert.equal(new Set(entityIds).size, entityIds.length);
   assert.ok(!entityIds.includes("sensor.kitchen_manual"));
   assert.ok(!entityIds.includes("select.kitchen_passes"));
+  assert.ok(!entityIds.includes("select.kitchen_mop_passes"));
+  assert.ok(!entityIds.includes("select.kitchen_program"));
   assert.ok(!entityIds.includes("select.kitchen_fan"));
   assert.ok(!entityIds.includes("select.kitchen_mode"));
+  assert.ok(!entityIds.includes("select.kitchen_mop_mode"));
+  assert.ok(!entityIds.includes("select.kitchen_mop_intensity"));
+  assert.ok(!entityIds.includes("select.kitchen_depth"));
 });
 
 test("room card reveals profile override controls only in Custom mode", () => {
@@ -318,11 +343,43 @@ test("room card reveals profile override controls only in Custom mode", () => {
   );
   const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
   const entityIds = configuration.entities.map((row) => row.entity);
+  assert.ok(entityIds.includes("select.kitchen_program"));
   assert.ok(entityIds.includes("select.kitchen_passes"));
+  assert.ok(entityIds.includes("select.kitchen_mop_passes"));
   assert.ok(entityIds.includes("select.kitchen_fan"));
   assert.ok(entityIds.includes("select.kitchen_mode"));
+  assert.ok(entityIds.includes("select.kitchen_mop_mode"));
+  assert.ok(entityIds.includes("select.kitchen_mop_intensity"));
+  assert.ok(entityIds.includes("select.kitchen_depth"));
   assert.equal(entityIds.indexOf("select.kitchen_cleaning_profile"), 4);
   assert.ok(entityIds.indexOf("select.kitchen_passes") > entityIds.indexOf("select.kitchen_cleaning_profile"));
+});
+
+test("room card hides desired-window overrides until the period is Custom", () => {
+  const states = baseStates();
+  states["select.kitchen_cleaning_period"] = adaptiveState(
+    "room_cleaning_period_control",
+    {
+      area_id: "kitchen",
+      friendly_name: "Kitchen cleaning period",
+    },
+    "Default"
+  );
+  const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
+  const entityIds = configuration.entities.map((row) => row.entity);
+  assert.equal(entityIds.indexOf("select.kitchen_cleaning_period"), 3);
+  assert.equal(entityIds.indexOf("select.kitchen_cleaning_profile"), 4);
+  assert.ok(!entityIds.includes("select.kitchen_desired_start"));
+  assert.ok(!entityIds.includes("select.kitchen_desired_end"));
+});
+
+test("room card retains desired-window controls when period mode is unavailable", () => {
+  const states = baseStates();
+  delete states["select.kitchen_cleaning_period"];
+  const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
+  const entityIds = configuration.entities.map((row) => row.entity);
+  assert.ok(entityIds.includes("select.kitchen_desired_start"));
+  assert.ok(entityIds.includes("select.kitchen_desired_end"));
 });
 
 test("room card retains detailed profile controls when the profile mode is unavailable", () => {

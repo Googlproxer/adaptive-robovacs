@@ -58,14 +58,16 @@ are invalid when start and end are identical. An invalid pair blocks
 window-bound scheduling until either bound changes. Weekday/weekend schedules
 and multiple daily intervals are not part of this release.
 
-For fast room setup, **Cleaning period** can disable scheduling with **Off** or
-set Night (00:00–06:00), Morning (06:00–12:00), Afternoon (12:00–18:00), or
-Evening (18:00–00:00). **Custom** enables the room with 09:00–20:00, after
-which the room start/end selects can refine the window. **Cleaning profile**
-uses **Robot default** to clear every room program, pass, fan, mode, mop, and
-depth override, or **Custom** to reveal those individual controls without
-changing their current values. Existing rooms with saved overrides migrate to
-Custom.
+For fast room setup, **Cleaning period** uses **Default** to enable the room
+and inherit both global Desired bounds; existing rooms that already use both
+global bounds display Default automatically. It can disable scheduling with
+**Off** or set Night (00:00–06:00), Morning (06:00–12:00), Afternoon
+(12:00–18:00), or Evening (18:00–00:00). **Custom** enables the room with
+09:00–20:00 and is the only period that shows the room start/end selectors for
+refinement. **Cleaning profile** uses **Robot default** to clear every room
+program, pass, fan, mode, mop, and depth override, or **Custom** to reveal
+those individual controls without changing their current values. Existing rooms
+with saved overrides migrate to Custom.
 
 Due rooms wait for their effective window's next usable start by default;
 enable a room's **Ignore desired cleaning window** switch to let an
