@@ -39,7 +39,11 @@ const ROOM_ROLES = new Map([
   ["room_manual_vacuum_control", 17],
   ["room_manual_mop_control", 18],
 ]);
-const ROOM_HIDDEN_ROLES = new Set(["room_manual_status"]);
+const ROOM_HIDDEN_ROLES = new Set([
+  "room_manual_status",
+  "room_enabled_control",
+  "room_ignore_desired_window_control",
+]);
 const ROOM_PROFILE_OVERRIDE_ROLES = new Set([
   "room_cleaning_program_control",
   "room_pass_count_control",

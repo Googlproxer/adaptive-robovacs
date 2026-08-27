@@ -7,6 +7,17 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.10.2] - 2026-08-27
+
+### Changed
+
+- Removed the room **Enabled** and **Ignore desired cleaning window** toggles
+  from the simplified dashboard card. The public entities remain available for
+  automations and advanced Home Assistant use; Cleaning period is the card's
+  schedule enablement control.
+
+Detailed notes: [`docs/releases/v1.10.2.md`](docs/releases/v1.10.2.md).
+
 ## [1.10.1] - 2026-08-27
 
 ### Fixed

@@ -71,9 +71,12 @@ class PlanFiveContractTests(unittest.TestCase):
             "]);", 1
         )[0]
         self.assertNotIn("room_manual_status", room_role_map)
-        self.assertIn(
-            'ROOM_HIDDEN_ROLES = new Set(["room_manual_status"])', text
-        )
+        for role in (
+            "room_manual_status",
+            "room_enabled_control",
+            "room_ignore_desired_window_control",
+        ):
+            self.assertIn(role, text)
 
 
 if __name__ == "__main__":

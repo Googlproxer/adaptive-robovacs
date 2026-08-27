@@ -49,6 +49,10 @@ the **Custom** period. They offer 15-minute values plus **Use global**; start
 and end inherit independently, an overnight interval is supported, and equal
 effective bounds are invalid. Rooms that already inherit both global bounds
 display **Default** after upgrading.
+The room **Enabled** and **Ignore desired cleaning window** switches remain
+available as Home Assistant entities for automations and advanced use, but the
+simple room card deliberately omits them: **Cleaning period** is the card's
+schedule enablement control.
 The room schedule entity reports the configured bounds, effective bounds,
 inheritance flags, validity, and next usable start as attributes.
 

@@ -179,9 +179,13 @@ const baseStates = () => ({
     area_id: "kitchen",
     friendly_name: "Kitchen cadence",
   }),
-  "switch.kitchen_enabled": adaptiveState("room_control", {
+  "switch.kitchen_enabled": adaptiveState("room_enabled_control", {
     area_id: "kitchen",
     friendly_name: "Kitchen enabled",
+  }),
+  "switch.kitchen_ignore_desired_window": adaptiveState("room_ignore_desired_window_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen ignore desired cleaning window",
   }),
   "button.kitchen_clean": adaptiveState("room_manual_clean_control", {
     area_id: "kitchen",
@@ -201,7 +205,7 @@ const baseStates = () => ({
     floor_id: "upper",
     bedroom: true,
   }),
-  "switch.bedroom_enabled": adaptiveState("room_control", {
+  "switch.bedroom_enabled": adaptiveState("room_enabled_control", {
     area_id: "bedroom",
     friendly_name: "Bedroom enabled",
   }),
@@ -312,7 +316,6 @@ test("room card contains one selected room with simple controls before advanced 
     { entity: "select.kitchen_desired_start", name: "Desired cleaning start" },
     { entity: "select.kitchen_desired_end", name: "Desired cleaning end" },
     { entity: "number.kitchen_cadence", name: "Cadence" },
-    { entity: "switch.kitchen_enabled", name: "Enabled" },
     { entity: "button.kitchen_clean", name: "Manual clean" },
     { entity: "button.kitchen_vacuum", name: "Manual vacuum only" },
     { entity: "button.kitchen_mop", name: "Manual mop only" },
@@ -329,6 +332,8 @@ test("room card contains one selected room with simple controls before advanced 
   assert.ok(!entityIds.includes("select.kitchen_mop_mode"));
   assert.ok(!entityIds.includes("select.kitchen_mop_intensity"));
   assert.ok(!entityIds.includes("select.kitchen_depth"));
+  assert.ok(!entityIds.includes("switch.kitchen_enabled"));
+  assert.ok(!entityIds.includes("switch.kitchen_ignore_desired_window"));
 });
 
 test("room card reveals profile override controls only in Custom mode", () => {

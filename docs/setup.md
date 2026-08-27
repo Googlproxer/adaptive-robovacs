@@ -69,13 +69,14 @@ program, pass, fan, mode, mop, and depth override, or **Custom** to reveal
 those individual controls without changing their current values. Existing rooms
 with saved overrides migrate to Custom.
 
-Due rooms wait for their effective window's next usable start by default;
-enable a room's **Ignore desired cleaning window** switch to let an
-otherwise-safe clean run outside it. A room with unresolved occupancy is
-eligible only inside its own effective desired window, even when that room
-ignores the usual timing preference. Bedroom-transit areas are never included
-in that unresolved exception: they retain their separate daytime-only and
-every-bedroom-clear rules. Party Mode and observe-only mode remain
+Due rooms wait for their effective window's next usable start by default. The
+room **Ignore desired cleaning window** entity remains available for advanced
+Home Assistant use, although it is not shown on the simple room card; it lets
+an otherwise-safe clean run outside that window. A room with unresolved
+occupancy is eligible only inside its own effective desired window, even when
+that room ignores the usual timing preference. Bedroom-transit areas are never
+included in that unresolved exception: they retain their separate daytime-only
+and every-bedroom-clear rules. Party Mode and observe-only mode remain
 non-dispatching regardless of any room window setting.
 
 Each vacuum has a default **Cleaning program** and each room can inherit it or

@@ -62,7 +62,11 @@ class _RobotSwitch(_AdaptiveSwitch):
 
 class _RoomSwitch(_AdaptiveSwitch):
     def __init__(self, coordinator, area_id: str, key: str, name: str) -> None:
-        super().__init__(coordinator, f"room_{area_id}_{key}", name, "room_control", area_id=area_id)
+        role = {
+            "enabled": "room_enabled_control",
+            "ignore_desired_window": "room_ignore_desired_window_control",
+        }.get(key, "room_control")
+        super().__init__(coordinator, f"room_{area_id}_{key}", name, role, area_id=area_id)
         self.area_id = area_id
         self.setting_key = key
 

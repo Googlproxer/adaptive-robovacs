@@ -69,18 +69,19 @@ The integration does not stop a clean already in progress if a room becomes
 occupied. It never dispatches work in observe-only mode or Party Mode. By
 default, due rooms wait for their effective desired cleaning window. Each
 room's start and end can independently use the global value or select a
-15-minute daily override, including an interval that crosses midnight. Enable
-a room's **Ignore desired cleaning window** switch to permit its otherwise-safe
-clean outside those hours. A room with unresolved occupancy is retried only in
-that room's effective window, and bedroom-transit rooms remain excluded from
-that exception. A failed scheduler start holds only the affected robot; mapping
-and saved room-profile failures block only the affected room. Each creates a
-scoped Home Assistant **Repair** with a safe explanation while unaffected
-compatible work continues. A late robot state cannot clear its fault
-automatically. Resolve the underlying availability or mapping problem, then use
-the scoped Repair flow or the dashboard's confirmed **Recheck and resume**
-action. The recheck never sends a test clean, and the failed room remains due
-after scheduling is explicitly resumed.
+15-minute daily override, including an interval that crosses midnight. The
+room's **Ignore desired cleaning window** entity remains available for advanced
+Home Assistant use, but is intentionally omitted from the simple room card; it
+can permit an otherwise-safe clean outside those hours. A room with unresolved
+occupancy is retried only in that room's effective window, and bedroom-transit
+rooms remain excluded from that exception. A failed scheduler start holds only
+the affected robot; mapping and saved room-profile failures block only the
+affected room. Each creates a scoped Home Assistant **Repair** with a safe
+explanation while unaffected compatible work continues. A late robot state
+cannot clear its fault automatically. Resolve the underlying availability or
+mapping problem, then use the scoped Repair flow or the dashboard's confirmed
+**Recheck and resume** action. The recheck never sends a test clean, and the
+failed room remains due after scheduling is explicitly resumed.
 
 Each room now has one cadence and one ordered program: vacuum only, mop only,
 vacuum then mop, or mop then vacuum. Every stage is a separate physical start
