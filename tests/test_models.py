@@ -208,6 +208,69 @@ class CadenceTests(unittest.TestCase):
         self.assertFalse(models.desired_window_allows(False, after_hours, "09:00", "20:00"))
         self.assertTrue(models.desired_window_allows(True, after_hours, "09:00", "20:00"))
 
+    def test_simple_cleaning_periods_translate_to_the_existing_room_settings(self) -> None:
+        self.assertEqual(models.room_cleaning_period_update("Off"), {"enabled": False})
+        self.assertEqual(
+            models.room_cleaning_period_update("Night"),
+            {"enabled": True, "desired_window_start": "00:00", "desired_window_end": "06:00"},
+        )
+        self.assertEqual(
+            models.room_cleaning_period_update("Morning"),
+            {"enabled": True, "desired_window_start": "06:00", "desired_window_end": "12:00"},
+        )
+        self.assertEqual(
+            models.room_cleaning_period_update("Afternoon"),
+            {"enabled": True, "desired_window_start": "12:00", "desired_window_end": "18:00"},
+        )
+        self.assertEqual(
+            models.room_cleaning_period_update("Evening"),
+            {"enabled": True, "desired_window_start": "18:00", "desired_window_end": "00:00"},
+        )
+        self.assertEqual(
+            models.room_cleaning_period_update("Custom"),
+            {"enabled": True, "desired_window_start": "09:00", "desired_window_end": "20:00"},
+        )
+
+    def test_simple_cleaning_period_is_derived_without_changing_inherited_windows(self) -> None:
+        self.assertEqual(models.room_cleaning_period({"enabled": False}), "Off")
+        self.assertEqual(
+            models.room_cleaning_period(
+                {"enabled": True, "desired_window_start": "00:00", "desired_window_end": "06:00"}
+            ),
+            "Night",
+        )
+        self.assertEqual(
+            models.room_cleaning_period(
+                {"enabled": True, "desired_window_start": None, "desired_window_end": None}
+            ),
+            "Custom",
+        )
+        self.assertEqual(
+            models.room_cleaning_period(
+                {"enabled": True, "desired_window_start": "09:15", "desired_window_end": "20:00"}
+            ),
+            "Custom",
+        )
+
+    def test_room_profile_mode_keeps_or_clears_every_room_override(self) -> None:
+        inherited = {key: None for key in models.ROOM_PROFILE_OVERRIDE_KEYS}
+        self.assertEqual(models.room_cleaning_profile(inherited), "Robot default")
+        self.assertEqual(
+            models.room_cleaning_profile_update("Custom"), {"profile_custom": True}
+        )
+        custom_with_inheritance = {**inherited, "profile_custom": True}
+        self.assertEqual(models.room_cleaning_profile(custom_with_inheritance), "Custom")
+        legacy_override = {**inherited, "fan_speed": "max"}
+        self.assertEqual(models.room_cleaning_profile(legacy_override), "Custom")
+        self.assertEqual(
+            models.room_cleaning_profile_update("Robot default"),
+            {
+                "profile_custom": False,
+                "pass_count": None,
+                **{key: None for key in models.ROOM_PROFILE_OVERRIDE_KEYS},
+            },
+        )
+
     def test_unresolved_occupancy_is_only_allowed_in_the_desired_window_for_non_transit_rooms(self) -> None:
         desired_window = self.now.replace(hour=12)
         self.assertTrue(

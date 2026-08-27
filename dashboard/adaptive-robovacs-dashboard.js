@@ -22,6 +22,8 @@ const ROOM_ROLES = new Map([
   ["room_schedule", 0],
   ["room_last_cleaned", 1],
   ["room_occupancy", 2],
+  ["room_cleaning_period_control", 3],
+  ["room_cleaning_profile_control", 3.5],
   ["room_cleaning_program_control", 4],
   ["room_pass_count_control", 5],
   ["room_mop_pass_count_control", 6],
@@ -38,6 +40,16 @@ const ROOM_ROLES = new Map([
   ["room_manual_mop_control", 17],
 ]);
 const ROOM_HIDDEN_ROLES = new Set(["room_manual_status"]);
+const ROOM_PROFILE_OVERRIDE_ROLES = new Set([
+  "room_cleaning_program_control",
+  "room_pass_count_control",
+  "room_mop_pass_count_control",
+  "room_fan_speed_control",
+  "room_mode_control",
+  "room_mop_mode_control",
+  "room_mop_intensity_control",
+  "room_cleaning_depth_control",
+]);
 const EMPTY_ADAPTIVE_ENTITY_INDEX = {
   entities: [],
   entryIds: [],
@@ -582,8 +594,14 @@ class AdaptiveRoboVacsRoomCard extends AdaptiveRoboVacsCardBase {
     const entities = (context.entry.byArea.get(areaId) || []).filter(
       (item) => !ROOM_HIDDEN_ROLES.has(item.attrs[ROLE_ATTRIBUTE])
     );
-    const roomName = entities.find((item) => item.attrs.room)?.attrs.room || this._defaultTitle();
-    const entityRows = this._targetEntityRows(entities, ROOM_ROLES, roomName);
+    const profileMode = entities.find(
+      (item) => item.attrs[ROLE_ATTRIBUTE] === "room_cleaning_profile_control"
+    );
+    const visibleEntities = !profileMode || profileMode.state?.state === "Custom"
+      ? entities
+      : entities.filter((item) => !ROOM_PROFILE_OVERRIDE_ROLES.has(item.attrs[ROLE_ATTRIBUTE]));
+    const roomName = visibleEntities.find((item) => item.attrs.room)?.attrs.room || this._defaultTitle();
+    const entityRows = this._targetEntityRows(visibleEntities, ROOM_ROLES, roomName);
     return entityRows.length
       ? this._entitiesConfiguration(this._title(), entityRows)
       : this._messageConfiguration(

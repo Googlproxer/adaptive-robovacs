@@ -8,7 +8,11 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .entity import AdaptiveEntity, async_setup_dynamic_entities
-from .models import is_native_mop_profile_value
+from .models import (
+    ROOM_CLEANING_PERIOD_OPTIONS,
+    ROOM_CLEANING_PROFILE_OPTIONS,
+    is_native_mop_profile_value,
+)
 
 TIME_OPTIONS = tuple(
     f"{hour:02d}:{minute:02d}"
@@ -69,6 +73,52 @@ class _RoomTimeSelect(AdaptiveEntity, SelectEntity):
             self.key,
             None if option == USE_GLOBAL_OPTION else option,
         )
+
+
+class _RoomCleaningPeriodSelect(AdaptiveEntity, SelectEntity):
+    """A concise per-room scheduling control for mobile dashboards."""
+
+    _attr_options = ROOM_CLEANING_PERIOD_OPTIONS
+
+    def __init__(self, coordinator, area_id: str, name: str) -> None:
+        super().__init__(
+            coordinator,
+            f"room_{area_id}_cleaning_period",
+            name,
+            "room_cleaning_period_control",
+            area_id=area_id,
+        )
+        self.area_id = area_id
+
+    @property
+    def current_option(self) -> str:
+        return self.coordinator.room_cleaning_period(self.area_id)
+
+    async def async_select_option(self, option: str) -> None:
+        await self.coordinator.async_set_room_cleaning_period(self.area_id, option)
+
+
+class _RoomCleaningProfileSelect(AdaptiveEntity, SelectEntity):
+    """Choose inherited robot defaults or reveal room-level profile controls."""
+
+    _attr_options = ROOM_CLEANING_PROFILE_OPTIONS
+
+    def __init__(self, coordinator, area_id: str, name: str) -> None:
+        super().__init__(
+            coordinator,
+            f"room_{area_id}_cleaning_profile",
+            name,
+            "room_cleaning_profile_control",
+            area_id=area_id,
+        )
+        self.area_id = area_id
+
+    @property
+    def current_option(self) -> str:
+        return self.coordinator.room_cleaning_profile(self.area_id)
+
+    async def async_select_option(self, option: str) -> None:
+        await self.coordinator.async_set_room_cleaning_profile(self.area_id, option)
 
 
 class _RoomPassSelect(AdaptiveEntity, SelectEntity):
@@ -373,6 +423,16 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
         )
         entities.extend(
             [
+                _RoomCleaningPeriodSelect(
+                    coordinator,
+                    room.area_id,
+                    f"{room.name} cleaning period",
+                ),
+                _RoomCleaningProfileSelect(
+                    coordinator,
+                    room.area_id,
+                    f"{room.name} cleaning profile",
+                ),
                 _RoomTimeSelect(
                     coordinator,
                     room.area_id,

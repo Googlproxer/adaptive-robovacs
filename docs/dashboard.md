@@ -28,6 +28,20 @@ entity IDs. A newly supported control therefore appears automatically on its
 existing vacuum or room card. A newly discovered vacuum or room still needs a
 new card to be added and positioned manually.
 
+Each room card starts with two mobile-friendly selectors:
+
+- **Cleaning period** has **Off**, **Night** (00:00–06:00), **Morning**
+  (06:00–12:00), **Afternoon** (12:00–18:00), **Evening** (18:00–00:00), and
+  **Custom**. Choosing a named period enables the room and writes its matching
+  daily bounds. **Off** disables scheduling while retaining the existing
+  bounds. **Custom** enables the room with a 09:00–20:00 window, which can be
+  refined through the detailed start/end controls.
+- **Cleaning profile** is **Robot default** or **Custom**. Robot default clears
+  every room-level cleaning-program, pass, fan, mode, mop, and depth override
+  so the matching robot defaults apply. Custom preserves the saved overrides
+  and reveals the individual profile controls. Those individual entities remain
+  available to automations regardless of the card view.
+
 Each room card's **Desired cleaning start** and **Desired cleaning end** selects
 offer 15-minute values plus **Use global**. Start and end inherit independently;
 an overnight interval is supported, while equal effective bounds are invalid
@@ -41,6 +55,9 @@ Each room has **Vacuum passes** and **Mop passes** selectors:
 - **1 pass** explicitly requests one portable pass.
 - **2 passes** requires a compatible adapter and never silently downgrades or
   emulates the request with a second dispatch.
+
+Existing rooms with one or more saved profile overrides begin in **Custom** so
+the upgrade preserves their configuration and keeps those controls visible.
 
 Compatible Roborock vacuums perform two passes with one native cross-hatched
 segment command. Other vendors keep the portable Home Assistant path until a

@@ -28,10 +28,14 @@ from .const import (
     DEFAULT_COMMON_INTERVAL,
     DEFAULT_EXPECTED_MINUTES,
 )
-from .models import is_valid_daily_time
+from .models import (
+    ROOM_PROFILE_OVERRIDE_KEYS,
+    is_valid_daily_time,
+    room_cleaning_profile_is_custom,
+)
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 DAILY_WINDOW_VERSION = 1
 
 
@@ -372,6 +376,7 @@ class RoomSettings:
     mop_mode: str | None = None
     mop_intensity: str | None = None
     cleaning_depth: str | None = None
+    profile_custom: bool = False
 
     @property
     def vacuum_interval(self) -> float:
@@ -423,6 +428,11 @@ class RoomSettings:
             window = {}
         raw_start = value.get("desired_window_start", window.get("start"))
         raw_end = value.get("desired_window_end", window.get("end"))
+        profile_custom = _boolean(
+            value.get("profile_custom"),
+            False,
+            "room profile_custom",
+        ) or any(value.get(key) is not None for key in ROOM_PROFILE_OVERRIDE_KEYS)
         return cls(
             enabled=bool(value.get("enabled", default.enabled)),
             cleaning_interval=_bounded_number(
@@ -467,6 +477,7 @@ class RoomSettings:
             cleaning_depth=_optional_string(
                 value.get("cleaning_depth"), "room cleaning_depth"
             ),
+            profile_custom=profile_custom,
         )
 
     def to_store(self) -> dict[str, object]:
@@ -491,6 +502,19 @@ class RoomSettings:
             "mop_mode": self.mop_mode,
             "mop_intensity": self.mop_intensity,
             "cleaning_depth": self.cleaning_depth,
+            "profile_custom": room_cleaning_profile_is_custom(
+                {
+                    "profile_custom": self.profile_custom,
+                    "cleaning_program": self.cleaning_program,
+                    "vacuum_pass_count": self.vacuum_pass_count,
+                    "mop_pass_count": self.mop_pass_count,
+                    "fan_speed": self.fan_speed,
+                    "mode": self.mode,
+                    "mop_mode": self.mop_mode,
+                    "mop_intensity": self.mop_intensity,
+                    "cleaning_depth": self.cleaning_depth,
+                }
+            ),
         }
 
     def to_runtime(self) -> dict[str, object]:
@@ -515,6 +539,19 @@ class RoomSettings:
             "mop_mode": self.mop_mode,
             "mop_intensity": self.mop_intensity,
             "cleaning_depth": self.cleaning_depth,
+            "profile_custom": room_cleaning_profile_is_custom(
+                {
+                    "profile_custom": self.profile_custom,
+                    "cleaning_program": self.cleaning_program,
+                    "vacuum_pass_count": self.vacuum_pass_count,
+                    "mop_pass_count": self.mop_pass_count,
+                    "fan_speed": self.fan_speed,
+                    "mode": self.mode,
+                    "mop_mode": self.mop_mode,
+                    "mop_intensity": self.mop_intensity,
+                    "cleaning_depth": self.cleaning_depth,
+                }
+            ),
         }
 
 
@@ -1199,7 +1236,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v10 or convert older shapes, returning whether a save is required."""
+        """Load v12 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -1207,7 +1244,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10}:
+        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10, 11}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -1324,7 +1361,7 @@ class SchedulerState:
         raw_robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
         raw_robot_aliases = (
             _mapping(data.get("robot_entity_aliases"), "robot_entity_aliases")
-            if data.get("schema_version") in {10, SCHEMA_VERSION}
+            if data.get("schema_version") in {10, 11, SCHEMA_VERSION}
             else _mapping_or_empty(data.get("robot_entity_aliases"))
         )
         raw_history = _mapping(data.get("room_history"), "room_history")
@@ -1335,7 +1372,7 @@ class SchedulerState:
         raw_occurrences = _mapping_or_empty(data.get("occurrences"))
         raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
-        if data.get("schema_version") in {10, SCHEMA_VERSION}:
+        if data.get("schema_version") in {10, 11, SCHEMA_VERSION}:
             raw_robot_faults = _mapping(data.get("robot_faults"), "robot_faults")
             raw_room_faults = _mapping(data.get("room_faults"), "room_faults")
         else:
@@ -1482,7 +1519,7 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v11 codec, and platform entities use
+        persistent I/O stays on the typed v12 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 

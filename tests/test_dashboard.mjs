@@ -69,8 +69,8 @@ const VacuumCard = elements.get("adaptive-robovacs-vacuum");
 const RoomCard = elements.get("adaptive-robovacs-room");
 
 const entry = "entry-one";
-const adaptiveState = (role, attributes = {}) => ({
-  state: "ready",
+const adaptiveState = (role, attributes = {}, state = "ready") => ({
+  state,
   attributes: {
     adaptive_robovacs_entry_id: entry,
     adaptive_robovacs_role: role,
@@ -127,6 +127,14 @@ const baseStates = () => ({
     area_id: "kitchen",
     friendly_name: "Kitchen manual request",
   }),
+  "select.kitchen_cleaning_period": adaptiveState("room_cleaning_period_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen cleaning period",
+  }, "Custom"),
+  "select.kitchen_cleaning_profile": adaptiveState("room_cleaning_profile_control", {
+    area_id: "kitchen",
+    friendly_name: "Kitchen cleaning profile",
+  }, "Robot default"),
   "select.kitchen_desired_start": adaptiveState("room_window_start_control", {
     area_id: "kitchen",
     friendly_name: "Kitchen desired cleaning start",
@@ -272,16 +280,15 @@ test("vacuum card contains one selected vacuum and uses its friendly name", () =
   assert.ok(configuration.entities.every((row) => !row.entity.includes("robot_two")));
 });
 
-test("room card contains one selected room with status before controls", () => {
+test("room card contains one selected room with simple controls before advanced settings", () => {
   const { configuration } = configure(RoomCard, { area_id: "kitchen" });
   assert.equal(configuration.title, "Kitchen");
   assert.deepEqual(configuration.entities, [
     { entity: "sensor.kitchen_next_clean", name: "Next clean" },
     { entity: "sensor.kitchen_last_cleaned", name: "Last cleaned" },
     { entity: "sensor.kitchen_occupancy", name: "Occupancy" },
-    { entity: "select.kitchen_passes", name: "Cleaning passes" },
-    { entity: "select.kitchen_fan", name: "Fan speed" },
-    { entity: "select.kitchen_mode", name: "Mode" },
+    { entity: "select.kitchen_cleaning_period", name: "Cleaning period" },
+    { entity: "select.kitchen_cleaning_profile", name: "Cleaning profile" },
     { entity: "select.kitchen_desired_start", name: "Desired cleaning start" },
     { entity: "select.kitchen_desired_end", name: "Desired cleaning end" },
     { entity: "number.kitchen_cadence", name: "Cadence" },
@@ -294,6 +301,38 @@ test("room card contains one selected room with status before controls", () => {
   assert.ok(entityIds.every((entityId) => !entityId.includes("bedroom")));
   assert.equal(new Set(entityIds).size, entityIds.length);
   assert.ok(!entityIds.includes("sensor.kitchen_manual"));
+  assert.ok(!entityIds.includes("select.kitchen_passes"));
+  assert.ok(!entityIds.includes("select.kitchen_fan"));
+  assert.ok(!entityIds.includes("select.kitchen_mode"));
+});
+
+test("room card reveals profile override controls only in Custom mode", () => {
+  const states = baseStates();
+  states["select.kitchen_cleaning_profile"] = adaptiveState(
+    "room_cleaning_profile_control",
+    {
+      area_id: "kitchen",
+      friendly_name: "Kitchen cleaning profile",
+    },
+    "Custom"
+  );
+  const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
+  const entityIds = configuration.entities.map((row) => row.entity);
+  assert.ok(entityIds.includes("select.kitchen_passes"));
+  assert.ok(entityIds.includes("select.kitchen_fan"));
+  assert.ok(entityIds.includes("select.kitchen_mode"));
+  assert.equal(entityIds.indexOf("select.kitchen_cleaning_profile"), 4);
+  assert.ok(entityIds.indexOf("select.kitchen_passes") > entityIds.indexOf("select.kitchen_cleaning_profile"));
+});
+
+test("room card retains detailed profile controls when the profile mode is unavailable", () => {
+  const states = baseStates();
+  delete states["select.kitchen_cleaning_profile"];
+  const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
+  const entityIds = configuration.entities.map((row) => row.entity);
+  assert.ok(entityIds.includes("select.kitchen_passes"));
+  assert.ok(entityIds.includes("select.kitchen_fan"));
+  assert.ok(entityIds.includes("select.kitchen_mode"));
 });
 
 test("new target-owned controls appear without changing card configuration", () => {

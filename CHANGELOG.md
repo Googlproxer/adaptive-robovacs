@@ -7,6 +7,23 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-27
+
+### Added
+
+- Every room now has a **Cleaning period** selector for Off, Night, Morning,
+  Afternoon, Evening, and Custom scheduling windows.
+- A room-wide **Cleaning profile** selector now provides a concise
+  Robot-default view and reveals detailed per-room program, pass, and power
+  overrides only when Custom is selected.
+
+### Changed
+
+- Existing room-level cleaning profile overrides migrate to Custom without
+  changing their effective scheduling or robot requests.
+
+Detailed notes: [`docs/releases/v1.10.0.md`](docs/releases/v1.10.0.md).
+
 ## [1.9.6] - 2026-08-27
 
 ### Changed

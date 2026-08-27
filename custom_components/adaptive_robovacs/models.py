@@ -259,6 +259,28 @@ PROFILE_SETTING_KEYS = (
     "mop_intensity",
     "cleaning_depth",
 )
+ROOM_PROFILE_OVERRIDE_KEYS = (
+    "cleaning_program",
+    "vacuum_pass_count",
+    "mop_pass_count",
+    *PROFILE_SETTING_KEYS,
+)
+ROOM_CLEANING_PERIOD_OPTIONS = (
+    "Off",
+    "Night",
+    "Morning",
+    "Afternoon",
+    "Evening",
+    "Custom",
+)
+ROOM_CLEANING_PERIOD_WINDOWS = {
+    "Night": ("00:00", "06:00"),
+    "Morning": ("06:00", "12:00"),
+    "Afternoon": ("12:00", "18:00"),
+    "Evening": ("18:00", "00:00"),
+}
+CUSTOM_ROOM_CLEANING_WINDOW = ("09:00", "20:00")
+ROOM_CLEANING_PROFILE_OPTIONS = ("Robot default", "Custom")
 type CleaningProgram = Literal[
     "vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"
 ]
@@ -376,6 +398,68 @@ def cleaning_profile_sources(
     return {
         key: "room" if room_settings.get(key) is not None else "robot"
         for key in PROFILE_SETTING_KEYS
+    }
+
+
+def room_cleaning_period(room_settings: Mapping[str, object]) -> str:
+    """Return the simple period currently represented by room settings."""
+
+    if not bool(room_settings.get("enabled", False)):
+        return "Off"
+    bounds = (
+        room_settings.get("desired_window_start"),
+        room_settings.get("desired_window_end"),
+    )
+    for option, window in ROOM_CLEANING_PERIOD_WINDOWS.items():
+        if bounds == window:
+            return option
+    return "Custom"
+
+
+def room_cleaning_period_update(option: str) -> dict[str, object]:
+    """Translate one simple period choice into existing room settings."""
+
+    if option not in ROOM_CLEANING_PERIOD_OPTIONS:
+        raise ValueError(f"Unknown room cleaning period: {option}")
+    if option == "Off":
+        return {"enabled": False}
+    start, end = (
+        CUSTOM_ROOM_CLEANING_WINDOW
+        if option == "Custom"
+        else ROOM_CLEANING_PERIOD_WINDOWS[option]
+    )
+    return {
+        "enabled": True,
+        "desired_window_start": start,
+        "desired_window_end": end,
+    }
+
+
+def room_cleaning_profile_is_custom(room_settings: Mapping[str, object]) -> bool:
+    """Return whether a room keeps its detailed profile controls expanded."""
+
+    return bool(room_settings.get("profile_custom", False)) or any(
+        room_settings.get(key) is not None for key in ROOM_PROFILE_OVERRIDE_KEYS
+    )
+
+
+def room_cleaning_profile(room_settings: Mapping[str, object]) -> str:
+    """Return the simple profile choice represented by one room."""
+
+    return "Custom" if room_cleaning_profile_is_custom(room_settings) else "Robot default"
+
+
+def room_cleaning_profile_update(option: str) -> dict[str, object]:
+    """Translate a simple profile choice into durable room settings."""
+
+    if option not in ROOM_CLEANING_PROFILE_OPTIONS:
+        raise ValueError(f"Unknown room cleaning profile: {option}")
+    if option == "Custom":
+        return {"profile_custom": True}
+    return {
+        "profile_custom": False,
+        "pass_count": None,
+        **{key: None for key in ROOM_PROFILE_OVERRIDE_KEYS},
     }
 
 

@@ -72,6 +72,11 @@ from .models import (
     pending_completion_is_docked,
     resolve_daily_window,
     resolve_cleaning_profile,
+    ROOM_PROFILE_OVERRIDE_KEYS,
+    room_cleaning_period,
+    room_cleaning_period_update,
+    room_cleaning_profile,
+    room_cleaning_profile_update,
     requested_cleaning_profile,
     parse_manual_clean_request,
     offline_held_recovery_outcome,
@@ -693,6 +698,7 @@ class AdaptiveRoboVacCoordinator:
                 "mop_mode": None,
                 "mop_intensity": None,
                 "cleaning_depth": None,
+                "profile_custom": False,
             },
         )
         # Existing persisted settings predate newer optional room controls.
@@ -713,6 +719,10 @@ class AdaptiveRoboVacCoordinator:
         settings.setdefault("mop_mode", None)
         settings.setdefault("mop_intensity", None)
         settings.setdefault("cleaning_depth", None)
+        settings.setdefault(
+            "profile_custom",
+            any(settings.get(key) is not None for key in ROOM_PROFILE_OVERRIDE_KEYS),
+        )
         settings["pass_count"] = settings["vacuum_pass_count"]
         return settings
 
@@ -869,6 +879,22 @@ class AdaptiveRoboVacCoordinator:
             raise ValueError(f"Unknown room setting: {key}")
         aliases = {"vacuum_interval": "cleaning_interval", "pass_count": "vacuum_pass_count"}
         return self._room_settings(room)[aliases.get(key, key)]
+
+    def room_cleaning_period(self, area_id: str) -> str:
+        """Return one room's mobile-friendly schedule choice."""
+
+        room = self.discovery.rooms.get(area_id)
+        if room is None:
+            raise ValueError(f"Unknown room area: {area_id}")
+        return room_cleaning_period(self._room_settings(room))
+
+    def room_cleaning_profile(self, area_id: str) -> str:
+        """Return whether one room exposes detailed profile overrides."""
+
+        room = self.discovery.rooms.get(area_id)
+        if room is None:
+            raise ValueError(f"Unknown room area: {area_id}")
+        return room_cleaning_profile(self._room_settings(room))
 
     def scheduler_summary(self) -> dict[str, Any]:
         """Return the scheduler metadata used by the status sensor."""
@@ -1269,6 +1295,47 @@ class AdaptiveRoboVacCoordinator:
         await self._async_save()
         await self.async_evaluate(dry_run=True, reason=f"global:{key}")
 
+    async def async_set_room_cleaning_period(self, area_id: str, option: str) -> None:
+        """Apply one simple room schedule choice in a single durable update."""
+
+        room = self.discovery.rooms.get(area_id)
+        if room is None:
+            raise ValueError(f"Unknown room area: {area_id}")
+        settings = self._room_settings(room)
+        updates = room_cleaning_period_update(option)
+        configured_start = updates.get(
+            "desired_window_start", settings.get("desired_window_start")
+        )
+        configured_end = updates.get(
+            "desired_window_end", settings.get("desired_window_end")
+        )
+        resolve_daily_window(
+            configured_start if isinstance(configured_start, str) else None,
+            configured_end if isinstance(configured_end, str) else None,
+            str(self.data.get("unresolved_start", DEFAULT_UNRESOLVED_START)),
+            str(self.data.get("unresolved_end", DEFAULT_UNRESOLVED_END)),
+        )
+        settings.update(updates)
+        await self._async_save()
+        await self.async_evaluate(
+            dry_run=True, reason=f"room:{area_id}:cleaning_period"
+        )
+
+    async def async_set_room_cleaning_profile(self, area_id: str, option: str) -> None:
+        """Apply one room-wide profile choice in a single durable update."""
+
+        room = self.discovery.rooms.get(area_id)
+        if room is None:
+            raise ValueError(f"Unknown room area: {area_id}")
+        settings = self._room_settings(room)
+        settings.update(room_cleaning_profile_update(option))
+        settings["pass_count"] = settings["vacuum_pass_count"]
+        await self._async_save()
+        async_sync_cleaning_program_issues(self)
+        await self.async_evaluate(
+            dry_run=True, reason=f"room:{area_id}:cleaning_profile"
+        )
+
     async def async_set_room_setting(self, area_id: str, key: str, value: Any) -> None:
         """Update a discovered room's persistent scheduling setting."""
 
@@ -1331,6 +1398,8 @@ class AdaptiveRoboVacCoordinator:
             settings["mop_interval"] = value
         if key == "vacuum_pass_count":
             settings["pass_count"] = value
+        if key in ROOM_PROFILE_OVERRIDE_KEYS:
+            settings["profile_custom"] = True
         await self._async_save()
         async_sync_cleaning_program_issues(self)
         await self.async_evaluate(dry_run=True, reason=f"room:{area_id}:{key}")

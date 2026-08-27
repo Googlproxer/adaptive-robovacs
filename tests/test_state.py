@@ -86,6 +86,39 @@ class SchedulerStateTests(unittest.TestCase):
             restored.robot_settings["registry-rob"].mop_intensity, "medium"
         )
 
+    def test_v11_profile_overrides_migrate_to_custom_mode_without_losing_values(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        room, _ = state.ensure_room("study", is_bedroom=False)
+        room.cleaning_program = "vacuum_then_mop"
+        room.vacuum_pass_count = 2
+        room.fan_speed = "max"
+        payload = state.to_store()
+        payload["schema_version"] = 11
+        payload["room_settings"]["study"].pop("profile_custom")
+
+        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertTrue(migrated)
+        settings = restored.room_settings["study"]
+        self.assertTrue(settings.profile_custom)
+        self.assertEqual(settings.cleaning_program, "vacuum_then_mop")
+        self.assertEqual(settings.vacuum_pass_count, 2)
+        self.assertEqual(settings.fan_speed, "max")
+
+    def test_current_schema_preserves_custom_mode_without_room_overrides(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        room, _ = state.ensure_room("study", is_bedroom=False)
+        room.profile_custom = True
+
+        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
+
+        self.assertFalse(migrated)
+        self.assertTrue(restored.room_settings["study"].profile_custom)
+        self.assertIsNone(restored.room_settings["study"].cleaning_program)
+        self.assertEqual(
+            restored.to_store()["room_settings"]["study"]["profile_custom"], True
+        )
+
     def test_robot_identity_migration_preserves_settings_jobs_and_unique_alias(self) -> None:
         data = {
             "settings": {
