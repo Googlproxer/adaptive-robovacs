@@ -997,6 +997,7 @@ class AdaptiveRoboVacCoordinator:
             "area_mapping_missing",
             "area_mapping_stale",
             "area_mapping_ambiguous",
+            "area_mapping_recheck_required",
             "two_pass_no_longer_supported",
             "adapter_request_unsupported",
             "adapter_preflight_failed",

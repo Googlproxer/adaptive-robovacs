@@ -41,6 +41,15 @@ cleaning. It rereads the selected vacuum's current area mapping immediately
 before dispatch, accepts numeric or unambiguous single-map compound segments,
 and fails closed on missing, stale, malformed, or multi-map evidence.
 
+When a scheduled Roborock room obtains a complete, valid live segment response
+that differs from the saved evidence, Adaptive RoboVacs removes only mapping
+targets that are absent from that response and refreshes Home Assistant's
+last-seen segment list. It never maps a room by segment name or assigns a
+replacement target. This first pass does not start a clean: it blocks only the
+affected room and requires the normal non-dispatching **Recheck** Repair before
+scheduling can resume. An empty, malformed, or unavailable live response makes
+no changes.
+
 Each room has separate **Vacuum passes** and **Mop passes** selectors supporting
 **Robot default**, **1 pass**, and **2 passes**. Robot default uses the matching
 vacuum-card default. An explicit two-pass stage is eligible only for a vacuum
@@ -191,6 +200,9 @@ the vacuum is safely docked and the explicit recheck succeeds.
 
 ### Mapping failures
 
+- **Mapping refreshed**: Adaptive RoboVacs removed targets that the vacuum no
+  longer reports and refreshed Home Assistant's segment evidence. Review the
+  area mapping and submit the room Repair; the recheck never starts a clean.
 - **Mapping missing**: add the Home Assistant area to the selected vacuum's
   segment mapping.
 - **Mapping stale**: refresh the vendor integration/map and update the mapping

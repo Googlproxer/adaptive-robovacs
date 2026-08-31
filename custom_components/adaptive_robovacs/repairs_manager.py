@@ -23,6 +23,7 @@ FAULT_SUMMARIES = {
     "area_mapping_missing": "The selected room is not mapped to this vacuum in Home Assistant.",
     "area_mapping_stale": "The Home Assistant room mapping is stale for this vacuum.",
     "area_mapping_ambiguous": "The Home Assistant room mapping cannot be matched safely to one vacuum map.",
+    "area_mapping_recheck_required": "Home Assistant refreshed this vacuum's room mapping; confirm it before scheduling resumes.",
     "two_pass_no_longer_supported": "The selected vacuum no longer supports native two-pass cleaning.",
     "adapter_request_unsupported": "The selected vacuum no longer supports this cleaning request.",
     "adapter_preflight_failed": "The vacuum adapter could not validate this cleaning request.",

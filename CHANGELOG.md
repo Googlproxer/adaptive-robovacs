@@ -5,7 +5,15 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
-## [Unreleased]
+## [1.11.5] - 2026-08-31
+
+### Fixed
+
+- Scheduled Roborock room preflight now safely removes only segment mappings
+  disproven by a complete live segment response. The affected room requires an
+  explicit non-dispatching Repair recheck before its next clean can start.
+
+Detailed notes: [`docs/releases/v1.11.5.md`](docs/releases/v1.11.5.md).
 
 ## [1.11.4] - 2026-08-31
 

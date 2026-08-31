@@ -106,6 +106,55 @@ class RoborockMappingTests(unittest.TestCase):
                 roborock.resolve_roborock_area_mapping(options, ["study"])
             self.assertEqual(raised.exception.code, code)
 
+    def test_reconciliation_prunes_only_segments_absent_from_live_response(self) -> None:
+        reconciliation = roborock.reconcile_roborock_area_mapping(
+            {
+                "area_mapping": {
+                    "upper_dunny": ["11", "4"],
+                    "office": ["6"],
+                    "unsupported": ["not-a-segment"],
+                },
+                "last_seen_segments": [{"id": "1"}, {"id": "4"}, {"id": "6"}],
+            },
+            (
+                types.SimpleNamespace(id="1", name="Bedroom"),
+                types.SimpleNamespace(id="4", name="Dunny"),
+                types.SimpleNamespace(id="6", name="Office"),
+            ),
+        )
+
+        self.assertIsNotNone(reconciliation)
+        assert reconciliation is not None
+        self.assertEqual(
+            reconciliation.area_mapping,
+            {
+                "upper_dunny": ["4"],
+                "office": ["6"],
+                "unsupported": ["not-a-segment"],
+            },
+        )
+        self.assertEqual(
+            reconciliation.last_seen_segments,
+            [
+                {"id": "1", "name": "Bedroom"},
+                {"id": "4", "name": "Dunny"},
+                {"id": "6", "name": "Office"},
+            ],
+        )
+
+    def test_reconciliation_never_changes_mapping_without_complete_live_evidence(self) -> None:
+        options = {
+            "area_mapping": {"upper_dunny": ["11", "4"]},
+            "last_seen_segments": [{"id": "4"}],
+        }
+
+        self.assertIsNone(roborock.reconcile_roborock_area_mapping(options, ()))
+        self.assertIsNone(
+            roborock.reconcile_roborock_area_mapping(
+                options, (types.SimpleNamespace(id="4", name=None),)
+            )
+        )
+
     def test_native_payload_uses_one_repeat_two_command(self) -> None:
         self.assertEqual(
             roborock.build_roborock_two_pass_payload((6, 5)),
@@ -292,6 +341,76 @@ class RoborockWaterPreflightTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(result.blocked)
         self.assertEqual(result.code, "water_confirmation_required")
+
+    async def test_mapping_reconciliation_requires_recheck_without_dispatching(self) -> None:
+        adapter = roborock.RoborockVacuumAdapter(generic.GenericVacuumAdapter())
+        adapter.async_capabilities = AsyncMock(
+            return_value=self._capabilities(models.WaterReadiness.unsupported())
+        )
+        entry = types.SimpleNamespace(
+            options={
+                "vacuum": {
+                    "area_mapping": {"upper_dunny": ["11", "4"]},
+                    "last_seen_segments": [{"id": "1"}, {"id": "4"}, {"id": "11"}],
+                }
+            }
+        )
+
+        class Registry:
+            def __init__(self) -> None:
+                self.updated_options = None
+
+            def async_get(self, _entity_id):
+                return entry
+
+            def async_update_entity_options(self, _entity_id, domain, options):
+                self.updated_options = (domain, dict(options))
+                entry.options = {domain: dict(options)}
+
+        registry_instance = Registry()
+        original_async_get = roborock.er.async_get
+        roborock.er.async_get = lambda _hass: registry_instance
+        self.addCleanup(setattr, roborock.er, "async_get", original_async_get)
+        service_call = AsyncMock()
+        vacuum_entity = types.SimpleNamespace(
+            async_get_segments=AsyncMock(
+                return_value=(
+                    types.SimpleNamespace(id="1", name="Bedroom"),
+                    types.SimpleNamespace(id="4", name="Dunny"),
+                )
+            )
+        )
+        hass = types.SimpleNamespace(
+            data={
+                "vacuum": types.SimpleNamespace(
+                    get_entity=lambda _entity_id: vacuum_entity
+                )
+            },
+            services=types.SimpleNamespace(async_call=service_call),
+        )
+        request = base.AdapterDispatchRequest(
+            "vacuum.test", ("upper_dunny",), "vacuum", 1, {}
+        )
+
+        result = await adapter.async_dispatch(hass, self._context(), request)
+
+        self.assertEqual(result.status, "mapping_error")
+        self.assertEqual(result.code, "area_mapping_recheck_required")
+        self.assertEqual(
+            registry_instance.updated_options,
+            (
+                "vacuum",
+                {
+                    "area_mapping": {"upper_dunny": ["4"]},
+                    "last_seen_segments": [
+                        {"id": "1", "name": "Bedroom"},
+                        {"id": "4", "name": "Dunny"},
+                    ],
+                },
+            ),
+        )
+        service_call.assert_not_awaited()
+        self.assertTrue((await adapter.async_preflight(hass, self._context(), request)).ready)
 
 
 class RoborockReadinessTests(unittest.TestCase):

@@ -33,6 +33,14 @@ class MappingResolution:
     targets: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class MappingReconciliation:
+    """Safe Home Assistant mapping cleanup derived from one live segment read."""
+
+    area_mapping: dict[str, object]
+    last_seen_segments: list[dict[str, str]]
+
+
 class RoborockMappingError(ValueError):
     """A safe normalized area-mapping failure."""
 
@@ -243,6 +251,106 @@ def _segment_parts(value: object) -> tuple[str | None, int] | None:
     if len(pieces) == 2 and pieces[0].isdecimal() and pieces[1].isdecimal():
         return pieces[0], int(pieces[1])
     return None
+
+
+def _live_segment_snapshot(
+    segments: Sequence[object],
+) -> list[dict[str, str]] | None:
+    """Serialize one complete, supported live segment response for registry use."""
+
+    if not segments:
+        return None
+    snapshot: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for segment in segments:
+        if isinstance(segment, Mapping):
+            segment_id = segment.get("id")
+            name = segment.get("name")
+            group = segment.get("group")
+        else:
+            segment_id = getattr(segment, "id", None)
+            name = getattr(segment, "name", None)
+            group = getattr(segment, "group", None)
+        if (
+            not isinstance(segment_id, str)
+            or not segment_id
+            or _segment_parts(segment_id) is None
+            or not isinstance(name, str)
+            or (group is not None and not isinstance(group, str))
+            or segment_id in seen_ids
+        ):
+            return None
+        seen_ids.add(segment_id)
+        record = {"id": segment_id, "name": name}
+        if group is not None:
+            record["group"] = group
+        snapshot.append(record)
+    return snapshot
+
+
+def _last_seen_segment_ids(vacuum_options: Mapping[str, object]) -> frozenset[str] | None:
+    """Return complete stored segment IDs, or None when the evidence is unsafe."""
+
+    last_seen = vacuum_options.get("last_seen_segments")
+    if not isinstance(last_seen, Sequence) or isinstance(last_seen, (str, bytes)):
+        return None
+    segment_ids: set[str] = set()
+    for segment in last_seen:
+        if not isinstance(segment, Mapping):
+            return None
+        segment_id = segment.get("id")
+        if (
+            not isinstance(segment_id, str)
+            or not segment_id
+            or _segment_parts(segment_id) is None
+        ):
+            return None
+        segment_ids.add(segment_id)
+    return frozenset(segment_ids) if segment_ids else None
+
+
+def reconcile_roborock_area_mapping(
+    vacuum_options: Mapping[str, object], segments: Sequence[object]
+) -> MappingReconciliation | None:
+    """Prune only positively stale mapping targets from one live segment response.
+
+    The caller must treat a returned reconciliation as a non-dispatching change.
+    Names are retained only for Home Assistant's current segment snapshot; they
+    never select or reassign an area mapping.
+    """
+
+    mapping = vacuum_options.get("area_mapping")
+    if not isinstance(mapping, Mapping) or not mapping:
+        return None
+    snapshot = _live_segment_snapshot(segments)
+    if snapshot is None:
+        return None
+    live_ids = frozenset(segment["id"] for segment in snapshot)
+    reconciled_mapping: dict[str, object] = {}
+    pruned = False
+    for area_id, targets in mapping.items():
+        if not isinstance(area_id, str):
+            return None
+        if not isinstance(targets, Sequence) or isinstance(targets, (str, bytes)):
+            reconciled_mapping[area_id] = targets
+            continue
+        retained = [
+            target
+            for target in targets
+            # Malformed targets remain for the normal fail-closed preflight.
+            if _segment_parts(target) is None or str(target) in live_ids
+        ]
+        if len(retained) == len(targets):
+            reconciled_mapping[area_id] = targets
+        elif retained:
+            reconciled_mapping[area_id] = retained
+            pruned = True
+        else:
+            pruned = True
+
+    if not pruned and _last_seen_segment_ids(vacuum_options) == live_ids:
+        return None
+    return MappingReconciliation(reconciled_mapping, snapshot)
 
 
 def resolve_roborock_area_mapping(
@@ -624,6 +732,73 @@ class RoborockVacuumAdapter(VacuumAdapter):
         vacuum_options = options.get("vacuum", {}) if isinstance(options, Mapping) else {}
         return vacuum_options if isinstance(vacuum_options, Mapping) else {}
 
+    @staticmethod
+    async def _async_reconcile_area_mapping(hass: Any, entity_id: str) -> bool:
+        """Refresh stale Home Assistant mapping evidence without dispatching."""
+
+        registry = er.async_get(hass)
+        entry = registry.async_get(entity_id) if registry else None
+        options = getattr(entry, "options", {}) if entry else {}
+        vacuum_options = options.get("vacuum", {}) if isinstance(options, Mapping) else {}
+        if not isinstance(vacuum_options, Mapping) or not vacuum_options.get("area_mapping"):
+            return False
+        hass_data = getattr(hass, "data", None)
+        vacuum_component = hass_data.get("vacuum") if isinstance(hass_data, Mapping) else None
+        entity = (
+            vacuum_component.get_entity(entity_id)
+            if vacuum_component and hasattr(vacuum_component, "get_entity")
+            else None
+        )
+        if entity is None or not hasattr(entity, "async_get_segments"):
+            return False
+        try:
+            segments = await entity.async_get_segments()
+        except Exception:
+            _LOGGER.debug(
+                "Adaptive RoboVacs could not read current Roborock segments for reconciliation: robot=%s",
+                entity_id,
+                exc_info=True,
+            )
+            return False
+        if not isinstance(segments, Sequence) or isinstance(segments, (str, bytes)):
+            return False
+        reconciliation = reconcile_roborock_area_mapping(vacuum_options, segments)
+        if reconciliation is None:
+            return False
+
+        # The live read yielded to the event loop, so rebuild from any user
+        # mapping update made in the meantime rather than overwrite it.
+        latest_entry = registry.async_get(entity_id)
+        latest_options = getattr(latest_entry, "options", {}) if latest_entry else {}
+        latest_vacuum_options = (
+            latest_options.get("vacuum", {}) if isinstance(latest_options, Mapping) else {}
+        )
+        if not isinstance(latest_vacuum_options, Mapping):
+            return False
+        if latest_vacuum_options != vacuum_options:
+            reconciliation = reconcile_roborock_area_mapping(
+                latest_vacuum_options, segments
+            )
+            if reconciliation is None:
+                return False
+        updated_options = dict(latest_vacuum_options)
+        updated_options["area_mapping"] = reconciliation.area_mapping
+        updated_options["last_seen_segments"] = reconciliation.last_seen_segments
+        try:
+            registry.async_update_entity_options(entity_id, "vacuum", updated_options)
+        except Exception:
+            _LOGGER.warning(
+                "Adaptive RoboVacs could not save Roborock mapping reconciliation: robot=%s",
+                entity_id,
+                exc_info=True,
+            )
+            return False
+        _LOGGER.info(
+            "Adaptive RoboVacs refreshed stale Roborock room-mapping evidence: robot=%s",
+            entity_id,
+        )
+        return True
+
     def _is_q10_request(
         self, hass: Any, context: AdapterMatchContext, request: AdapterDispatchRequest
     ) -> bool:
@@ -881,6 +1056,16 @@ class RoborockVacuumAdapter(VacuumAdapter):
                     "water_confirmation_required",
                     "Water confirmation is required before mopping.",
                 )
+        if (
+            context.supports_area_clean
+            and request.area_ids
+            and await self._async_reconcile_area_mapping(hass, request.robot_entity_id)
+        ):
+            return AdapterDispatchResult(
+                "mapping_error",
+                "area_mapping_recheck_required",
+                "Home Assistant refreshed this vacuum's room mapping. Recheck it before scheduling resumes.",
+            )
         if request.passes == 2 or self._is_q10_request(hass, context, request):
             try:
                 resolve_roborock_area_mapping(

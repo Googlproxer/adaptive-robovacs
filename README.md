@@ -121,6 +121,12 @@ map the robot still holds. See the
 [v1.3 troubleshooting guide](docs/setup.md#v130-troubleshooting) for scheduler
 hold steps.
 
+If a scheduled Roborock room has complete live segment evidence that differs
+from Home Assistant's saved mapping, the scheduler removes only targets that
+are no longer reported and then opens the affected room's non-dispatching
+**Recheck** Repair. It never guesses a replacement room mapping or starts that
+clean automatically.
+
 ### Q10 map inspection
 
 For compatible Roborock Q10/B01 vacuums, Adaptive RoboVacs can list robot-held
