@@ -40,6 +40,38 @@ record_manual_clean:
       selector:
         config_entry:
           integration: adaptive_robovacs
+list_legacy_deferrals:
+  name: List legacy deferrals
+  description: Lists migrated timestamp-only room deferrals for review. This service never starts a clean or changes scheduler state.
+  fields:
+    entry_id:
+      name: Config entry
+      description: Required only when more than one Adaptive RoboVacs entry is loaded.
+      selector:
+        config_entry:
+          integration: adaptive_robovacs
+clear_legacy_deferrals:
+  name: Clear reviewed legacy deferrals
+  description: Removes only the selected migrated timestamp-only deferrals. It never starts a clean; the next normal scheduler evaluation applies the room's natural cadence.
+  fields:
+    area_ids:
+      name: Rooms
+      required: true
+      selector:
+        area:
+          multiple: true
+    confirm:
+      name: Confirm removal
+      description: Required acknowledgement that only reviewed legacy deferrals for these rooms will be removed.
+      required: true
+      selector:
+        boolean:
+    entry_id:
+      name: Config entry
+      description: Required only when more than one Adaptive RoboVacs entry is loaded.
+      selector:
+        config_entry:
+          integration: adaptive_robovacs
 manual_clean_room:
   name: Manually clean room
   description: Immediately starts an explicit user override for one discovered room. It bypasses cadence, vacancy/occupancy, desired-window, configured enablement, battery, scheduler-hold, and scheduler-halt gates. A compatible same-floor robot must be physically docked. Party Mode and observe-only mode remain non-bypassable.

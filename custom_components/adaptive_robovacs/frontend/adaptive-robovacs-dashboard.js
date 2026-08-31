@@ -313,6 +313,14 @@ class AdaptiveRoboVacsCardBase extends HTMLElement {
   _targetEntityRows(items, roleOrder, targetName) {
     return this._orderedEntities(items, roleOrder).map((item) => {
       const name = nameWithoutTargetPrefix(item.attrs.friendly_name, targetName);
+      if (item.attrs[ROLE_ATTRIBUTE] === "room_last_cleaned") {
+        return {
+          type: "attribute",
+          entity: item.entityId,
+          attribute: "last_cleaned_display",
+          name: name || "Last cleaned",
+        };
+      }
       return name ? { entity: item.entityId, name } : item.entityId;
     });
   }

@@ -23,7 +23,9 @@ SCHEMA_VERSION = state_module.SCHEMA_VERSION
 ActiveJob = state_module.ActiveJob
 CleaningOccurrence = state_module.CleaningOccurrence
 CleaningStage = state_module.CleaningStage
+Deferral = state_module.Deferral
 RoomHistory = state_module.RoomHistory
+RobotCooldown = state_module.RobotCooldown
 SchedulerState = state_module.SchedulerState
 SchedulerFault = state_module.SchedulerFault
 StateSchemaError = state_module.StateSchemaError
@@ -43,6 +45,66 @@ ENTRY_DATA = {
 
 
 class SchedulerStateTests(unittest.TestCase):
+    def test_initial_baseline_and_explainable_deferrals_round_trip(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        state.first_scheduler_online_at = datetime(
+            2026, 8, 1, 8, 0, tzinfo=timezone.utc
+        )
+        _settings, history = state.ensure_room("study", is_bedroom=False)
+        history.deferrals["cleaning"] = Deferral(
+            until=datetime(2026, 8, 2, 8, 0, tzinfo=timezone.utc),
+            source="manual_clean",
+            created_at=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
+            room_area_id="study",
+        )
+        state.robot_cooldowns["vacuum.study"] = RobotCooldown(
+            until=datetime(2026, 8, 1, 9, 15, tzinfo=timezone.utc),
+            cancelled_at=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
+        )
+        state.audit.room_decisions.append(
+            {"room_area_id": "study", "reason": "waiting for 30 clear minutes"}
+        )
+
+        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
+
+        self.assertFalse(migrated)
+        self.assertEqual(
+            restored.first_scheduler_online_at,
+            datetime(2026, 8, 1, 8, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            restored.room_history["study"].deferrals["cleaning"].source,
+            "manual_clean",
+        )
+        self.assertEqual(
+            restored.robot_cooldowns["vacuum.study"].reason,
+            "physical_cancelled",
+        )
+        self.assertEqual(restored.audit.room_decisions[0]["room_area_id"], "study")
+
+    def test_v12_timestamp_only_deferrals_are_migrated_for_review(self) -> None:
+        state = SchedulerState.create(ENTRY_DATA)
+        _settings, history = state.ensure_room("study", is_bedroom=False)
+        history.deferrals["cleaning"] = Deferral(
+            until=datetime(2026, 8, 2, 8, 0, tzinfo=timezone.utc)
+        )
+        payload = state.to_store()
+        payload["schema_version"] = 12
+        payload["room_history"]["study"]["deferrals"] = {
+            "cleaning": "2026-08-02T08:00:00+00:00"
+        }
+        payload.pop("first_scheduler_online_at")
+        payload.pop("robot_cooldowns")
+
+        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertTrue(migrated)
+        self.assertIsNone(restored.first_scheduler_online_at)
+        self.assertEqual(
+            restored.room_history["study"].deferrals["cleaning"].source,
+            "legacy_unknown",
+        )
+
     def test_map_recovery_hold_round_trips_selected_map_id(self) -> None:
         state = SchedulerState.create(ENTRY_DATA)
         state.robot_holds["registry-q10"] = RobotHold(
@@ -371,8 +433,12 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertIsNone(restored.room_settings["study"].desired_window_end)
         self.assertIsNone(restored.room_settings["kitchen"].desired_window_start)
         self.assertEqual(
-            restored.room_history["study"].deferrals["vacuum"],
+            restored.room_history["study"].deferrals["vacuum"].until,
             datetime(2026, 8, 2, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            restored.room_history["study"].deferrals["vacuum"].source,
+            "legacy_unknown",
         )
         self.assertEqual(restored.active_jobs["vacuum.beta"].expected_minutes, 25)
         self.assertEqual(

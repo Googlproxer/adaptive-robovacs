@@ -67,6 +67,15 @@ class WaterMoppingContractTests(unittest.TestCase):
         self.assertGreater(section.index("profile.mop_intensity_select_entity_id"), mop_gate)
         self.assertNotIn('stage_mode or settings.get("mode")', section)
 
+    def test_water_is_checked_only_for_the_current_mop_stage(self) -> None:
+        coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+        preparation = coordinator[
+            coordinator.index("    async def _async_prepare_occurrence"):
+            coordinator.index("    async def _async_handle_mop_preflight_blocked")
+        ]
+        self.assertIn('if candidate["operation"] != "mop":', preparation)
+        self.assertIn("vacuum completed; mop skipped for water", coordinator)
+
     def test_every_physical_dispatch_gets_a_fresh_safety_evaluation(self) -> None:
         coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
         dispatch_loop = coordinator.index("for robot, candidate in assignments:")

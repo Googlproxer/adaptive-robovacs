@@ -223,9 +223,14 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "forecast_confidence": candidate["confidence"] if candidate else 0,
             "occupancy": state["occupancy"],
             "occupancy_source": state["occupancy_source"],
+            "vacancy_diagnostic": state["vacancy_diagnostic"],
+            "robot_eligibility": state["robot_eligibility"],
+            "assignment_available": state["assignment_available"],
+            "latest_scheduler_decision": state["latest_scheduler_decision"],
             "map_status": state["map_status"],
             "map_error": state["map_error"],
             "block_reason": state["block_reason"],
+            "legacy_deferral_review_needed": state["legacy_deferral_review_needed"],
             "desired_window_start": state["desired_window_start"].isoformat(),
             "desired_window_next_start": state["desired_window_next_start"].isoformat(),
             "unresolved_window_start": state["unresolved_window_start"].isoformat(),
@@ -245,6 +250,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "last_stage_outcome": state["last_stage_outcome"],
             "last_stage_reason": state["last_stage_reason"],
             "last_stage_at": state["last_stage_at"].isoformat() if state["last_stage_at"] else None,
+            "last_stage_summary": state["last_stage_summary"],
             "water_notification_episode": state["water_notification_episode"],
             "failure_code": failure.get("failure_code") if failure else None,
             "failure_summary": failure.get("failure_summary") if failure else None,
@@ -269,6 +275,10 @@ class _RoomLastCleanedSensor(AdaptiveEntity, SensorEntity):
         state = self.coordinator.room_state(self.area_id)
         return {
             **super().extra_state_attributes,
+            "last_cleaned_display": state["last_cleaned_display"],
+            "using_initial_cadence_baseline": state[
+                "using_initial_cadence_baseline"
+            ],
             "last_vacuum": state["last_vacuum"].isoformat() if state["last_vacuum"] else None,
             "last_mop": state["last_mop"].isoformat() if state["last_mop"] else None,
         }

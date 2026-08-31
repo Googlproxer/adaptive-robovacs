@@ -13,9 +13,11 @@ from .const import (
     DOMAIN,
     SERVICE_ACTIVATE_RETAINED_MAP,
     SERVICE_CAPTURE_MAP_SNAPSHOT,
+    SERVICE_CLEAR_LEGACY_DEFERRALS,
     SERVICE_CONFIRM_MAP_SELECTION,
     SERVICE_EVALUATE,
     SERVICE_LIST_RETAINED_MAPS,
+    SERVICE_LIST_LEGACY_DEFERRALS,
     SERVICE_MANUAL_CLEAN_ROOM,
     SERVICE_RECORD_MANUAL_CLEAN,
 )
@@ -83,6 +85,18 @@ async def async_register_services(hass: HomeAssistant) -> None:
         return await _coordinator(
             hass, call.data.get("entry_id")
         ).map_recovery.async_verify(call.data["robot_entity_id"], confirm=call.data["confirm"])
+
+    async def list_legacy_deferrals(call: ServiceCall) -> dict[str, Any]:
+        return {
+            "legacy_deferrals": _coordinator(
+                hass, call.data.get("entry_id")
+            ).legacy_deferral_report()
+        }
+
+    async def clear_legacy_deferrals(call: ServiceCall) -> dict[str, Any]:
+        return await _coordinator(
+            hass, call.data.get("entry_id")
+        ).async_clear_legacy_deferrals(list(call.data["area_ids"]))
 
     hass.services.async_register(
         DOMAIN,
@@ -157,6 +171,26 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 vol.Optional("mode", default="configured"): vol.In(
                     ["configured", "vacuum_only", "mop_only"]
                 ),
+                vol.Optional("entry_id"): str,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_LEGACY_DEFERRALS,
+        list_legacy_deferrals,
+        schema=vol.Schema({vol.Optional("entry_id"): str}),
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEAR_LEGACY_DEFERRALS,
+        clear_legacy_deferrals,
+        schema=vol.Schema(
+            {
+                vol.Required("area_ids"): vol.All(cv.ensure_list, [str]),
+                vol.Required("confirm"): vol.All(cv.boolean, vol.Equal(True)),
                 vol.Optional("entry_id"): str,
             }
         ),

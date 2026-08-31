@@ -10,6 +10,7 @@ from .models import manual_deferral
 if TYPE_CHECKING:
     from .coordinator import AdaptiveRoboVacCoordinator
 
+CANCELLATION_COOLDOWN = timedelta(minutes=15)
 
 def _iso(value: datetime) -> str:
     return value.isoformat()
@@ -61,8 +62,12 @@ class JobLifecycle:
                 next_due = coordinator._room_due(room, operation, completed_at)
                 deferred = manual_deferral(completed_at, next_due)
                 if deferred:
-                    detail.setdefault("defer", {})[operation] = _iso(deferred)
-                    detail.setdefault("defer", {})["cleaning"] = _iso(deferred)
+                    coordinator._set_room_deferral(
+                        room, operation, deferred, "manual_clean", completed_at
+                    )
+                    coordinator._set_room_deferral(
+                        room, "cleaning", deferred, "manual_clean", completed_at
+                    )
                     changed.append(f"{area_id}:{operation}")
         return changed
 
@@ -171,6 +176,7 @@ class JobLifecycle:
                 detail["last_stage_outcome"] = "completed"
                 detail["last_stage_reason"] = confidence
                 detail["last_stage_at"] = _iso(completion)
+                detail["last_stage_summary"] = f"{operation} completed"
                 occurrence_complete = occurrence["current_stage"] >= len(
                     occurrence["stages"]
                 )
@@ -237,28 +243,14 @@ class JobLifecycle:
             cancel_confirmation(robot_id)
 
     def rebase_cancelled_floor(self, robot_id: str, cancelled_at: datetime) -> list[str]:
-        """Rebase every enabled schedule on a physically cancelled robot's floor."""
+        """Cool down only the cancelled robot; never rewrite floor-room cadence."""
 
         coordinator = self._coordinator
-        robot = coordinator.discovery.robots.get(robot_id)
-        if not robot or not robot.floor_id:
+        if robot_id not in coordinator.discovery.robots:
             return []
-        from .models import rebase_due_times
-
-        floor_robots = [
-            candidate
-            for candidate in coordinator.discovery.robots.values()
-            if candidate.floor_id == robot.floor_id
-            and candidate.supports_area_clean
-            and coordinator._robot_settings(candidate).get("enabled", True)
-        ]
-        due_times: dict[str, datetime] = {}
-        for room in coordinator.discovery.rooms.values():
-            if room.floor_id != robot.floor_id or not coordinator._room_settings(room).get("enabled", True):
-                continue
-            due_times[f"{room.area_id}:cleaning"] = coordinator._room_due(room, "cleaning", cancelled_at)
-        rebased = rebase_due_times(due_times, cancelled_at + timedelta(hours=24))
-        for key, deferred_until in rebased.items():
-            area_id, operation = key.rsplit(":", maxsplit=1)
-            coordinator._room_data(area_id).setdefault("defer", {})[operation] = _iso(deferred_until)
-        return list(rebased)
+        coordinator.data.setdefault("robot_cooldowns", {})[robot_id] = {
+            "until": _iso(cancelled_at + CANCELLATION_COOLDOWN),
+            "cancelled_at": _iso(cancelled_at),
+            "reason": "physical_cancelled",
+        }
+        return []

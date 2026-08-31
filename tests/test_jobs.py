@@ -28,6 +28,7 @@ class _Coordinator:
     def __init__(self) -> None:
         self.data = {
             "active": {},
+            "robot_cooldowns": {},
             "manual_events": [],
             "recovery_events": [],
             "occurrences": {},
@@ -35,6 +36,9 @@ class _Coordinator:
             "water_notification_episodes": {},
         }
         self._rooms: dict[str, dict[str, object]] = {}
+        self.discovery = types.SimpleNamespace(
+            robots={"vacuum.alpha": types.SimpleNamespace()}
+        )
 
     def _room_data(self, area_id: str) -> dict[str, object]:
         return self._rooms.setdefault(area_id, {"duration_samples": []})
@@ -141,6 +145,20 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertEqual(len(coordinator._rooms["study"]["duration_samples"]), 1)
         self.assertEqual(coordinator.data["manual_events"][-1]["outcome"], "completed")
         self.assertNotIn("study", coordinator.data["occurrences"])
+
+    def test_physical_cancellation_cools_down_only_the_cancelled_robot(self) -> None:
+        coordinator = _Coordinator()
+        lifecycle = JobLifecycle(coordinator)
+        cancelled = datetime(2026, 8, 9, 9, 30, tzinfo=timezone.utc)
+
+        changed = lifecycle.rebase_cancelled_floor("vacuum.alpha", cancelled)
+
+        self.assertEqual(changed, [])
+        self.assertEqual(
+            coordinator.data["robot_cooldowns"]["vacuum.alpha"]["until"],
+            (cancelled + jobs_module.CANCELLATION_COOLDOWN).isoformat(),
+        )
+        self.assertEqual(coordinator._rooms, {})
 
 
 if __name__ == "__main__":

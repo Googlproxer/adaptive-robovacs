@@ -309,7 +309,12 @@ test("room card contains one selected room with simple controls before advanced 
   assert.equal(configuration.title, "Kitchen");
   assert.deepEqual(configuration.entities, [
     { entity: "sensor.kitchen_next_clean", name: "Next clean" },
-    { entity: "sensor.kitchen_last_cleaned", name: "Last cleaned" },
+    {
+      type: "attribute",
+      entity: "sensor.kitchen_last_cleaned",
+      attribute: "last_cleaned_display",
+      name: "Last cleaned",
+    },
     { entity: "sensor.kitchen_occupancy", name: "Occupancy" },
     { entity: "select.kitchen_cleaning_period", name: "Cleaning period" },
     { entity: "select.kitchen_cleaning_profile", name: "Cleaning profile" },

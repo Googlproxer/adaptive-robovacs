@@ -38,6 +38,10 @@ class Forecast:
     allowed: bool
     confidence: float
     reason: str
+    required_minutes: int = 0
+    clear_minutes: float | None = None
+    comparable_samples: int = 0
+    successful_samples: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1162,6 +1166,14 @@ def due_at(
     return max(baseline, deferred_until)
 
 
+def effective_cadence_anchor(
+    last_completed: datetime | None, first_scheduler_online: datetime | None
+) -> datetime | None:
+    """Prefer a real completion while retaining one hidden initial baseline."""
+
+    return last_completed or first_scheduler_online
+
+
 def format_time_until(due_at: datetime, now: datetime) -> str:
     """Return a concise remaining-time label using its largest whole unit."""
 
@@ -1175,6 +1187,30 @@ def format_time_until(due_at: datetime, now: datetime) -> str:
     return f"in {remaining_minutes} minute" if remaining_minutes == 1 else f"in {remaining_minutes} minutes"
 
 
+def format_last_cleaned_age(last_cleaned: datetime | None, now: datetime) -> str:
+    """Return precise elapsed time without changing a timestamp entity's state."""
+
+    if last_cleaned is None:
+        return "unknown"
+    elapsed_seconds = max(0, (now - last_cleaned).total_seconds())
+    elapsed_minutes = int(elapsed_seconds // 60)
+    if elapsed_minutes == 0:
+        return "just now"
+    if elapsed_minutes < 60:
+        return (
+            "1 minute ago"
+            if elapsed_minutes == 1
+            else f"{elapsed_minutes} minutes ago"
+        )
+    elapsed_hours = elapsed_minutes // 60
+    if elapsed_hours < 48:
+        return (
+            "1 hour ago" if elapsed_hours == 1 else f"{elapsed_hours} hours ago"
+        )
+    elapsed_days = elapsed_hours // 24
+    return "1 day ago" if elapsed_days == 1 else f"{elapsed_days} days ago"
+
+
 def forecast_vacancy(
     samples: Iterable[Mapping[str, object]],
     now: datetime,
@@ -1186,7 +1222,12 @@ def forecast_vacancy(
     """Return whether the current clear period is safe for a new clean."""
 
     if clear_since is None:
-        return Forecast(False, 0.0, "clear period has not started")
+        return Forecast(
+            False,
+            0.0,
+            "clear period has not started",
+            required_minutes=required_minutes,
+        )
 
     comparable: list[Mapping[str, object]] = []
     weekend = now.weekday() >= 5
@@ -1204,6 +1245,9 @@ def forecast_vacancy(
             clear_minutes >= required_minutes,
             0.0,
             f"waiting for {required_minutes} clear minutes",
+            required_minutes=required_minutes,
+            clear_minutes=clear_minutes,
+            comparable_samples=len(comparable),
         )
 
     successes = sum(float(sample.get("minutes", 0)) >= required_minutes for sample in comparable)
@@ -1212,6 +1256,10 @@ def forecast_vacancy(
         confidence >= confidence_percent / 100,
         confidence,
         f"{successes}/{len(comparable)} comparable vacancies",
+        required_minutes=required_minutes,
+        clear_minutes=clear_minutes,
+        comparable_samples=len(comparable),
+        successful_samples=successes,
     )
 
 

@@ -156,6 +156,31 @@ class CadenceTests(unittest.TestCase):
         )
         self.assertEqual(result, last_cleaned + timedelta(hours=48))
 
+    def test_hidden_initial_baseline_is_used_only_without_a_real_completion(self) -> None:
+        baseline = self.now - timedelta(hours=2)
+        completed = self.now - timedelta(hours=1)
+        self.assertEqual(
+            models.effective_cadence_anchor(None, baseline),
+            baseline,
+        )
+        self.assertEqual(
+            models.effective_cadence_anchor(completed, baseline),
+            completed,
+        )
+
+    def test_last_cleaned_display_keeps_sub_48_hour_ages_precise(self) -> None:
+        self.assertEqual(
+            models.format_last_cleaned_age(
+                self.now - timedelta(hours=47, minutes=59), self.now
+            ),
+            "47 hours ago",
+        )
+        self.assertEqual(
+            models.format_last_cleaned_age(self.now - timedelta(hours=48), self.now),
+            "2 days ago",
+        )
+        self.assertEqual(models.format_last_cleaned_age(None, self.now), "unknown")
+
     def test_time_until_uses_only_the_largest_whole_unit(self) -> None:
         self.assertEqual(
             models.format_time_until(
@@ -178,6 +203,8 @@ class CadenceTests(unittest.TestCase):
         )
         self.assertFalse(result.allowed)
         self.assertEqual(result.reason, "waiting for 30 clear minutes")
+        self.assertEqual(result.required_minutes, 30)
+        self.assertEqual(result.comparable_samples, 0)
         result = models.forecast_vacancy(
             [], self.now, self.now - timedelta(minutes=30), 30, 80, 6
         )

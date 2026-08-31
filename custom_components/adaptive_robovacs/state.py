@@ -35,7 +35,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 DAILY_WINDOW_VERSION = 1
 
 
@@ -679,11 +679,43 @@ class DurationSample:
 
 
 @dataclass(slots=True)
+class Deferral:
+    """One room-scoped, explainable cadence deferral."""
+
+    until: datetime
+    source: str = "legacy_unknown"
+    created_at: datetime | None = None
+    room_area_id: str | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> Deferral | None:
+        until = _timestamp(value.get("until", value.get("deferred_until")))
+        if until is None:
+            return None
+        return cls(
+            until=until,
+            source=str(value.get("source", "legacy_unknown")),
+            created_at=_timestamp(value.get("created_at")),
+            room_area_id=_optional_string(
+                value.get("room_area_id"), "deferral room_area_id"
+            ),
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "until": _iso(self.until),
+            "source": self.source,
+            "created_at": _iso(self.created_at),
+            "room_area_id": self.room_area_id,
+        }
+
+
+@dataclass(slots=True)
 class RoomHistory:
     cleaning_completed_at: datetime | None = None
     vacuum_completed_at: datetime | None = None
     mop_completed_at: datetime | None = None
-    deferrals: dict[str, datetime] = field(default_factory=dict)
+    deferrals: dict[str, Deferral] = field(default_factory=dict)
     occupancy: str = "unresolved"
     occupancy_source: str = "unavailable"
     unavailable_radars: int = 0
@@ -696,15 +728,28 @@ class RoomHistory:
     last_stage_outcome: str | None = None
     last_stage_reason: str | None = None
     last_stage_at: datetime | None = None
+    last_stage_summary: str | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> RoomHistory:
-        raw_deferrals = value.get("deferrals", value.get("defer", {}))
-        deferrals = {
-            key: parsed
-            for key, raw in _mapping_or_empty(raw_deferrals).items()
-            if isinstance(key, str) and (parsed := _timestamp(raw)) is not None
-        }
+        raw_deferrals = _mapping_or_empty(
+            value.get("deferrals", value.get("defer", {}))
+        )
+        raw_metadata = _mapping_or_empty(value.get("deferral_meta"))
+        deferrals: dict[str, Deferral] = {}
+        for key, raw in raw_deferrals.items():
+            if not isinstance(key, str):
+                continue
+            record = Deferral.from_mapping(raw) if isinstance(raw, Mapping) else None
+            metadata = raw_metadata.get(key)
+            if record is None and isinstance(metadata, Mapping):
+                merged = dict(metadata)
+                merged.setdefault("until", raw)
+                record = Deferral.from_mapping(merged)
+            if record is None and (until := _timestamp(raw)) is not None:
+                record = Deferral(until=until)
+            if record is not None:
+                deferrals[key] = record
         samples = [
             sample
             for item in value.get("occupancy_samples", value.get("samples", []))
@@ -729,11 +774,15 @@ class RoomHistory:
             )
         if "cleaning" not in deferrals:
             legacy_deferral = max(
-                (item for key, item in deferrals.items() if key in {"vacuum", "mop"}),
+                (
+                    item.until
+                    for key, item in deferrals.items()
+                    if key in {"vacuum", "mop"}
+                ),
                 default=None,
             )
             if legacy_deferral:
-                deferrals["cleaning"] = legacy_deferral
+                deferrals["cleaning"] = Deferral(until=legacy_deferral)
         return cls(
             cleaning_completed_at=cleaning_completed,
             vacuum_completed_at=vacuum_completed,
@@ -751,6 +800,7 @@ class RoomHistory:
             last_stage_outcome=_string(value.get("last_stage_outcome")),
             last_stage_reason=_string(value.get("last_stage_reason")),
             last_stage_at=_timestamp(value.get("last_stage_at")),
+            last_stage_summary=_string(value.get("last_stage_summary")),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -758,7 +808,14 @@ class RoomHistory:
             "cleaning_completed_at": _iso(self.cleaning_completed_at),
             "vacuum_completed_at": _iso(self.vacuum_completed_at),
             "mop_completed_at": _iso(self.mop_completed_at),
-            "deferrals": {key: _iso(value) for key, value in self.deferrals.items()},
+            "deferrals": {
+                key: (
+                    value.to_store()
+                    if isinstance(value, Deferral)
+                    else Deferral(until=value).to_store()
+                )
+                for key, value in self.deferrals.items()
+            },
             "occupancy": self.occupancy,
             "occupancy_source": self.occupancy_source,
             "unavailable_radars": self.unavailable_radars,
@@ -771,6 +828,7 @@ class RoomHistory:
             "last_stage_outcome": self.last_stage_outcome,
             "last_stage_reason": self.last_stage_reason,
             "last_stage_at": _iso(self.last_stage_at),
+            "last_stage_summary": self.last_stage_summary,
         }
 
 
@@ -1176,6 +1234,34 @@ class RobotHold:
 
 
 @dataclass(slots=True)
+class RobotCooldown:
+    """A short post-cancellation robot hold that leaves room cadence intact."""
+
+    until: datetime
+    cancelled_at: datetime
+    reason: str = "physical_cancelled"
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> RobotCooldown | None:
+        until = _timestamp(value.get("until"))
+        cancelled_at = _timestamp(value.get("cancelled_at"))
+        if until is None or cancelled_at is None:
+            return None
+        return cls(
+            until=until,
+            cancelled_at=cancelled_at,
+            reason=str(value.get("reason", "physical_cancelled")),
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "until": _iso(self.until),
+            "cancelled_at": _iso(self.cancelled_at),
+            "reason": self.reason,
+        }
+
+
+@dataclass(slots=True)
 class EvaluationState:
     last_evaluation_at: datetime | None = None
     last_preview: dict[str, Any] = field(default_factory=dict)
@@ -1199,12 +1285,14 @@ class EvaluationState:
 class AuditState:
     manual_events: list[dict[str, Any]] = field(default_factory=list)
     recovery_events: list[dict[str, Any]] = field(default_factory=list)
+    room_decisions: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> AuditState:
         return cls(
             manual_events=_event_list(value.get("manual_events")),
             recovery_events=_event_list(value.get("recovery_events")),
+            room_decisions=_event_list(value.get("room_decisions")),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -1220,6 +1308,7 @@ class SchedulerState:
     room_history: dict[str, RoomHistory] = field(default_factory=dict)
     active_jobs: dict[str, ActiveJob | None] = field(default_factory=dict)
     robot_holds: dict[str, RobotHold] = field(default_factory=dict)
+    robot_cooldowns: dict[str, RobotCooldown] = field(default_factory=dict)
     audit: AuditState = field(default_factory=AuditState)
     evaluation: EvaluationState = field(default_factory=EvaluationState)
     robot_faults: dict[str, SchedulerFault] = field(default_factory=dict)
@@ -1227,6 +1316,7 @@ class SchedulerState:
     occurrences: dict[str, CleaningOccurrence] = field(default_factory=dict)
     water_confirmations: dict[str, WaterConfirmation] = field(default_factory=dict)
     water_notification_episodes: dict[str, WaterNotificationEpisode] = field(default_factory=dict)
+    first_scheduler_online_at: datetime | None = None
 
     @classmethod
     def create(cls, entry_data: Mapping[str, object]) -> SchedulerState:
@@ -1236,7 +1326,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v12 or convert older shapes, returning whether a save is required."""
+        """Load v13 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -1244,7 +1334,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10, 11}:
+        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -1299,9 +1389,19 @@ class SchedulerState:
                 and isinstance(value, Mapping)
                 and (hold := RobotHold.from_mapping(value)) is not None
             },
+            robot_cooldowns={
+                entity_id: cooldown
+                for entity_id, value in _mapping_or_empty(
+                    data.get("robot_cooldowns")
+                ).items()
+                if isinstance(entity_id, str)
+                and isinstance(value, Mapping)
+                and (cooldown := RobotCooldown.from_mapping(value)) is not None
+            },
             audit=AuditState(
                 manual_events=_event_list(data.get("manual_events")),
                 recovery_events=_event_list(data.get("recovery_events")),
+                room_decisions=_event_list(data.get("room_decisions")),
             ),
             evaluation=EvaluationState.from_mapping(data),
             robot_faults={
@@ -1349,6 +1449,7 @@ class SchedulerState:
                 if isinstance(area_id, str) and isinstance(value, Mapping)
                 and (episode := WaterNotificationEpisode.from_mapping(value)) is not None
             },
+            first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
         )
 
     @classmethod
@@ -1361,18 +1462,19 @@ class SchedulerState:
         raw_robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
         raw_robot_aliases = (
             _mapping(data.get("robot_entity_aliases"), "robot_entity_aliases")
-            if data.get("schema_version") in {10, 11, SCHEMA_VERSION}
+            if data.get("schema_version") in {10, 11, 12, SCHEMA_VERSION}
             else _mapping_or_empty(data.get("robot_entity_aliases"))
         )
         raw_history = _mapping(data.get("room_history"), "room_history")
         raw_active = _mapping(data.get("active_jobs"), "active_jobs")
         raw_holds = _mapping(data.get("robot_holds"), "robot_holds")
+        raw_cooldowns = _mapping_or_empty(data.get("robot_cooldowns"))
         raw_audit = _mapping(data.get("audit"), "audit")
         raw_evaluation = _mapping(data.get("evaluation"), "evaluation")
         raw_occurrences = _mapping_or_empty(data.get("occurrences"))
         raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
-        if data.get("schema_version") in {10, 11, SCHEMA_VERSION}:
+        if data.get("schema_version") in {10, 11, 12, SCHEMA_VERSION}:
             raw_robot_faults = _mapping(data.get("robot_faults"), "robot_faults")
             raw_room_faults = _mapping(data.get("room_faults"), "room_faults")
         else:
@@ -1416,6 +1518,13 @@ class SchedulerState:
                 and isinstance(value, Mapping)
                 and (hold := RobotHold.from_mapping(value)) is not None
             },
+            robot_cooldowns={
+                entity_id: cooldown
+                for entity_id, value in raw_cooldowns.items()
+                if isinstance(entity_id, str)
+                and isinstance(value, Mapping)
+                and (cooldown := RobotCooldown.from_mapping(value)) is not None
+            },
             audit=AuditState.from_mapping(raw_audit),
             evaluation=EvaluationState.from_mapping(raw_evaluation),
             robot_faults={
@@ -1457,6 +1566,7 @@ class SchedulerState:
                 if isinstance(area_id, str) and isinstance(value, Mapping)
                 and (episode := WaterNotificationEpisode.from_mapping(value)) is not None
             },
+            first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
         )
 
     def ensure_room(self, area_id: str, is_bedroom: bool) -> tuple[RoomSettings, RoomHistory]:
@@ -1490,6 +1600,10 @@ class SchedulerState:
             "robot_holds": {
                 entity_id: hold.to_store() for entity_id, hold in self.robot_holds.items()
             },
+            "robot_cooldowns": {
+                entity_id: cooldown.to_store()
+                for entity_id, cooldown in self.robot_cooldowns.items()
+            },
             "audit": self.audit.to_store(),
             "evaluation": self.evaluation.to_store(),
             "robot_faults": {
@@ -1513,13 +1627,14 @@ class SchedulerState:
                 area_id: episode.to_store()
                 for area_id, episode in self.water_notification_episodes.items()
             },
+            "first_scheduler_online_at": _iso(self.first_scheduler_online_at),
         }
 
     def to_runtime_data(self) -> dict[str, Any]:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v12 codec, and platform entities use
+        persistent I/O stays on the typed v13 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 
@@ -1548,7 +1663,19 @@ class SchedulerState:
                     "vacuum": _iso(history.vacuum_completed_at),
                     "mop": _iso(history.mop_completed_at),
                     "defer": {
-                        operation: _iso(deferred)
+                        operation: _iso(
+                            deferred.until
+                            if isinstance(deferred, Deferral)
+                            else deferred
+                        )
+                        for operation, deferred in history.deferrals.items()
+                    },
+                    "deferral_meta": {
+                        operation: (
+                            deferred.to_store()
+                            if isinstance(deferred, Deferral)
+                            else Deferral(until=deferred).to_store()
+                        )
                         for operation, deferred in history.deferrals.items()
                     },
                     "occupancy": history.occupancy,
@@ -1563,6 +1690,7 @@ class SchedulerState:
                     "last_stage_outcome": history.last_stage_outcome,
                     "last_stage_reason": history.last_stage_reason,
                     "last_stage_at": _iso(history.last_stage_at),
+                    "last_stage_summary": history.last_stage_summary,
                 }
                 for area_id, history in self.room_history.items()
             },
@@ -1572,6 +1700,10 @@ class SchedulerState:
             },
             "robot_holds": {
                 entity_id: hold.to_store() for entity_id, hold in self.robot_holds.items()
+            },
+            "robot_cooldowns": {
+                entity_id: cooldown.to_store()
+                for entity_id, cooldown in self.robot_cooldowns.items()
             },
             "manual_events": self.audit.manual_events,
             "recovery_events": self.audit.recovery_events,
@@ -1598,6 +1730,8 @@ class SchedulerState:
                 area_id: episode.to_store()
                 for area_id, episode in self.water_notification_episodes.items()
             },
+            "first_scheduler_online_at": _iso(self.first_scheduler_online_at),
+            "room_decisions": self.audit.room_decisions,
         }
 
 

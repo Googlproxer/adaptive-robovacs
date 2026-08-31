@@ -13,6 +13,7 @@ from .models import (
     next_usable_window_start,
     next_window_start,
     cleaning_profile_sources,
+    format_last_cleaned_age,
     requested_cleaning_profile,
     resolve_cleaning_profile,
     stage_pass_count,
@@ -54,6 +55,29 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
     )
     next_due = coordinator._room_due(room, "cleaning", now)
     candidate, reason = coordinator._room_candidate(room, now)
+    raw_robot_eligibility = (
+        coordinator._candidate_robot_diagnostics(candidate) if candidate else []
+    )
+    robot_eligibility = [
+        {
+            key: value
+            for key, value in diagnostic.items()
+            if key != "candidate"
+        }
+        for diagnostic in raw_robot_eligibility
+    ]
+    assignment_available = any(
+        diagnostic["eligible"] for diagnostic in raw_robot_eligibility
+    )
+    if candidate and not assignment_available:
+        reason = next(
+            (
+                str(diagnostic["reason"])
+                for diagnostic in raw_robot_eligibility
+                if diagnostic.get("reason")
+            ),
+            "no ready compatible robot",
+        )
     active_robot_id, active = next(
         (
             (robot_id, job)
@@ -76,6 +100,18 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         coordinator.robot_registry_id(active_robot_id) if active_robot_id else None,
     )
     last_cleaned = _as_datetime(detail.get("cleaning"))
+    latest_decision = next(
+        (
+            dict(item)
+            for item in reversed(coordinator.data.get("room_decisions", []))
+            if item.get("room_area_id") == area_id
+        ),
+        None,
+    )
+    vacancy_diagnostic = coordinator._vacancy_diagnostic(
+        room, now, duration_minutes
+    )
+    deferral_metadata = detail.get("deferral_meta", {}).get("cleaning")
     occurrence = coordinator.data.get("occurrences", {}).get(area_id)
     confirmation = (
         coordinator.data.get("water_confirmations", {}).get(str(occurrence.get("occurrence_id")))
@@ -206,6 +242,11 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "occupancy_source": detail["source"],
         "unavailable_radars": detail["unavailable_radars"],
         "last_cleaned": last_cleaned,
+        "last_cleaned_display": format_last_cleaned_age(last_cleaned, now),
+        "using_initial_cadence_baseline": bool(
+            last_cleaned is None
+            and coordinator.data.get("first_scheduler_online_at")
+        ),
         "last_vacuum": _as_datetime(detail.get("vacuum")),
         "last_mop": _as_datetime(detail.get("mop")),
         "vacuum_due": next_due,
@@ -214,13 +255,21 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "desired_window_start": desired_window_start,
         "desired_window_next_start": desired_window_start,
         "unresolved_window_start": desired_window_start,
-        "next_candidate": candidate,
+        "next_candidate": candidate if assignment_available else None,
+        "assignment_available": assignment_available,
+        "robot_eligibility": robot_eligibility,
         "active": active,
         "active_robot": active_robot_id,
         "active_robot_state": active_robot_state,
         "effective_duration_minutes": duration_minutes,
         "duration_sample_count": duration_sample_count,
         "block_reason": reason,
+        "vacancy_diagnostic": vacancy_diagnostic,
+        "latest_scheduler_decision": latest_decision,
+        "legacy_deferral_review_needed": bool(
+            isinstance(deferral_metadata, dict)
+            and deferral_metadata.get("source") == "legacy_unknown"
+        ),
         "map_status": detail.get("map_status", "unknown"),
         "map_error": detail.get("map_error"),
         "occurrence": occurrence_view,
@@ -228,6 +277,7 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "last_stage_outcome": detail.get("last_stage_outcome"),
         "last_stage_reason": detail.get("last_stage_reason"),
         "last_stage_at": _as_datetime(detail.get("last_stage_at")),
+        "last_stage_summary": detail.get("last_stage_summary"),
         "water_notification_episode": (
             {
                 key: episode.get(key)

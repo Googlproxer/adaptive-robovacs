@@ -57,6 +57,7 @@ from .models import (
     cleaning_profile_is_supported,
     cleaning_profile_sources,
     desired_window_allows,
+    effective_cadence_anchor,
     native_mop_profile_default_migration,
     due_at,
     forecast_vacancy,
@@ -66,7 +67,6 @@ from .models import (
     learned_duration_minutes,
     manual_clean_robot_is_docked,
     map_recovery_hold_is_manual,
-    manual_deferral,
     mop_stage_start_is_observed,
     managed_clean_duration_failed,
     pending_completion_is_docked,
@@ -80,7 +80,6 @@ from .models import (
     requested_cleaning_profile,
     parse_manual_clean_request,
     offline_held_recovery_outcome,
-    rebase_due_times,
     recovery_transition_is_observed,
     resolve_occupancy,
     effective_cleaning_program,
@@ -108,6 +107,7 @@ from .repairs_manager import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+ROOM_DECISION_LIMIT = 100
 
 type EntityListener = Callable[[], None]
 
@@ -142,6 +142,7 @@ def _blank_room() -> dict[str, Any]:
         "mop": None,
         "cleaning": None,
         "defer": {},
+        "deferral_meta": {},
         "occupancy": "unresolved",
         "source": "unavailable",
         "unavailable_radars": 0,
@@ -154,6 +155,7 @@ def _blank_room() -> dict[str, Any]:
         "last_stage_outcome": None,
         "last_stage_reason": None,
         "last_stage_at": None,
+        "last_stage_summary": None,
     }
 
 
@@ -172,6 +174,7 @@ def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
         "rooms": {},
         "active": {},
         "robot_holds": {},
+        "robot_cooldowns": {},
         "manual_events": [],
         "recovery_events": [],
         "last_evaluation": None,
@@ -181,6 +184,8 @@ def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
         "occurrences": {},
         "water_confirmations": {},
         "water_notification_episodes": {},
+        "first_scheduler_online_at": None,
+        "room_decisions": [],
     }
 
 
@@ -235,7 +240,11 @@ class AdaptiveRoboVacCoordinator:
 
         await self.async_refresh_discovery()
         await self.map_recovery.async_initialize()
-        if migrated or self._identity_migrated:
+        baseline_initialized = False
+        if not self.data.get("first_scheduler_online_at"):
+            self.data["first_scheduler_online_at"] = _iso(_now())
+            baseline_initialized = True
+        if migrated or self._identity_migrated or baseline_initialized:
             await self._async_save()
         if self.data.get("robot_faults") or self.data.get("room_faults"):
             async_sync_dispatch_fault_issues(self)
@@ -2047,6 +2056,15 @@ class AdaptiveRoboVacCoordinator:
         except (TypeError, ValueError):
             return None
 
+    def _expire_robot_cooldowns(self, now: datetime) -> None:
+        """Drop elapsed robot-only cancellation cooldowns before evaluation."""
+
+        cooldowns = self.data.setdefault("robot_cooldowns", {})
+        for robot_id, cooldown in list(cooldowns.items()):
+            until = _as_datetime(cooldown.get("until")) if isinstance(cooldown, Mapping) else None
+            if until is None or until <= now:
+                cooldowns.pop(robot_id, None)
+
     def _robot_technically_ready(
         self, robot: DiscoveredRobot, *, ignore_scheduler_fault: bool = False
     ) -> tuple[bool, str]:
@@ -2062,6 +2080,14 @@ class AdaptiveRoboVacCoordinator:
             return False, "robot disabled"
         if not robot.supports_area_clean:
             return False, "does not support Home Assistant area cleaning"
+        cooldown = self.data.get("robot_cooldowns", {}).get(robot.entity_id)
+        cooldown_until = (
+            _as_datetime(cooldown.get("until"))
+            if isinstance(cooldown, Mapping)
+            else None
+        )
+        if cooldown_until and cooldown_until > _now():
+            return False, "cooling down after physical cancellation"
         hold = self.data["robot_holds"].get(robot.entity_id)
         if hold:
             if hold.get("phase") == "cancelling":
@@ -2179,16 +2205,59 @@ class AdaptiveRoboVacCoordinator:
 
         return "mop" in robot.adapter_capabilities.supported_operations
 
+    def _room_deferral(
+        self, room: DiscoveredRoom, operation: str
+    ) -> datetime | None:
+        """Return only a room-scoped, recognised deferral."""
+
+        detail = self._room_data(room.area_id)
+        deferred = _as_datetime(detail.get("defer", {}).get(operation))
+        if deferred is None:
+            return None
+        metadata = detail.get("deferral_meta", {}).get(operation)
+        if not isinstance(metadata, Mapping):
+            return deferred
+        target = metadata.get("room_area_id")
+        source = metadata.get("source")
+        if target not in {None, room.area_id}:
+            return None
+        if source not in {"manual_clean", "affected_cancellation", "legacy_unknown"}:
+            return None
+        return deferred
+
+    def _set_room_deferral(
+        self,
+        room: DiscoveredRoom,
+        operation: str,
+        deferred_until: datetime,
+        source: str,
+        created_at: datetime,
+    ) -> None:
+        """Persist an explainable deferral for exactly one room."""
+
+        detail = self._room_data(room.area_id)
+        detail.setdefault("defer", {})[operation] = _iso(deferred_until)
+        detail.setdefault("deferral_meta", {})[operation] = {
+            "until": _iso(deferred_until),
+            "source": source,
+            "created_at": _iso(created_at),
+            "room_area_id": room.area_id,
+        }
+
     def _room_due(
         self, room: DiscoveredRoom, operation: str, now: datetime
     ) -> datetime:
         del operation
         detail = self._room_data(room.area_id)
         settings = self._room_settings(room)
-        return due_at(
+        effective_completed = effective_cadence_anchor(
             _as_datetime(detail.get("cleaning")),
+            _as_datetime(self.data.get("first_scheduler_online_at")),
+        )
+        return due_at(
+            effective_completed,
             float(settings["cleaning_interval"]),
-            _as_datetime(detail.get("defer", {}).get("cleaning")),
+            self._room_deferral(room, "cleaning"),
             now,
         )
 
@@ -2228,6 +2297,70 @@ class AdaptiveRoboVacCoordinator:
             float(self.data.get("forecast_confidence", DEFAULT_FORECAST_CONFIDENCE)),
             FALLBACK_SAMPLE_COUNT,
         )
+
+    def _vacancy_diagnostic(
+        self, room: DiscoveredRoom, now: datetime, duration_minutes: float
+    ) -> dict[str, Any]:
+        """Expose safe vacancy evidence without exposing raw occupancy payloads."""
+
+        detail = self._room_data(room.area_id)
+        forecast = self._forecast(room, now, duration_minutes)
+        return {
+            "occupancy_source": detail.get("source"),
+            "unoccupied_since": detail.get("unoccupied_since"),
+            "required_clear_minutes": forecast.required_minutes,
+            "clear_minutes": round(forecast.clear_minutes, 1)
+            if forecast.clear_minutes is not None
+            else None,
+            "forecast_confidence": forecast.confidence,
+            "comparable_sample_count": forecast.comparable_samples,
+            "successful_sample_count": forecast.successful_samples,
+            "reason": forecast.reason,
+            "allowed": forecast.allowed,
+        }
+
+    def _record_room_decision(
+        self,
+        room: DiscoveredRoom,
+        reason: str,
+        now: datetime,
+        duration_minutes: float,
+    ) -> None:
+        """Keep a bounded, safe audit when an eligibility outcome changes."""
+
+        decisions = self.data.setdefault("room_decisions", [])
+        diagnostic = self._vacancy_diagnostic(room, now, duration_minutes)
+        event = {
+            "at": _iso(now),
+            "room_area_id": room.area_id,
+            "reason": reason,
+            "occupancy_source": diagnostic["occupancy_source"],
+            "required_clear_minutes": diagnostic["required_clear_minutes"],
+            "clear_minutes": diagnostic["clear_minutes"],
+            "forecast_confidence": diagnostic["forecast_confidence"],
+            "comparable_sample_count": diagnostic["comparable_sample_count"],
+            "forecast_reason": diagnostic["reason"],
+        }
+        previous = next(
+            (
+                item
+                for item in reversed(decisions)
+                if item.get("room_area_id") == room.area_id
+            ),
+            None,
+        )
+        if previous and all(
+            previous.get(key) == event.get(key)
+            for key in (
+                "reason",
+                "occupancy_source",
+                "required_clear_minutes",
+                "forecast_reason",
+            )
+        ):
+            return
+        decisions.append(event)
+        self.data["room_decisions"] = decisions[-ROOM_DECISION_LIMIT:]
 
     def _hall_allowed(self, now: datetime) -> tuple[bool, str]:
         if not in_daytime_window(
@@ -2400,10 +2533,10 @@ class AdaptiveRoboVacCoordinator:
             "bypass_desired_window": bypass_desired_window,
         }, "ready"
 
-    def _candidate_for_robot(
+    def _resolve_candidate_for_robot(
         self, candidate: dict[str, Any], robot: DiscoveredRobot
-    ) -> dict[str, Any] | None:
-        """Resolve immutable ordered stages for one compatible robot."""
+    ) -> tuple[dict[str, Any] | None, str]:
+        """Resolve one robot candidate and retain a safe rejection reason."""
 
         room: DiscoveredRoom = candidate["room"]
         occurrence = candidate.get("occurrence")
@@ -2412,16 +2545,16 @@ class AdaptiveRoboVacCoordinator:
                 not candidate.get("manual_override")
                 and occurrence.get("robot_registry_id") != robot.registry_id
             ):
-                return None
+                return None, "occurrence assigned to another robot"
             stage_index = int(occurrence.get("current_stage", 0))
             stages = occurrence.get("stages", [])
             if stage_index >= len(stages):
-                return None
+                return None, "occurrence is complete"
             stage = stages[stage_index]
             operation = str(stage.get("operation"))
             passes = int(stage.get("passes", 1))
             if not robot.adapter_capabilities.supports(operation, passes):
-                return None
+                return None, "robot does not support the scheduled stage"
             resolved_profile = stage.get("cleaning_profile")
             if not isinstance(resolved_profile, dict) or not resolved_profile:
                 resolved = resolve_cleaning_profile(
@@ -2431,12 +2564,12 @@ class AdaptiveRoboVacCoordinator:
                     robot.adapter_capabilities,
                 )
                 if resolved is None:
-                    return None
+                    return None, "cleaning profile is not compatible"
                 resolved_profile = resolved.to_mapping()
             elif not cleaning_profile_is_supported(
                 resolved_profile, robot.adapter_capabilities
             ):
-                return None
+                return None, "stored cleaning profile is not compatible"
             duration, count = self._effective_duration(
                 room, operation, passes, robot.registry_id
             )
@@ -2452,7 +2585,7 @@ class AdaptiveRoboVacCoordinator:
                 )
             )
             if not forecast.allowed:
-                return None
+                return None, forecast.reason
             return {
                 **candidate,
                 "operation": operation,
@@ -2470,7 +2603,12 @@ class AdaptiveRoboVacCoordinator:
                 "source": occurrence.get("source", "scheduler"),
                 "manual_mode": occurrence.get("manual_mode"),
                 "manual_context_id": occurrence.get("manual_context_id"),
-            }
+                "vacancy_diagnostic": self._vacancy_diagnostic(
+                    room,
+                    candidate.get("evaluated_at") or _now(),
+                    duration,
+                ),
+            }, "eligible"
 
         room_settings = self._room_settings(room)
         robot_settings = self._robot_settings(robot)
@@ -2487,7 +2625,7 @@ class AdaptiveRoboVacCoordinator:
         )
         operations = expand_cleaning_program(program or "")
         if not operations:
-            return None
+            return None, "cleaning program is not configured"
         stages: list[dict[str, Any]] = []
         for operation in operations:
             passes = stage_pass_count(
@@ -2499,7 +2637,7 @@ class AdaptiveRoboVacCoordinator:
                 robot.adapter_capabilities,
             )
             if passes is None or not robot.adapter_capabilities.supports(operation, passes):
-                return None
+                return None, "robot does not support the requested passes"
             resolved_profile = resolve_cleaning_profile(
                 operation,
                 room_settings,
@@ -2507,7 +2645,7 @@ class AdaptiveRoboVacCoordinator:
                 robot.adapter_capabilities,
             )
             if resolved_profile is None:
-                return None
+                return None, "cleaning profile is not compatible"
             stages.append(
                 {
                     "operation": operation,
@@ -2540,7 +2678,7 @@ class AdaptiveRoboVacCoordinator:
             )
         )
         if not forecast.allowed:
-            return None
+            return None, forecast.reason
         return {
             **candidate,
             "operation": operation,
@@ -2558,7 +2696,61 @@ class AdaptiveRoboVacCoordinator:
             "source": candidate.get("source", "scheduler"),
             "manual_mode": manual_mode,
             "manual_context_id": candidate.get("manual_context_id"),
-        }
+            "vacancy_diagnostic": self._vacancy_diagnostic(
+                room,
+                candidate.get("evaluated_at") or _now(),
+                duration,
+            ),
+        }, "eligible"
+
+    def _candidate_for_robot(
+        self, candidate: dict[str, Any], robot: DiscoveredRobot
+    ) -> dict[str, Any] | None:
+        """Return the resolved candidate for callers that do not need a reason."""
+
+        resolved, _reason = self._resolve_candidate_for_robot(candidate, robot)
+        return resolved
+
+    def _candidate_robot_diagnostics(
+        self,
+        candidate: dict[str, Any],
+        readiness: Mapping[str, tuple[bool, str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return safe per-robot eligibility for preview and room diagnostics."""
+
+        room: DiscoveredRoom = candidate["room"]
+        diagnostics: list[dict[str, Any]] = []
+        for robot in self.discovery.robots.values():
+            if robot.floor_id != room.floor_id:
+                continue
+            ready, ready_reason = (
+                readiness.get(robot.entity_id, self._robot_ready(robot))
+                if readiness is not None
+                else self._robot_ready(robot)
+            )
+            if candidate.get("manual_override"):
+                ready, ready_reason = self._manual_robot_ready(robot)
+            if not ready:
+                diagnostics.append(
+                    {
+                        "robot_entity_id": robot.entity_id,
+                        "robot_name": robot.name,
+                        "eligible": False,
+                        "reason": ready_reason,
+                    }
+                )
+                continue
+            resolved, reason = self._resolve_candidate_for_robot(candidate, robot)
+            diagnostics.append(
+                {
+                    "robot_entity_id": robot.entity_id,
+                    "robot_name": robot.name,
+                    "eligible": resolved is not None,
+                    "reason": reason,
+                    "candidate": resolved,
+                }
+            )
+        return diagnostics
 
     async def _async_refresh_pending_profile_if_needed(
         self, robot: DiscoveredRobot, candidate: dict[str, Any]
@@ -2639,6 +2831,21 @@ class AdaptiveRoboVacCoordinator:
         detail["last_stage_outcome"] = outcome
         detail["last_stage_reason"] = reason
         detail["last_stage_at"] = _iso(when)
+        if stage.get("operation") == "mop" and outcome == "skipped_no_water":
+            vacuum_completed = any(
+                item.get("operation") == "vacuum"
+                and item.get("status") == "completed"
+                for item in stages
+            )
+            detail["last_stage_summary"] = (
+                "vacuum completed; mop skipped for water"
+                if vacuum_completed
+                else "mop skipped for water"
+            )
+        else:
+            detail["last_stage_summary"] = (
+                f"{stage.get('operation', 'cleaning')} {outcome.replace('_', ' ')}"
+            )
         if int(occurrence["current_stage"]) >= len(stages):
             if occurrence.get("source") == "manual_dashboard":
                 if any(item.get("status") == "completed" for item in stages):
@@ -3275,6 +3482,59 @@ class AdaptiveRoboVacCoordinator:
     def _record_manual_event(self, event: dict[str, Any]) -> None:
         self.jobs.record_manual_event(event)
 
+    def legacy_deferral_report(self) -> list[dict[str, Any]]:
+        """Return reviewable room deferrals whose source predates provenance."""
+
+        report: list[dict[str, Any]] = []
+        for room in self.discovery.rooms.values():
+            detail = self._room_data(room.area_id)
+            operations = [
+                {
+                    "operation": operation,
+                    "until": deferred,
+                }
+                for operation, deferred in detail.get("defer", {}).items()
+                if isinstance(
+                    detail.get("deferral_meta", {}).get(operation), Mapping
+                )
+                and detail["deferral_meta"][operation].get("source")
+                == "legacy_unknown"
+            ]
+            if operations:
+                report.append(
+                    {
+                        "area_id": room.area_id,
+                        "room": room.name,
+                        "operations": operations,
+                    }
+                )
+        return report
+
+    async def async_clear_legacy_deferrals(
+        self, area_ids: list[str]
+    ) -> dict[str, Any]:
+        """Clear only user-selected legacy deferrals and never dispatch work."""
+
+        cleared: list[str] = []
+        async with self._lock:
+            for area_id in area_ids:
+                if area_id not in self.discovery.rooms:
+                    continue
+                detail = self._room_data(area_id)
+                metadata = detail.get("deferral_meta", {})
+                for operation, record in list(metadata.items()):
+                    if not isinstance(record, Mapping):
+                        continue
+                    if record.get("source") != "legacy_unknown":
+                        continue
+                    metadata.pop(operation, None)
+                    detail.get("defer", {}).pop(operation, None)
+                    cleared.append(f"{area_id}:{operation}")
+            if cleared:
+                await self._async_save()
+                self._notify_listeners()
+        return {"cleared": cleared, "dispatch_started": False}
+
     async def async_evaluate(
         self,
         dry_run: bool = False,
@@ -3296,6 +3556,7 @@ class AdaptiveRoboVacCoordinator:
                 }
             now = _now()
             await self.async_refresh_discovery(notify=False)
+            self._expire_robot_cooldowns(now)
             self._observe_occupancy(now)
             await self._async_reconcile_jobs(now, transition)
             self._refresh_robot_readiness(now)
@@ -3307,6 +3568,13 @@ class AdaptiveRoboVacCoordinator:
                     candidates.append(candidate)
                 else:
                     reasons[room.area_id] = block_reason
+                    if self._room_settings(room).get("enabled", True):
+                        self._record_room_decision(
+                            room,
+                            block_reason,
+                            now,
+                            float(self._room_settings(room)["expected_minutes"]),
+                        )
             candidates.sort(
                 key=lambda candidate: (
                     (now - candidate["due_at"]).total_seconds(),
@@ -3323,21 +3591,42 @@ class AdaptiveRoboVacCoordinator:
             used_robots: set[str] = set()
             for candidate in candidates:
                 room: DiscoveredRoom = candidate["room"]
+                diagnostics = self._candidate_robot_diagnostics(candidate, robot_ready)
+                candidate["robot_eligibility"] = [
+                    {
+                        key: value
+                        for key, value in diagnostic.items()
+                        if key != "candidate"
+                    }
+                    for diagnostic in diagnostics
+                ]
                 resolved = [
-                    (robot, resolved_candidate)
-                    for robot in self.discovery.robots.values()
-                    if robot.floor_id == room.floor_id
-                    and robot.entity_id not in used_robots
-                    and (
-                        self._manual_robot_ready(robot)[0]
-                        if candidate.get("manual_override")
-                        else robot_ready[robot.entity_id][0]
+                    (
+                        self.discovery.robots[diagnostic["robot_entity_id"]],
+                        diagnostic["candidate"],
                     )
-                    and (resolved_candidate := self._candidate_for_robot(candidate, robot))
-                    is not None
+                    for diagnostic in diagnostics
+                    if diagnostic["eligible"]
+                    and diagnostic["robot_entity_id"] not in used_robots
+                    and diagnostic.get("candidate") is not None
                 ]
                 if not resolved:
-                    reasons.setdefault(room.area_id, "no ready compatible robot")
+                    rejection = next(
+                        (
+                            str(diagnostic["reason"])
+                            for diagnostic in diagnostics
+                            if diagnostic.get("reason")
+                        ),
+                        "no ready compatible robot",
+                    )
+                    candidate["reason"] = rejection
+                    reasons.setdefault(room.area_id, rejection)
+                    self._record_room_decision(
+                        room,
+                        rejection,
+                        now,
+                        float(candidate["duration_minutes"]),
+                    )
                     continue
                 resolved.sort(
                     key=lambda item: (
@@ -3346,9 +3635,20 @@ class AdaptiveRoboVacCoordinator:
                     ),
                     reverse=True,
                 )
-                robot, candidate = resolved[0]
-                assignments.append((robot, candidate))
+                robot, resolved_candidate = resolved[0]
+                candidate["confidence"] = resolved_candidate["confidence"]
+                candidate["reason"] = resolved_candidate["reason"]
+                candidate["vacancy_diagnostic"] = resolved_candidate[
+                    "vacancy_diagnostic"
+                ]
+                assignments.append((robot, resolved_candidate))
                 used_robots.add(robot.entity_id)
+                self._record_room_decision(
+                    room,
+                    f"assigned to compatible robot",
+                    now,
+                    float(resolved_candidate["duration_minutes"]),
+                )
 
             preview = {
                 "at": _iso(now),
@@ -3369,6 +3669,11 @@ class AdaptiveRoboVacCoordinator:
                         "confidence": item["confidence"],
                         "basis": item["reason"],
                         "passes": item["passes"],
+                        "eligible": any(
+                            decision["eligible"]
+                            for decision in item.get("robot_eligibility", [])
+                        ),
+                        "robot_eligibility": item.get("robot_eligibility", []),
                     }
                     for item in candidates
                 ],
@@ -3387,6 +3692,7 @@ class AdaptiveRoboVacCoordinator:
                     for robot, item in assignments
                 ],
                 "blocks": reasons,
+                "legacy_deferral_review": self.legacy_deferral_report(),
                 "robots": {
                     robot_id: {"ready": ready, "reason": ready_reason}
                     for robot_id, (ready, ready_reason) in robot_ready.items()

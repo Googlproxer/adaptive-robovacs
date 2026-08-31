@@ -27,13 +27,15 @@ class ProjectReviewRemediationTests(unittest.TestCase):
     def test_robot_specific_duration_is_forecast_before_assignment(self) -> None:
         source = (INTEGRATION / "coordinator.py").read_text(encoding="utf-8")
         resolver = source[
-            source.index("    def _candidate_for_robot"):source.index(
+            source.index("    def _resolve_candidate_for_robot"):source.index(
                 "    def _skip_occurrence_stage"
             )
         ]
         self.assertIn("robot.registry_id", resolver)
         self.assertGreaterEqual(resolver.count("self._forecast("), 2)
         self.assertGreaterEqual(resolver.count("if not forecast.allowed:"), 2)
+        self.assertIn("def _candidate_robot_diagnostics", source)
+        self.assertIn("robot_eligibility", source)
 
         dispatch = source[source.index("                for robot, candidate in assignments:"):]
         prepare = dispatch.index("await self._async_prepare_occurrence(")

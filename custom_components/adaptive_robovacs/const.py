@@ -49,6 +49,8 @@ SERVICE_LIST_RETAINED_MAPS: Final = "list_retained_maps"
 SERVICE_CAPTURE_MAP_SNAPSHOT: Final = "capture_map_snapshot"
 SERVICE_ACTIVATE_RETAINED_MAP: Final = "activate_retained_map"
 SERVICE_CONFIRM_MAP_SELECTION: Final = "confirm_map_selection"
+SERVICE_LIST_LEGACY_DEFERRALS: Final = "list_legacy_deferrals"
+SERVICE_CLEAR_LEGACY_DEFERRALS: Final = "clear_legacy_deferrals"
 
 SIGNAL_DISCOVERY_UPDATED: Final = f"{DOMAIN}_discovery_updated"
 
