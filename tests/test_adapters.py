@@ -302,6 +302,11 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(capabilities.readiness_entity_id, "sensor.test_status")
+        self.assertEqual(capabilities.completion_status_entity_id, "sensor.test_status")
+        self.assertEqual(
+            capabilities.terminal_completion_states,
+            frozenset({"charging", "charging_complete"}),
+        )
         self.assertEqual(
             capabilities.mop_start_states, roborock.ROBOROCK_MOP_START_STATES
         )

@@ -627,6 +627,25 @@ class AdaptiveRoboVacsRoomCard extends AdaptiveRoboVacsCardBase {
     });
     const roomName = visibleEntities.find((item) => item.attrs.room)?.attrs.room || this._defaultTitle();
     const entityRows = this._targetEntityRows(visibleEntities, ROOM_ROLES, roomName);
+    const schedule = visibleEntities.find(
+      (item) => item.attrs[ROLE_ATTRIBUTE] === "room_schedule"
+    );
+    if (schedule?.state?.attributes?.duration_model_version === 2) {
+      entityRows.splice(1, 0,
+        {
+          type: "attribute",
+          entity: schedule.entityId,
+          attribute: "predicted_total_minutes",
+          name: "Predicted total (min)",
+        },
+        {
+          type: "attribute",
+          entity: schedule.entityId,
+          attribute: "required_vacancy_minutes",
+          name: "Required vacancy (min)",
+        }
+      );
+    }
     return entityRows.length
       ? this._entitiesConfiguration(this._title(), entityRows)
       : this._messageConfiguration(

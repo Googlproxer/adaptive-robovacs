@@ -58,13 +58,16 @@ from .models import (
     cleaning_profile_sources,
     desired_window_allows,
     effective_cadence_anchor,
+    elapsed_total_duration_minutes,
     native_mop_profile_default_migration,
     due_at,
+    dock_completion_deadline,
+    detailed_status_confirms_completion,
     forecast_vacancy,
     held_job_transition,
     is_native_mop_profile_value,
     in_daytime_window,
-    learned_duration_minutes,
+    learned_duration_estimate,
     manual_clean_robot_is_docked,
     map_recovery_hold_is_manual,
     mop_stage_start_is_observed,
@@ -108,6 +111,7 @@ from .repairs_manager import (
 
 _LOGGER = logging.getLogger(__name__)
 ROOM_DECISION_LIMIT = 100
+DOCK_COMPLETION_DWELL = timedelta(minutes=5)
 
 type EntityListener = Callable[[], None]
 
@@ -1513,6 +1517,11 @@ class AdaptiveRoboVacCoordinator:
                     pass
             if active:
                 self._normalise_active_job(active, now)
+                # Home Assistant did not observe the complete lifecycle while
+                # it was offline. Keep cadence authoritative, but never train
+                # the verified elapsed-duration model from this job.
+                active["forecast_sample_eligible"] = False
+                active["recovery_crossed"] = True
             state = self.hass.states.get(entity_id)
             state_text = state.state if state else "unavailable"
             hold = self.data["robot_holds"].get(entity_id)
@@ -1570,19 +1579,6 @@ class AdaptiveRoboVacCoordinator:
                     tracked_expected_minutes,
                     now,
                 )
-                if outcome == "complete" and active:
-                    expected_end = _as_datetime(active.get("expected_end"))
-                    if expected_end:
-                        if active.get("timer_start") is not None:
-                            self._mark_observed_completion(entity_id, active, expected_end)
-                        await self._async_complete_job(
-                            entity_id,
-                            active,
-                            expected_end,
-                            "recovered_expected_end",
-                        )
-                        self.data["robot_holds"].pop(entity_id, None)
-                        continue
                 if outcome == "cancelled":
                     if active:
                         self._cancel_job(
@@ -1653,28 +1649,32 @@ class AdaptiveRoboVacCoordinator:
                 if state.state == "returning":
                     # Returning is reliable evidence that an accepted room command did run,
                     # even if Home Assistant was unavailable for the cleaning transition.
+                    # It is not, however, proof that dock servicing is final.
                     active["seen_cleaning"] = True
-                    expected_end = _as_datetime(active.get("expected_end"))
-                    if expected_end and now >= expected_end:
-                        active["cleaning_finished"] = _iso(expected_end)
-                        active["completion_confidence"] = "recovered_expected_end"
-                        active["phase"] = "returning"
-                    else:
-                        self._set_recovery_waiting(entity_id, active, now)
+                    active["phase"] = "returning"
+                    active.pop("docked_at", None)
+                    self._cancel_recovery_timer(entity_id)
                 else:
                     active["phase"] = "cleaning"
                     self._cancel_recovery_timer(entity_id)
                 continue
-            expected_end = _as_datetime(active.get("expected_end"))
             if active.get("seen_cleaning") and state and state.state == "docked":
-                if expected_end and now >= expected_end:
-                    if active.get("timer_start") is not None:
-                        self._mark_observed_completion(entity_id, active, expected_end)
+                # A dock snapshot obtained after an outage cannot establish
+                # when docking occurred. Start a fresh observed dwell instead.
+                active["recovered_at"] = _iso(now)
+                if self._terminal_completion_is_observed(robot):
+                    self._mark_observed_completion(
+                        entity_id,
+                        active,
+                        now,
+                        "recovered_terminal_status",
+                        allow_sample=False,
+                    )
                     await self._async_complete_job(
-                        entity_id, active, expected_end, "recovered_expected_end"
+                        entity_id, active, now, "recovered_terminal_status"
                     )
                 else:
-                    self._set_recovery_waiting(entity_id, active, now)
+                    self._set_dock_completion_pending(entity_id, active, now)
                 continue
             if active.get("seen_cleaning") and state and state.state == "idle":
                 self._set_recovery_waiting(entity_id, active, now)
@@ -1705,6 +1705,9 @@ class AdaptiveRoboVacCoordinator:
         active.setdefault("adapter_id", "generic")
         active.setdefault("adapter_schema_version", 1)
         active.setdefault("expected_minutes", fallback)
+        active.setdefault("interruption_minutes", 0)
+        active.setdefault("forecast_sample_eligible", False)
+        active.setdefault("recovery_crossed", False)
         active.setdefault(
             "last_observed_at",
             active.get("observed_started") or active.get("accepted_at") or active.get("started") or _iso(now),
@@ -1792,6 +1795,7 @@ class AdaptiveRoboVacCoordinator:
         active["phase"] = phase
         active["hold_reason"] = "robot_error" if is_error else "paused"
         active.setdefault("held_at", _iso(now))
+        active.setdefault("interruption_started_at", _iso(now))
         active["interrupted"] = True
         if active.get("cleaning_finished"):
             active["completion_before_hold"] = True
@@ -1827,6 +1831,12 @@ class AdaptiveRoboVacCoordinator:
 
         active.pop("hold_reason", None)
         active.pop("held_at", None)
+        interruption_started = _as_datetime(active.pop("interruption_started_at", None))
+        if interruption_started:
+            active["interruption_minutes"] = float(
+                active.get("interruption_minutes", 0)
+            ) + max(0, (now - interruption_started).total_seconds() / 60)
+        active.pop("docked_at", None)
         active["last_observed_at"] = _iso(now)
         if not active.get("seen_cleaning"):
             observed_start = state.last_changed if state else now
@@ -1851,7 +1861,7 @@ class AdaptiveRoboVacCoordinator:
     def _set_recovery_waiting(
         self, robot_id: str, active: dict[str, Any], recovered_at: datetime
     ) -> None:
-        """Keep an offline completion pending until a live transition or saved end."""
+        """Keep an offline job pending until a later physical observation."""
 
         active["phase"] = "recovery_waiting"
         active["recovered_at"] = _iso(recovered_at)
@@ -1867,7 +1877,7 @@ class AdaptiveRoboVacCoordinator:
             unsubscribe()
 
     def _schedule_recovery_completion(self, robot_id: str, expected_end: datetime) -> None:
-        """Reconcile an unobserved completion exactly at its persisted end time."""
+        """Re-evaluate a job when a physical-completion deadline is reached."""
 
         self._cancel_recovery_timer(robot_id)
         if expected_end <= _now():
@@ -2158,6 +2168,40 @@ class AdaptiveRoboVacCoordinator:
         if unsubscribe:
             unsubscribe()
 
+    def _terminal_completion_is_observed(self, robot: DiscoveredRobot | None) -> bool:
+        """Return whether a vendor detailed status proves docked work is done."""
+
+        if robot is None:
+            return False
+        capabilities = robot.adapter_capabilities
+        entity_id = capabilities.completion_status_entity_id
+        status = self.hass.states.get(entity_id) if entity_id else None
+        return detailed_status_confirms_completion(
+            status.state if status else None,
+            required=bool(entity_id),
+            terminal_states=capabilities.terminal_completion_states,
+        )
+
+    def _dock_completion_deadline(
+        self, active: dict[str, Any], docked_at: datetime
+    ) -> datetime:
+        return dock_completion_deadline(
+            _as_datetime(active.get("expected_end")),
+            docked_at,
+            DOCK_COMPLETION_DWELL,
+        )
+
+    def _set_dock_completion_pending(
+        self, robot_id: str, active: dict[str, Any], docked_at: datetime
+    ) -> None:
+        """Wait at the dock until the safe inferred-completion deadline."""
+
+        active["phase"] = "dock_completion_pending"
+        active["docked_at"] = _iso(docked_at)
+        self._schedule_recovery_completion(
+            robot_id, self._dock_completion_deadline(active, docked_at)
+        )
+
     def _schedule_ready_confirmation(
         self, robot_id: str, ready_since: datetime
     ) -> None:
@@ -2261,13 +2305,19 @@ class AdaptiveRoboVacCoordinator:
             now,
         )
 
-    def _effective_duration(
+    def _duration_estimate(
         self, room: DiscoveredRoom, operation: str, passes: int, robot_id: str | None = None
-    ) -> tuple[float, int]:
+    ) -> Any:
+        """Return the v2 verified duration estimate for one executable stage."""
+
         detail = self._room_data(room.area_id)
         samples: list[float] = []
         for sample in detail.get("duration_samples", []):
-            if sample.get("operation") != operation or sample.get("source") not in {"robot_timer", "state_transition"}:
+            if (
+                sample.get("operation") != operation
+                or sample.get("source") != "elapsed_total_v2"
+                or int(sample.get("measurement_version", 1)) != 2
+            ):
                 continue
             if robot_id is not None and sample.get("robot") != robot_id:
                 continue
@@ -2276,7 +2326,17 @@ class AdaptiveRoboVacCoordinator:
                     samples.append(float(sample["minutes"]))
             except (TypeError, ValueError, KeyError):
                 continue
-        return learned_duration_minutes(samples, float(self._room_settings(room)["expected_minutes"]))
+        return learned_duration_estimate(
+            samples, float(self._room_settings(room)["expected_minutes"])
+        )
+
+    def _effective_duration(
+        self, room: DiscoveredRoom, operation: str, passes: int, robot_id: str | None = None
+    ) -> tuple[float, int]:
+        """Return the conservative duration retained by existing callers."""
+
+        estimate = self._duration_estimate(room, operation, passes, robot_id)
+        return estimate.safe_minutes, estimate.sample_count
 
     def _forecast(self, room: DiscoveredRoom, now: datetime, duration_minutes: float) -> Forecast:
         detail = self._room_data(room.area_id)
@@ -3295,66 +3355,51 @@ class AdaptiveRoboVacCoordinator:
                 changed = True
                 continue
 
-            recovered_at = _as_datetime(active.get("recovered_at"))
-            transition_at = _as_datetime(transition.get("at")) if transition else None
-            live_recovery_transition = bool(
-                active.get("phase") == "recovery_waiting"
-                and transition
-                and transition.get("robot") == robot_id
-                and recovery_transition_is_observed(
-                    transition.get("from"),
-                    transition.get("to"),
-                    transition_at,
-                    recovered_at,
-                )
-            )
-            if live_recovery_transition and transition_at:
-                self._cancel_recovery_timer(robot_id)
-                if transition["to"] == "returning":
-                    self._mark_observed_completion(robot_id, active, transition_at)
-                    active["phase"] = "returning"
-                else:
-                    self._mark_observed_completion(robot_id, active, transition_at)
-                    await self._async_complete_job(robot_id, active, transition_at, "observed")
-                changed = True
-                continue
             if state_text == "cleaning":
                 self._resume_held_job(robot_id, active, state, now)
                 changed = True
                 continue
             if active.get("seen_cleaning") and state_text == "returning":
-                expected_end = _as_datetime(active.get("expected_end"))
-                if active.get("phase") == "recovery_waiting":
-                    if expected_end and now >= expected_end:
-                        active["cleaning_finished"] = _iso(expected_end)
-                        active["completion_confidence"] = "recovered_expected_end"
-                        active["phase"] = "returning"
-                        changed = True
-                    continue
-                if not active.get("cleaning_finished"):
-                    self._mark_observed_completion(
-                        robot_id, active, state.last_changed if state else now
-                    )
                 active["phase"] = "returning"
+                active.pop("docked_at", None)
                 self._cancel_recovery_timer(robot_id)
                 changed = True
                 continue
             if active.get("seen_cleaning") and state_text == "docked":
-                expected_end = _as_datetime(active.get("expected_end"))
-                if active.get("phase") == "recovery_waiting" and expected_end and now < expected_end:
-                    continue
-                completion = _as_datetime(active.get("cleaning_finished")) or (state.last_changed if state else now)
-                if active.get("phase") == "recovery_waiting" and expected_end and now >= expected_end:
-                    completion = expected_end
-                    confidence = "recovered_expected_end"
+                docked_at = _as_datetime(active.get("docked_at")) or (
+                    state.last_changed if state else now
+                )
+                if self._terminal_completion_is_observed(robot):
+                    confidence = (
+                        "recovered_terminal_status"
+                        if active.get("recovery_crossed")
+                        else "observed"
+                    )
+                    self._mark_observed_completion(
+                        robot_id,
+                        active,
+                        docked_at,
+                        confidence,
+                        allow_sample=confidence == "observed",
+                    )
+                    await self._async_complete_job(robot_id, active, docked_at, confidence)
+                    changed = True
                 else:
-                    confidence = str(active.get("completion_confidence", "observed"))
-                if not active.get("cleaning_finished") and (
-                    confidence == "observed" or active.get("timer_start") is not None
-                ):
-                    self._mark_observed_completion(robot_id, active, completion)
-                await self._async_complete_job(robot_id, active, completion, confidence)
-                changed = True
+                    deadline = self._dock_completion_deadline(active, docked_at)
+                    if now >= deadline:
+                        confidence = (
+                            "recovered_dock_dwell"
+                            if active.get("recovery_crossed")
+                            else "inferred_dock_dwell"
+                        )
+                        self._mark_observed_completion(
+                            robot_id, active, docked_at, confidence, allow_sample=False
+                        )
+                        await self._async_complete_job(robot_id, active, docked_at, confidence)
+                        changed = True
+                    else:
+                        self._set_dock_completion_pending(robot_id, active, docked_at)
+                        changed = True
                 continue
             started = _as_datetime(active.get("started"))
             if (
@@ -3384,13 +3429,25 @@ class AdaptiveRoboVacCoordinator:
             await self._async_save()
 
     def _mark_observed_completion(
-        self, robot_id: str, active: dict[str, Any], completion: datetime
+        self,
+        robot_id: str,
+        active: dict[str, Any],
+        completion: datetime,
+        confidence: str = "observed",
+        allow_sample: bool = True,
     ) -> None:
         """Record a completion from a native state transition and learn from it."""
 
         active["cleaning_finished"] = _iso(completion)
-        active["measured_minutes"] = self._measured_duration_minutes(robot_id, active)
-        active["completion_confidence"] = "observed"
+        active["native_timer_elapsed"] = self._native_timer_elapsed_minutes(robot_id, active)
+        if (
+            allow_sample
+            and active.get("forecast_sample_eligible")
+            and not active.get("recovery_crossed")
+        ):
+            active["measured_minutes"] = self._measured_duration_minutes(active)
+            active["duration_source"] = "elapsed_total_v2"
+        active["completion_confidence"] = confidence
 
     def _cleaning_timer_minutes(self, robot_id: str) -> float | None:
         robot = self.discovery.robots.get(robot_id)
@@ -3407,18 +3464,25 @@ class AdaptiveRoboVacCoordinator:
             return value / 60
         return value
 
-    def _measured_duration_minutes(self, robot_id: str, active: dict[str, Any]) -> float | None:
+    def _native_timer_elapsed_minutes(
+        self, robot_id: str, active: dict[str, Any]
+    ) -> float | None:
         timer = self._cleaning_timer_minutes(robot_id)
         timer_start = active.get("timer_start")
         if timer is not None and timer_start is not None and timer >= float(timer_start):
-            active["duration_source"] = "robot_timer"
             return timer - float(timer_start)
+        return None
+
+    def _measured_duration_minutes(self, active: dict[str, Any]) -> float | None:
+        """Measure complete elapsed work, excluding observed interruptions."""
+
         started = _as_datetime(active.get("observed_started"))
         finished = _as_datetime(active.get("cleaning_finished"))
-        if started and finished:
-            active["duration_source"] = "state_transition"
-            return (finished - started).total_seconds() / 60
-        return None
+        return elapsed_total_duration_minutes(
+            started,
+            finished,
+            float(active.get("interruption_minutes", 0)),
+        )
 
     def _cancel_job(
         self, robot_id: str, active: dict[str, Any], cancelled_at: datetime, reason: str
@@ -3437,6 +3501,7 @@ class AdaptiveRoboVacCoordinator:
             active.get("source"),
             active.get("duration_source"),
             active.get("measured_minutes"),
+            active.get("native_timer_elapsed"),
         ):
             robot = self.discovery.robots.get(robot_id)
             room = self.discovery.rooms.get(str(active.get("room", "")))

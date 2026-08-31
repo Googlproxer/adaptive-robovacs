@@ -35,7 +35,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 DAILY_WINDOW_VERSION = 1
 
 
@@ -647,6 +647,7 @@ class DurationSample:
     robot_id: str
     source: str
     recorded_at: datetime | None = None
+    measurement_version: int = 1
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> DurationSample | None:
@@ -665,6 +666,7 @@ class DurationSample:
             robot_id=robot_id,
             source=source,
             recorded_at=_timestamp(value.get("at")),
+            measurement_version=max(1, _integer(value.get("measurement_version"), 1)),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -675,6 +677,7 @@ class DurationSample:
             "robot": self.robot_id,
             "source": self.source,
             "at": _iso(self.recorded_at),
+            "measurement_version": self.measurement_version,
         }
 
 
@@ -854,8 +857,14 @@ class ActiveJob:
     cleaning_finished_at: datetime | None = None
     completion_confidence: str | None = None
     timer_start: float | None = None
+    native_timer_elapsed: float | None = None
     duration_source: str | None = None
     measured_minutes: float | None = None
+    docked_at: datetime | None = None
+    interruption_started_at: datetime | None = None
+    interruption_minutes: float = 0
+    forecast_sample_eligible: bool = False
+    recovery_crossed: bool = False
     interrupted: bool = False
     hold_reason: str | None = None
     held_at: datetime | None = None
@@ -904,8 +913,14 @@ class ActiveJob:
             cleaning_finished_at=_timestamp(value.get("cleaning_finished")),
             completion_confidence=_string(value.get("completion_confidence")),
             timer_start=_optional_number(value.get("timer_start")),
+            native_timer_elapsed=_optional_number(value.get("native_timer_elapsed")),
             duration_source=_string(value.get("duration_source")),
             measured_minutes=_optional_number(value.get("measured_minutes")),
+            docked_at=_timestamp(value.get("docked_at")),
+            interruption_started_at=_timestamp(value.get("interruption_started_at")),
+            interruption_minutes=max(0, _number(value.get("interruption_minutes"), 0)),
+            forecast_sample_eligible=bool(value.get("forecast_sample_eligible", False)),
+            recovery_crossed=bool(value.get("recovery_crossed", False)),
             interrupted=bool(value.get("interrupted", False)),
             hold_reason=_string(value.get("hold_reason")),
             held_at=_timestamp(value.get("held_at")),
@@ -949,8 +964,14 @@ class ActiveJob:
             "cleaning_finished": _iso(self.cleaning_finished_at),
             "completion_confidence": self.completion_confidence,
             "timer_start": self.timer_start,
+            "native_timer_elapsed": self.native_timer_elapsed,
             "duration_source": self.duration_source,
             "measured_minutes": self.measured_minutes,
+            "docked_at": _iso(self.docked_at),
+            "interruption_started_at": _iso(self.interruption_started_at),
+            "interruption_minutes": self.interruption_minutes,
+            "forecast_sample_eligible": self.forecast_sample_eligible,
+            "recovery_crossed": self.recovery_crossed,
             "interrupted": self.interrupted,
             "hold_reason": self.hold_reason,
             "held_at": _iso(self.held_at),
@@ -1326,7 +1347,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v13 or convert older shapes, returning whether a save is required."""
+        """Load v14 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -1334,7 +1355,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}:
+        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -1462,7 +1483,7 @@ class SchedulerState:
         raw_robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
         raw_robot_aliases = (
             _mapping(data.get("robot_entity_aliases"), "robot_entity_aliases")
-            if data.get("schema_version") in {10, 11, 12, SCHEMA_VERSION}
+            if data.get("schema_version") in {10, 11, 12, 13, SCHEMA_VERSION}
             else _mapping_or_empty(data.get("robot_entity_aliases"))
         )
         raw_history = _mapping(data.get("room_history"), "room_history")
@@ -1474,7 +1495,7 @@ class SchedulerState:
         raw_occurrences = _mapping_or_empty(data.get("occurrences"))
         raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
-        if data.get("schema_version") in {10, 11, 12, SCHEMA_VERSION}:
+        if data.get("schema_version") in {10, 11, 12, 13, SCHEMA_VERSION}:
             raw_robot_faults = _mapping(data.get("robot_faults"), "robot_faults")
             raw_room_faults = _mapping(data.get("room_faults"), "room_faults")
         else:
@@ -1634,7 +1655,7 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v13 codec, and platform entities use
+        persistent I/O stays on the typed v14 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 

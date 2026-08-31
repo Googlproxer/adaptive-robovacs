@@ -21,13 +21,16 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('"observed_started"', source)
         self.assertIn('"last_observed_at"', source)
         self.assertIn('_async_recover_active_jobs', source)
-        self.assertIn('"recovered_expected_end"', source)
+        self.assertIn('"docked_at"', source)
+        self.assertIn('"dock_completion_pending"', source)
+        self.assertIn('"recovered_terminal_status"', source)
 
     def test_recovered_estimates_do_not_train_duration_learning(self) -> None:
         source = COORDINATOR_PATH.read_text(encoding="utf-8") + JOBS_PATH.read_text(encoding="utf-8")
         self.assertIn('confidence == "observed"', source)
-        self.assertIn('"robot": robot_id', source)
-        self.assertIn('active.get("duration_source", "state_transition")', source)
+        self.assertIn('active.get("forecast_sample_eligible")', source)
+        self.assertIn('not active.get("recovery_crossed")', source)
+        self.assertIn('"elapsed_total_v2"', source)
 
     def test_live_native_transition_wins_over_a_recovery_estimate(self) -> None:
         source = COORDINATOR_PATH.read_text(encoding="utf-8")
@@ -42,6 +45,8 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('if state["active"] else None', source)
         self.assertIn('"learned_duration_minutes"', source)
         self.assertIn('return "Completion pending"', source)
+        self.assertIn('return "Dock servicing"', source)
+        self.assertIn('"predicted_total_minutes"', source)
         self.assertIn('return state["state"]', source)
         self.assertIn('state["desired_window_start"]', source)
         self.assertIn('"desired_window_start"', source)

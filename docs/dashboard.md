@@ -54,7 +54,11 @@ available as Home Assistant entities for automations and advanced use, but the
 simple room card deliberately omits them: **Cleaning period** is the card's
 schedule enablement control.
 The room schedule entity reports the configured bounds, effective bounds,
-inheritance flags, validity, and next usable start as attributes.
+inheritance flags, validity, and next usable start as attributes. It also shows
+the read-only **Predicted total** and **Required vacancy** duration values. The
+first is the typical verified room-clean duration; the latter is the more
+conservative duration used to ensure a safe vacant window. **Expected duration**
+remains the editable fallback until enough verified room/robot samples exist.
 
 Each room has **Vacuum passes** and **Mop passes** selectors:
 

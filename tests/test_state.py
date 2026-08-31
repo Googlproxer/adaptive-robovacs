@@ -375,6 +375,10 @@ class SchedulerStateTests(unittest.TestCase):
             expected_minutes=25,
             expected_end=datetime(2026, 8, 3, 9, 25, tzinfo=timezone.utc),
             mop_washing_at=datetime(2026, 8, 3, 9, 1, tzinfo=timezone.utc),
+            docked_at=datetime(2026, 8, 3, 9, 28, tzinfo=timezone.utc),
+            interruption_started_at=datetime(2026, 8, 3, 9, 10, tzinfo=timezone.utc),
+            interruption_minutes=3.5,
+            forecast_sample_eligible=True,
             adapter_id="roborock",
             adapter_schema_version=1,
             cleaning_profile={"operation": "vacuum", "fan_speed": "max"},
@@ -446,6 +450,12 @@ class SchedulerStateTests(unittest.TestCase):
             datetime(2026, 8, 3, 9, 1, tzinfo=timezone.utc),
         )
         self.assertEqual(restored.active_jobs["vacuum.beta"].adapter_id, "roborock")
+        self.assertEqual(
+            restored.active_jobs["vacuum.beta"].docked_at,
+            datetime(2026, 8, 3, 9, 28, tzinfo=timezone.utc),
+        )
+        self.assertEqual(restored.active_jobs["vacuum.beta"].interruption_minutes, 3.5)
+        self.assertTrue(restored.active_jobs["vacuum.beta"].forecast_sample_eligible)
         self.assertEqual(restored.room_settings["study"].pass_count, 2)
         self.assertEqual(restored.room_settings["study"].fan_speed, "max")
         self.assertEqual(restored.room_settings["study"].mop_mode, "deep")

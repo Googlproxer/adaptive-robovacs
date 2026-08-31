@@ -341,6 +341,30 @@ test("room card contains one selected room with simple controls before advanced 
   assert.ok(!entityIds.includes("switch.kitchen_ignore_desired_window"));
 });
 
+test("room card exposes predicted total and required vacancy from the verified model", () => {
+  const states = baseStates();
+  states["sensor.kitchen_next_clean"].attributes.duration_model_version = 2;
+  states["sensor.kitchen_next_clean"].attributes.predicted_total_minutes = 24;
+  states["sensor.kitchen_next_clean"].attributes.required_vacancy_minutes = 28;
+  const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
+
+  assert.deepEqual(configuration.entities.slice(0, 3), [
+    { entity: "sensor.kitchen_next_clean", name: "Next clean" },
+    {
+      type: "attribute",
+      entity: "sensor.kitchen_next_clean",
+      attribute: "predicted_total_minutes",
+      name: "Predicted total (min)",
+    },
+    {
+      type: "attribute",
+      entity: "sensor.kitchen_next_clean",
+      attribute: "required_vacancy_minutes",
+      name: "Required vacancy (min)",
+    },
+  ]);
+});
+
 test("room card reveals profile override controls only in Custom mode", () => {
   const states = baseStates();
   states["select.kitchen_cleaning_profile"] = adaptiveState(

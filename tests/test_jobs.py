@@ -68,7 +68,8 @@ class JobLifecycleTests(unittest.TestCase):
             "source": "scheduler",
             "passes": 1,
             "measured_minutes": 24.5,
-            "duration_source": "state_transition",
+            "duration_source": "elapsed_total_v2",
+            "forecast_sample_eligible": True,
         }
         coordinator.data["active"]["vacuum.alpha"] = active
 
@@ -84,8 +85,9 @@ class JobLifecycleTests(unittest.TestCase):
                     "operation": "vacuum",
                     "passes": 1,
                     "robot": "registry-alpha",
-                    "source": "state_transition",
+                    "source": "elapsed_total_v2",
                     "at": completed.isoformat(),
+                    "measurement_version": 2,
                 }
             ],
         )
@@ -109,6 +111,27 @@ class JobLifecycleTests(unittest.TestCase):
         self.assertEqual(coordinator._rooms, {})
         self.assertEqual(coordinator.data["manual_events"][0]["outcome"], "cancelled")
         self.assertEqual(coordinator.data["recovery_events"][0]["reason"], "physical_cancelled")
+
+    def test_recovered_completion_updates_cadence_without_training_duration(self) -> None:
+        coordinator = _Coordinator()
+        lifecycle = JobLifecycle(coordinator)
+        completed = datetime(2026, 8, 9, 9, 30, tzinfo=timezone.utc)
+        active = {
+            "room": "study",
+            "operation": "vacuum",
+            "source": "scheduler",
+            "passes": 1,
+            "measured_minutes": 24.5,
+            "duration_source": "elapsed_total_v2",
+            "forecast_sample_eligible": True,
+            "recovery_crossed": True,
+        }
+        coordinator.data["active"]["vacuum.alpha"] = active
+
+        lifecycle.complete("vacuum.alpha", active, completed, "recovered_terminal_status")
+
+        self.assertEqual(coordinator._rooms["study"]["vacuum"], completed.isoformat())
+        self.assertEqual(coordinator._rooms["study"]["duration_samples"], [])
 
     def test_dashboard_manual_completion_updates_cadence_and_duration_once(self) -> None:
         coordinator = _Coordinator()
@@ -135,7 +158,8 @@ class JobLifecycleTests(unittest.TestCase):
             "stage_index": 0,
             "passes": 2,
             "measured_minutes": 18.0,
-            "duration_source": "state_transition",
+            "duration_source": "elapsed_total_v2",
+            "forecast_sample_eligible": True,
         }
         coordinator.data["active"]["vacuum.alpha"] = active
 

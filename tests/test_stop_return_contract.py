@@ -30,7 +30,7 @@ class StopAndReturnContractTests(unittest.TestCase):
         state = (PACKAGE / "state.py").read_text(encoding="utf-8")
         self.assertNotIn('"carpet"', switch)
         self.assertNotIn("carpet:", state)
-        self.assertIn("SCHEMA_VERSION = 13", state)
+        self.assertIn("SCHEMA_VERSION = 14", state)
 
 
 if __name__ == "__main__":

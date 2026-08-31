@@ -383,6 +383,49 @@ class CadenceTests(unittest.TestCase):
         self.assertEqual(duration, 24)
         self.assertEqual(samples, 3)
 
+    def test_duration_estimate_keeps_typical_and_safe_values_distinct(self) -> None:
+        estimate = models.learned_duration_estimate([20, 22, 24, 180], 30)
+        self.assertEqual(estimate.typical_minutes, 22)
+        self.assertEqual(estimate.safe_minutes, 24)
+        self.assertEqual(estimate.sample_count, 3)
+        self.assertTrue(estimate.learned)
+
+    def test_terminal_status_and_dock_deadline_require_explicit_evidence(self) -> None:
+        self.assertTrue(
+            models.detailed_status_confirms_completion(
+                "charging",
+                required=True,
+                terminal_states=frozenset({"charging", "charging_complete"}),
+            )
+        )
+        self.assertFalse(
+            models.detailed_status_confirms_completion(
+                "emptying_the_bin",
+                required=True,
+                terminal_states=frozenset({"charging", "charging_complete"}),
+            )
+        )
+        docked = self.now
+        self.assertEqual(
+            models.dock_completion_deadline(
+                docked + timedelta(minutes=8), docked, timedelta(minutes=5)
+            ),
+            docked + timedelta(minutes=8),
+        )
+        self.assertEqual(
+            models.dock_completion_deadline(
+                docked - timedelta(minutes=1), docked, timedelta(minutes=5)
+            ),
+            docked + timedelta(minutes=5),
+        )
+
+    def test_elapsed_duration_includes_servicing_but_excludes_holds(self) -> None:
+        started = self.now
+        finished = started + timedelta(minutes=31)
+        self.assertEqual(
+            models.elapsed_total_duration_minutes(started, finished, 4), 27
+        )
+
     def test_zero_native_clean_duration_fails_only_an_attributed_clean(self) -> None:
         for source in ("scheduler", "manual_dashboard", "manual_home_assistant"):
             self.assertTrue(models.managed_clean_duration_failed(source, "robot_timer", 0))

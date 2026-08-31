@@ -93,12 +93,39 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
     )
     duration_operation = active["operation"] if active else candidate["operation"] if candidate else "vacuum"
     duration_passes = int(active.get("passes", 1)) if active else candidate["passes"] if candidate else 1
-    duration_minutes, duration_sample_count = coordinator._effective_duration(
+    duration_estimate = coordinator._duration_estimate(
         room,
         duration_operation,
         duration_passes,
         coordinator.robot_registry_id(active_robot_id) if active_robot_id else None,
     )
+    duration_minutes = duration_estimate.safe_minutes
+    duration_sample_count = duration_estimate.sample_count
+    duration_estimates_by_robot = []
+    for robot in coordinator.discovery.robots.values():
+        if (
+            robot.floor_id != room.floor_id
+            or not robot.adapter_capabilities.supports(
+                duration_operation, duration_passes
+            )
+        ):
+            continue
+        estimate = coordinator._duration_estimate(
+            room,
+            duration_operation,
+            duration_passes,
+            robot.registry_id,
+        )
+        duration_estimates_by_robot.append(
+            {
+                "robot_entity_id": robot.entity_id,
+                "robot_name": robot.name,
+                "typical_minutes": estimate.typical_minutes,
+                "safe_minutes": estimate.safe_minutes,
+                "sample_count": estimate.sample_count,
+                "learned": estimate.learned,
+            }
+        )
     last_cleaned = _as_datetime(detail.get("cleaning"))
     latest_decision = next(
         (
@@ -263,6 +290,11 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "active_robot_state": active_robot_state,
         "effective_duration_minutes": duration_minutes,
         "duration_sample_count": duration_sample_count,
+        "predicted_total_minutes": duration_estimate.typical_minutes,
+        "required_vacancy_minutes": duration_estimate.safe_minutes,
+        "duration_model_version": 2,
+        "duration_model_learned": duration_estimate.learned,
+        "duration_estimates_by_robot": duration_estimates_by_robot,
         "block_reason": reason,
         "vacancy_diagnostic": vacancy_diagnostic,
         "latest_scheduler_decision": latest_decision,

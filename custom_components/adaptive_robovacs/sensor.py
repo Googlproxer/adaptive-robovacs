@@ -153,6 +153,8 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
         if state["active"]:
             if state["active"].get("phase") == "recovery_waiting":
                 return "Completion pending"
+            if state["active"].get("phase") == "dock_completion_pending":
+                return "Dock servicing"
             if state["active"].get("phase") == "cancelling":
                 return "Returning to dock"
             if state["active"].get("phase") == "completion_held":
@@ -245,6 +247,11 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "active_hold_reason": state["active"].get("hold_reason") if state["active"] else None,
             "learned_duration_minutes": state["effective_duration_minutes"],
             "duration_sample_count": state["duration_sample_count"],
+            "predicted_total_minutes": state["predicted_total_minutes"],
+            "required_vacancy_minutes": state["required_vacancy_minutes"],
+            "duration_model_version": state["duration_model_version"],
+            "duration_model_learned": state["duration_model_learned"],
+            "duration_estimates_by_robot": state["duration_estimates_by_robot"],
             "occurrence": state["occurrence"],
             "water_confirmation": state["water_confirmation"],
             "last_stage_outcome": state["last_stage_outcome"],

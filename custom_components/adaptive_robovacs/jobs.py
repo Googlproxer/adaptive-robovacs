@@ -213,7 +213,9 @@ class JobLifecycle:
         if (
             active.get("source") in {"scheduler", "manual_dashboard"}
             and confidence == "observed"
-            and not active.get("interrupted")
+            and active.get("forecast_sample_eligible")
+            and not active.get("recovery_crossed")
+            and active.get("duration_source") == "elapsed_total_v2"
             and isinstance(measured, (float, int))
             and measured > 0
         ):
@@ -227,6 +229,7 @@ class JobLifecycle:
                     "robot": durable_robot_id,
                     "source": active.get("duration_source", "state_transition"),
                     "at": _iso(completion),
+                    "measurement_version": 2,
                 }
             )
             detail["duration_samples"] = detail["duration_samples"][-50:]

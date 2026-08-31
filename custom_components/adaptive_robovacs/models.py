@@ -45,6 +45,16 @@ class Forecast:
 
 
 @dataclass(frozen=True, slots=True)
+class DurationEstimate:
+    """A room-duration estimate for display and safe vacancy planning."""
+
+    typical_minutes: float
+    safe_minutes: float
+    sample_count: int
+    learned: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Candidate:
     """A ready room-cleaning candidate."""
 
@@ -176,6 +186,8 @@ class AdapterCapabilities:
     readiness_entity_id: str | None = None
     readiness_states: frozenset[str] = frozenset()
     mop_start_states: frozenset[str] = frozenset()
+    completion_status_entity_id: str | None = None
+    terminal_completion_states: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         """Normalize schema-one adapter snapshots during a rolling upgrade."""
@@ -891,7 +903,7 @@ def pending_completion_is_docked(robot_state: str | None, phase: str | None) -> 
     """
 
     return (
-        phase in {"completion_pending", "completion_held", "recovery_waiting"}
+        phase in {"completion_pending", "completion_held"}
         and robot_state == "docked"
     )
 
@@ -920,6 +932,45 @@ def detailed_status_is_dispatchable(
     if not required:
         return True
     return str(status or "").strip().lower() in ready_states
+
+
+def detailed_status_confirms_completion(
+    status: str | None,
+    *,
+    required: bool,
+    terminal_states: frozenset[str],
+) -> bool:
+    """Return whether an adapter's detailed state proves a clean has ended."""
+
+    return bool(
+        required
+        and terminal_states
+        and str(status or "").strip().lower() in terminal_states
+    )
+
+
+def dock_completion_deadline(
+    expected_end: datetime | None, docked_at: datetime, dwell: timedelta
+) -> datetime:
+    """Return the earliest safe inferred-completion time at a dock."""
+
+    dwell_end = docked_at + dwell
+    return max(expected_end, dwell_end) if expected_end else dwell_end
+
+
+def elapsed_total_duration_minutes(
+    started_at: datetime | None,
+    finished_at: datetime | None,
+    interruption_minutes: float,
+) -> float | None:
+    """Measure end-to-end work while excluding observed non-working holds."""
+
+    if not started_at or not finished_at:
+        return None
+    elapsed = (finished_at - started_at).total_seconds() / 60
+    if elapsed < 0:
+        return None
+    return max(0, elapsed - max(0, interruption_minutes))
 
 
 def mop_stage_start_is_observed(
@@ -1295,30 +1346,45 @@ def map_recovery_hold_is_manual(reason: str | None) -> bool:
     return reason == "map_recovery_pending"
 
 
-def learned_duration_minutes(samples: Iterable[float], fallback: float, minimum: int = 3) -> tuple[float, int]:
-    """Return a conservative learned duration without letting outliers dominate.
-
-    The configured duration remains the prior until enough direct observations
-    exist.  Thereafter use an upper percentile so vacancy prediction is safe
-    rather than optimistic.
-    """
+def learned_duration_estimate(
+    samples: Iterable[float], fallback: float, minimum: int = 3
+) -> DurationEstimate:
+    """Return typical and safe durations without letting outliers dominate."""
 
     values = sorted(value for value in samples if 0 < value <= 240)
     if len(values) < minimum:
-        return fallback, len(values)
+        return DurationEstimate(fallback, fallback, len(values), False)
     median = values[len(values) // 2]
     deviations = sorted(abs(value - median) for value in values)
     mad = deviations[len(deviations) // 2]
     tolerance = max(2.0, mad * 3)
     values = [value for value in values if abs(value - median) <= tolerance]
     if len(values) < minimum:
-        return fallback, len(values)
+        return DurationEstimate(fallback, fallback, len(values), False)
+    middle = len(values) // 2
+    typical = (
+        values[middle]
+        if len(values) % 2
+        else (values[middle - 1] + values[middle]) / 2
+    )
     index = min(len(values) - 1, max(0, int(len(values) * 0.8 + 0.999999) - 1))
-    return values[index], len(values)
+    return DurationEstimate(typical, values[index], len(values), True)
+
+
+def learned_duration_minutes(
+    samples: Iterable[float], fallback: float, minimum: int = 3
+) -> tuple[float, int]:
+    """Return the conservative duration retained by the established API."""
+
+    estimate = learned_duration_estimate(samples, fallback, minimum)
+    return estimate.safe_minutes, estimate.sample_count
 
 
 def managed_clean_duration_failed(
-    job_source: object, duration_source: object, measured_minutes: object
+    job_source: object,
+    duration_source: object,
+    measured_minutes: object,
+    native_timer_elapsed: object | None = None,
 ) -> bool:
     """Return whether an integration-attributed clean did not run.
 
@@ -1329,12 +1395,19 @@ def managed_clean_duration_failed(
     clean. Native-app jobs are never attributed, failed, or held by this rule.
     """
 
+    timer_minutes = (
+        native_timer_elapsed
+        if isinstance(native_timer_elapsed, (float, int))
+        and not isinstance(native_timer_elapsed, bool)
+        else measured_minutes
+    )
+    timer_is_authoritative = native_timer_elapsed is not None or duration_source == "robot_timer"
     return (
         job_source in {"scheduler", "manual_dashboard", "manual_home_assistant"}
-        and duration_source == "robot_timer"
-        and isinstance(measured_minutes, (float, int))
-        and not isinstance(measured_minutes, bool)
-        and measured_minutes <= 0
+        and timer_is_authoritative
+        and isinstance(timer_minutes, (float, int))
+        and not isinstance(timer_minutes, bool)
+        and timer_minutes <= 0
     )
 
 

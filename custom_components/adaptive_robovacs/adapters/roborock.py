@@ -521,7 +521,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
     """Enhance compatible Roborock vacuums with native cross-hatching."""
 
     adapter_id = "roborock"
-    schema_version = 9
+    schema_version = 10
     priority = 100
     platforms = frozenset({"roborock"})
 
@@ -601,6 +601,12 @@ class RoborockVacuumAdapter(VacuumAdapter):
             ),
             mop_start_states=(
                 ROBOROCK_MOP_START_STATES if readiness_entity_id else frozenset()
+            ),
+            completion_status_entity_id=readiness_entity_id,
+            terminal_completion_states=(
+                frozenset({"charging", "charging_complete"})
+                if readiness_entity_id
+                else frozenset()
             ),
         )
 
