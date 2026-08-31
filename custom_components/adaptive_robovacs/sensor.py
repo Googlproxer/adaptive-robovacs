@@ -256,6 +256,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "water_confirmation": state["water_confirmation"],
             "last_stage_outcome": state["last_stage_outcome"],
             "last_stage_reason": state["last_stage_reason"],
+            "last_completion_confidence": state["last_completion_confidence"],
             "last_stage_at": state["last_stage_at"].isoformat() if state["last_stage_at"] else None,
             "last_stage_summary": state["last_stage_summary"],
             "water_notification_episode": state["water_notification_episode"],

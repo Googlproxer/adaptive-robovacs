@@ -47,6 +47,7 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertIn('return "Completion pending"', source)
         self.assertIn('return "Dock servicing"', source)
         self.assertIn('"predicted_total_minutes"', source)
+        self.assertIn('"last_completion_confidence"', source)
         self.assertIn('return state["state"]', source)
         self.assertIn('state["desired_window_start"]', source)
         self.assertIn('"desired_window_start"', source)

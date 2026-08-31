@@ -308,6 +308,11 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
         "water_confirmation": confirmation_view,
         "last_stage_outcome": detail.get("last_stage_outcome"),
         "last_stage_reason": detail.get("last_stage_reason"),
+        "last_completion_confidence": (
+            detail.get("last_stage_reason")
+            if detail.get("last_stage_outcome") == "completed"
+            else None
+        ),
         "last_stage_at": _as_datetime(detail.get("last_stage_at")),
         "last_stage_summary": detail.get("last_stage_summary"),
         "water_notification_episode": (
