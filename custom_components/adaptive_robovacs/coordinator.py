@@ -91,6 +91,7 @@ from .models import (
     detailed_status_is_dispatchable,
     ready_confirmation_elapsed,
     scheduler_halt_recheck_result,
+    scheduled_mop_revalidation_allowed,
     stage_pass_count,
     should_assume_native_app_clean,
     unresolved_occupancy_allowed,
@@ -3036,6 +3037,10 @@ class AdaptiveRoboVacCoordinator:
         if water.status == "sensor_ready" and water.ready:
             self.data.get("water_notification_episodes", {}).pop(room.area_id, None)
             return candidate, None
+        if scheduled_mop_revalidation_allowed(
+            candidate.get("source"), candidate["operation"], water
+        ):
+            return {**candidate, "ignore_water_readiness": True}, None
         if water.status == "sensor_blocked":
             occurrence_snapshot = {**occurrence, "stages": [dict(item) for item in occurrence["stages"]]}
             self._skip_occurrence_stage(
@@ -3846,11 +3851,12 @@ class AdaptiveRoboVacCoordinator:
                             f"{wait_reason}"
                         )
                         continue
-                    if prepared.get("water_confirmed"):
-                        fresh_resolved["water_confirmed"] = True
                     fresh_resolved = await self._async_refresh_pending_profile_if_needed(
                         robot, fresh_resolved
                     )
+                    for key in ("water_confirmed", "ignore_water_readiness"):
+                        if prepared.get(key):
+                            fresh_resolved[key] = True
                     ok, message = await self._async_dispatch(
                         robot, fresh_resolved, dispatch_now
                     )
@@ -4064,11 +4070,11 @@ class AdaptiveRoboVacCoordinator:
                 return await reject(
                     robot_reason if not robot_ready else "cleaning profile is no longer compatible"
                 )
-            if prepared.get("water_confirmed"):
-                fresh_resolved["water_confirmed"] = True
             fresh_resolved = await self._async_refresh_pending_profile_if_needed(
                 robot, fresh_resolved
             )
+            if prepared.get("water_confirmed"):
+                fresh_resolved["water_confirmed"] = True
             changed_global_gate = (
                 "coordinator shutting down"
                 if self._closing

@@ -7,6 +7,16 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.11.4] - 2026-08-31
+
+### Fixed
+
+- Scheduled Roborock mop stages now revalidate an asserted water-shortage
+  signal by requesting the mop when both the mop and water box remain attached.
+  Other missing, unavailable, or detached water telemetry remains fail-closed.
+
+Detailed notes: [`docs/releases/v1.11.4.md`](docs/releases/v1.11.4.md).
+
 ## [1.11.1] - 2026-08-31
 
 ### Fixed

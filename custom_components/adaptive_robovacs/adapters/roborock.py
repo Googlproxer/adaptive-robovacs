@@ -192,12 +192,18 @@ def resolve_roborock_water_readiness(
         and states["water_box_status"] == "on"
         and states["water_shortage"] == "off"
     )
+    revalidation_eligible = (
+        states["water_box_carriage_status"] == "on"
+        and states["water_box_status"] == "on"
+        and states["water_shortage"] == "on"
+    )
     return (
         WaterReadiness(
             "sensor_ready" if ready else "sensor_blocked",
             "water_ready" if ready else "water_unavailable",
             ready=ready,
             authoritative=True,
+            revalidation_eligible=revalidation_eligible,
         ),
         watched,
     )
@@ -863,9 +869,11 @@ class RoborockVacuumAdapter(VacuumAdapter):
         if request.operation == "mop":
             water = capabilities.water_readiness
             ignore_water = bool(request.cleaning_profile.get("ignore_water_readiness"))
-            if water.status == "sensor_blocked" and not ignore_water:
+            if water.status == "sensor_blocked" and not (
+                ignore_water and water.revalidation_eligible
+            ):
                 return AdapterDispatchResult("blocked", water.reason, "Water is not ready.")
-            if water.status == "confirmation_required" and not ignore_water and not bool(
+            if water.status == "confirmation_required" and not bool(
                 request.cleaning_profile.get("water_confirmed")
             ):
                 return AdapterDispatchResult(

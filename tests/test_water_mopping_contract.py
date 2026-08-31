@@ -86,6 +86,21 @@ class WaterMoppingContractTests(unittest.TestCase):
         self.assertIn("self._robot_ready(robot)", section)
         self.assertIn("self._candidate_for_robot(fresh_candidate, robot)", section)
 
+    def test_scheduled_shortage_revalidation_survives_final_safety_refresh(self) -> None:
+        coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+        preparation = coordinator[
+            coordinator.index("    async def _async_prepare_occurrence"):
+            coordinator.index("    async def _async_handle_mop_preflight_blocked")
+        ]
+        self.assertIn("scheduled_mop_revalidation_allowed(", preparation)
+        self.assertIn('"ignore_water_readiness": True', preparation)
+
+        dispatch_loop = coordinator.index("for robot, candidate in assignments:")
+        dispatch_call = coordinator.index("ok, message = await self._async_dispatch", dispatch_loop)
+        section = coordinator[dispatch_loop:dispatch_call]
+        self.assertIn('("water_confirmed", "ignore_water_readiness")', section)
+        self.assertIn("fresh_resolved[key] = True", section)
+
     def test_program_options_and_capability_sources_refresh_dynamically(self) -> None:
         selects = (PACKAGE / "select.py").read_text(encoding="utf-8")
         coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")

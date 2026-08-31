@@ -40,7 +40,7 @@ def _load(name: str, path: Path):
     return module
 
 
-_load(f"{PACKAGE_NAME}.models", PACKAGE_PATH / "models.py")
+models = _load(f"{PACKAGE_NAME}.models", PACKAGE_PATH / "models.py")
 _load(f"{PACKAGE_NAME}.adapters.base", PACKAGE_PATH / "adapters" / "base.py")
 _load(f"{PACKAGE_NAME}.adapters.generic", PACKAGE_PATH / "adapters" / "generic.py")
 roborock = _load(
@@ -200,6 +200,98 @@ class RoborockWaterTests(unittest.TestCase):
                       for key, state in zip(roborock.WATER_ENTITY_KEYS, states)), True)
             self.assertEqual(readiness.status, "sensor_blocked")
             self.assertFalse(readiness.ready)
+
+    def test_only_attached_shortage_is_eligible_for_scheduled_revalidation(self) -> None:
+        eligible, _ = roborock.resolve_roborock_water_readiness(
+            (
+                self.evidence("water_box_carriage_status", "on"),
+                self.evidence("water_box_status", "on"),
+                self.evidence("water_shortage", "on"),
+            ),
+            True,
+        )
+        self.assertTrue(eligible.revalidation_eligible)
+
+        for states in (("off", "on", "on"), ("on", "off", "on"), ("on", "on", "unavailable")):
+            readiness, _ = roborock.resolve_roborock_water_readiness(
+                tuple(
+                    self.evidence(key, state)
+                    for key, state in zip(roborock.WATER_ENTITY_KEYS, states)
+                ),
+                True,
+            )
+            self.assertFalse(readiness.revalidation_eligible)
+
+
+class RoborockWaterPreflightTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _capabilities(water):
+        return models.AdapterCapabilities(
+            adapter_id="roborock",
+            schema_version=10,
+            portable_area_clean=True,
+            supported_pass_counts=frozenset({1}),
+            supported_operations=frozenset({"vacuum", "mop"}),
+            water_readiness=water,
+        )
+
+    @staticmethod
+    def _context():
+        return base.AdapterMatchContext(
+            entity_id="vacuum.test",
+            platform="roborock",
+            supports_area_clean=True,
+            supports_send_command=False,
+            profile=types.SimpleNamespace(),
+        )
+
+    async def test_revalidation_bypass_requires_a_fresh_eligible_snapshot(self) -> None:
+        adapter = roborock.RoborockVacuumAdapter(generic.GenericVacuumAdapter())
+        request = base.AdapterDispatchRequest(
+            "vacuum.test", ("room",), "mop", 1, {"ignore_water_readiness": True}
+        )
+        hass = types.SimpleNamespace()
+        context = self._context()
+
+        adapter.async_capabilities = AsyncMock(
+            return_value=self._capabilities(
+                models.WaterReadiness(
+                    "sensor_blocked",
+                    "water_unavailable",
+                    authoritative=True,
+                    revalidation_eligible=True,
+                )
+            )
+        )
+        self.assertTrue((await adapter.async_preflight(hass, context, request)).ready)
+
+        adapter.async_capabilities.return_value = self._capabilities(
+            models.WaterReadiness(
+                "sensor_blocked", "water_telemetry_unavailable", authoritative=True
+            )
+        )
+        blocked = await adapter.async_preflight(hass, context, request)
+        self.assertTrue(blocked.blocked)
+        self.assertEqual(blocked.code, "water_telemetry_unavailable")
+
+    async def test_revalidation_bypass_never_skips_manual_water_confirmation(self) -> None:
+        adapter = roborock.RoborockVacuumAdapter(generic.GenericVacuumAdapter())
+        adapter.async_capabilities = AsyncMock(
+            return_value=self._capabilities(models.WaterReadiness.confirmation_required())
+        )
+        result = await adapter.async_preflight(
+            types.SimpleNamespace(),
+            self._context(),
+            base.AdapterDispatchRequest(
+                "vacuum.test",
+                ("room",),
+                "mop",
+                1,
+                {"ignore_water_readiness": True},
+            ),
+        )
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.code, "water_confirmation_required")
 
 
 class RoborockReadinessTests(unittest.TestCase):

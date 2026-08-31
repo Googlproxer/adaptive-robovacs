@@ -151,6 +151,7 @@ class WaterReadiness:
     reason: str
     ready: bool = False
     authoritative: bool = False
+    revalidation_eligible: bool = False
 
     @classmethod
     def unsupported(cls) -> "WaterReadiness":
@@ -159,6 +160,18 @@ class WaterReadiness:
     @classmethod
     def confirmation_required(cls) -> "WaterReadiness":
         return cls("confirmation_required", "water_confirmation_required")
+
+
+def scheduled_mop_revalidation_allowed(
+    source: str | None, operation: str, water: WaterReadiness
+) -> bool:
+    """Return whether one scheduler mop may revalidate stale water telemetry."""
+
+    return (
+        source == "scheduler"
+        and operation == "mop"
+        and water.revalidation_eligible
+    )
 
 
 @dataclass(frozen=True, slots=True)

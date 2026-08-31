@@ -50,6 +50,31 @@ class CadenceTests(unittest.TestCase):
         )
         self.assertIsNone(models.manual_deferral(self.now, self.now + timedelta(hours=25)))
 
+    def test_only_scheduler_mops_can_revalidate_eligible_water_shortage(self) -> None:
+        eligible = models.WaterReadiness(
+            "sensor_blocked",
+            "water_unavailable",
+            authoritative=True,
+            revalidation_eligible=True,
+        )
+        blocked = models.WaterReadiness(
+            "sensor_blocked", "water_unavailable", authoritative=True
+        )
+        self.assertTrue(
+            models.scheduled_mop_revalidation_allowed("scheduler", "mop", eligible)
+        )
+        self.assertFalse(
+            models.scheduled_mop_revalidation_allowed(
+                "manual_dashboard", "mop", eligible
+            )
+        )
+        self.assertFalse(
+            models.scheduled_mop_revalidation_allowed("scheduler", "vacuum", eligible)
+        )
+        self.assertFalse(
+            models.scheduled_mop_revalidation_allowed("scheduler", "mop", blocked)
+        )
+
     def test_manual_clean_accepts_only_a_docked_robot(self) -> None:
         self.assertTrue(models.manual_clean_robot_is_docked("docked"))
         self.assertFalse(models.manual_clean_robot_is_docked("idle"))

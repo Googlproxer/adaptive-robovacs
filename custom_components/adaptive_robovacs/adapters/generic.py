@@ -87,7 +87,6 @@ class GenericVacuumAdapter(VacuumAdapter):
             request.operation == "mop"
             and capabilities.water_readiness.status == "confirmation_required"
             and not bool(request.cleaning_profile.get("water_confirmed"))
-            and not bool(request.cleaning_profile.get("ignore_water_readiness"))
         ):
             return AdapterDispatchResult(
                 "blocked",
