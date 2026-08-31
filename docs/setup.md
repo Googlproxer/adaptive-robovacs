@@ -10,7 +10,7 @@ floor as a room. Use labels instead of editing configuration files:
 | `robovac-bedroom` | Area | Defaults to disabled, weekly cleaning cadence. |
 | `robovac-bedroom-transit` | Area | Daytime-only; blocks while any bedroom is occupied. |
 | `robovac-exclude` | Area | Never scheduled. |
-| `robovac-radar` | Occupancy binary sensor | Preferred over older occupancy/motion sensors. |
+| `robovac-radar` | Radar device (recommended) or occupancy binary sensor | Preferred over older occupancy/motion sensors. |
 
 Home Assistant normalizes the label registry IDs to underscores (for example,
 `robovac_bedroom`). The names above are what you create in the UI; the
@@ -19,6 +19,12 @@ integration matches the normalized IDs.
 Set every vacuum's device or entity area to its dock area. The integration gets
 the served floor from that area's floor assignment. A newly assigned vacuum,
 room, or sensor is picked up during the next evaluation without a reload.
+
+For radar discovery, an occupancy binary sensor's direct labels are
+authoritative. When the entity has no labels, Adaptive RoboVacs inherits its
+owning device's labels. This lets a single `robovac-radar` device label cover
+all of a radar's occupancy entities, while a direct entity label remains an
+explicit override.
 
 ## Native room mapping
 

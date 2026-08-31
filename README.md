@@ -17,8 +17,9 @@ automatically on supported versions.
   retain the portable `vacuum.clean_area` path; compatible Roborock vacuums can
   use native two-pass cross-hatched room cleaning through Home Assistant's
   existing area mapping.
-- Prefers occupancy sensors labelled `robovac-radar`, with occupancy/motion
-  binary sensors in the same area as a fallback.
+- Prefers occupancy sensors labelled `robovac-radar`, either directly or
+  inherited from their device, with occupancy/motion binary sensors in the
+  same area as a fallback.
 - Supports party mode, manual-clean deferrals, learned vacancy forecasts,
   restart recovery, multi-robot ready-first allocation, room pass overrides,
   ordered vacuum/mop programs, independent
@@ -39,8 +40,10 @@ automatically on supported versions.
    entity's **Map vacuum segments to areas** action.
 5. Add area labels as needed:
    `robovac-bedroom`, `robovac-bedroom-transit`, and `robovac-exclude`.
-   Label radar occupancy entities `robovac-radar`. Home Assistant normalizes
-   their underlying IDs to underscores (for example, `robovac_bedroom`), which
+   Label each radar device (recommended) or its occupancy binary sensor
+   `robovac-radar`. An entity's direct labels take precedence; only an
+   unlabelled entity inherits its device labels. Home Assistant normalizes
+   underlying label IDs to underscores (for example, `robovac_bedroom`), which
    the integration handles automatically.
 6. Add the supplied dashboard card resource and compose the global, per-vacuum,
    and per-room cards using the example sections dashboard. Review schedule

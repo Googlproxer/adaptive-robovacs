@@ -7,6 +7,15 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-08-31
+
+### Fixed
+
+- Radar occupancy discovery now inherits a device's labels when the occupancy
+  entity has no direct labels. Direct entity labels remain authoritative.
+
+Detailed notes: [`docs/releases/v1.11.1.md`](docs/releases/v1.11.1.md).
+
 ## [1.10.2] - 2026-08-27
 
 ### Changed

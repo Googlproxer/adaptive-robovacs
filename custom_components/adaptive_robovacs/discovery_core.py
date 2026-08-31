@@ -158,6 +158,25 @@ def _labels_for(
     return result
 
 
+def _occupancy_labels(
+    entry: er.RegistryEntry,
+    devices: dr.DeviceRegistry,
+    registry: lr.LabelRegistry,
+) -> set[str]:
+    """Return direct occupancy labels, or inherit the owning device labels.
+
+    An entity's labels are an explicit per-entity override.  Only an unlabelled
+    occupancy entity inherits its owning device's labels, which makes a device
+    label the convenient default for every radar entity it exposes.
+    """
+
+    entity_labels = getattr(entry, "labels", None)
+    if entity_labels:
+        return _labels_for(entity_labels, registry)
+    device = devices.async_get(entry.device_id) if entry.device_id else None
+    return _labels_for(getattr(device, "labels", None), registry)
+
+
 def _state_options(hass: HomeAssistant, entity_id: str) -> tuple[str, ...]:
     state = hass.states.get(entity_id)
     options = state.attributes.get("options", []) if state else []
@@ -362,8 +381,8 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
         if not area_id:
             continue
         radars, fallbacks = occupancy_by_area.setdefault(area_id, ([], []))
-        entity_labels = _labels_for(getattr(entry, "labels", None), labels)
-        (radars if LABEL_RADAR in entity_labels else fallbacks).append(entry.entity_id)
+        occupancy_labels = _occupancy_labels(entry, devices, labels)
+        (radars if LABEL_RADAR in occupancy_labels else fallbacks).append(entry.entity_id)
 
     served_floors = {robot.floor_id for robot in result.robots.values() if robot.floor_id}
     for area in areas.areas.values():
