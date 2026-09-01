@@ -56,6 +56,24 @@ class CoordinatorFacadeContractTests(unittest.TestCase):
             self.assertIn("await self.async_evaluate(dry_run=True", section)
             self.assertNotIn("self._notify_listeners()", section)
 
+    def test_device_label_updates_refresh_discovery_without_evaluation(self) -> None:
+        source = COORDINATOR_PATH.read_text(encoding="utf-8")
+        listener = source.split("self._unsubscribers.extend(", 1)[1].split(
+            "await self._async_restore_water_confirmations()", 1
+        )[0]
+        handler = source.split("    def _on_device_registry_updated", 1)[1].split(
+            "    async def _async_interval", 1
+        )[0]
+
+        self.assertIn("dr.EVENT_DEVICE_REGISTRY_UPDATED", listener)
+        self.assertIn("self._on_device_registry_updated", listener)
+        self.assertIn('event.data.get("action") != "update"', handler)
+        self.assertIn('"labels" not in event.data.get("changes", {})', handler)
+        self.assertIn("self._async_refresh_discovery_after_device_label_change()", handler)
+        self.assertIn("async with self._lock", handler)
+        self.assertIn("await self.async_refresh_discovery()", handler)
+        self.assertNotIn("async_evaluate", handler)
+
 
 if __name__ == "__main__":
     unittest.main()

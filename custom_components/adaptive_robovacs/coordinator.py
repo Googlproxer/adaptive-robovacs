@@ -14,6 +14,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_CALL_SERVICE, EVENT_HOMEASSISTANT_STARTED, EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -272,6 +273,9 @@ class AdaptiveRoboVacCoordinator:
                 async_track_time_interval(self.hass, self._async_interval, timedelta(minutes=15)),
                 self.hass.bus.async_listen(EVENT_CALL_SERVICE, self._on_call_service),
                 self.hass.bus.async_listen(EVENT_STATE_CHANGED, self._on_state_changed),
+                self.hass.bus.async_listen(
+                    dr.EVENT_DEVICE_REGISTRY_UPDATED, self._on_device_registry_updated
+                ),
                 self.hass.bus.async_listen(
                     "mobile_app_notification_action", self._on_mobile_notification_action
                 ),
@@ -2264,6 +2268,22 @@ class AdaptiveRoboVacCoordinator:
                     dry_run=False, reason=f"state:{entity_id}", transition=transition
                 )
             )
+
+    @callback
+    def _on_device_registry_updated(self, event: Event) -> None:
+        """Refresh occupancy sources when a device's labels change."""
+
+        if event.data.get("action") != "update":
+            return
+        if "labels" not in event.data.get("changes", {}):
+            return
+        self._async_create_task(self._async_refresh_discovery_after_device_label_change())
+
+    async def _async_refresh_discovery_after_device_label_change(self) -> None:
+        """Immediately apply an occupancy device-label change."""
+
+        async with self._lock:
+            await self.async_refresh_discovery()
 
     async def _async_interval(self, _now_value: datetime) -> None:
         await self.async_evaluate(dry_run=False, reason="interval")

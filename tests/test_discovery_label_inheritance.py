@@ -81,7 +81,7 @@ class DiscoveryLabelInheritanceTests(unittest.TestCase):
         self.assertNotIn("robovac_radar", result)
         devices.async_get.assert_not_called()
 
-    def test_device_occupancy_exclusion_overrides_direct_entity_labels(self) -> None:
+    def test_device_occupancy_exclusion_skips_even_directly_labelled_entities(self) -> None:
         entry = types.SimpleNamespace(
             labels=frozenset({"robovac_radar"}), device_id="doorbell-device"
         )
@@ -97,7 +97,7 @@ class DiscoveryLabelInheritanceTests(unittest.TestCase):
 
         self.assertTrue(result)
 
-    def test_entity_occupancy_exclusion_is_honoured(self) -> None:
+    def test_entity_occupancy_exclusion_does_not_skip_its_device(self) -> None:
         entry = types.SimpleNamespace(
             labels=frozenset({"robovac_exclude_occupancy"}), device_id=None
         )
@@ -107,12 +107,16 @@ class DiscoveryLabelInheritanceTests(unittest.TestCase):
             entry, devices, self.label_registry
         )
 
-        self.assertTrue(result)
+        self.assertFalse(result)
         devices.async_get.assert_not_called()
 
-    def test_occupancy_exclusion_matches_the_label_display_name(self) -> None:
-        entry = types.SimpleNamespace(labels=frozenset({"label-id"}), device_id=None)
-        devices = types.SimpleNamespace(async_get=Mock())
+    def test_occupancy_exclusion_matches_the_device_label_display_name(self) -> None:
+        entry = types.SimpleNamespace(labels=frozenset(), device_id="doorbell-device")
+        devices = types.SimpleNamespace(
+            async_get=lambda device_id: types.SimpleNamespace(
+                labels=frozenset({"label-id"})
+            )
+        )
         label_registry = types.SimpleNamespace(
             async_get_label=lambda label_id: types.SimpleNamespace(
                 name="robovac-exclude-occupancy"

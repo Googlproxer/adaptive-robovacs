@@ -193,21 +193,15 @@ def _occupancy_source_is_excluded(
     devices: dr.DeviceRegistry,
     registry: lr.LabelRegistry,
 ) -> bool:
-    """Return whether an occupancy source is explicitly excluded.
+    """Return whether the occupancy source's device is explicitly excluded."""
 
-    Exclusion is additive rather than a classification override: an exclusion
-    label placed on a device must suppress all of its occupancy entities, even
-    when an entity has its own labels for radar classification.
-    """
-
-    entity_labels = _labels_for(getattr(entry, "labels", None), registry)
     device = devices.async_get(entry.device_id) if entry.device_id else None
     device_labels = _labels_for(getattr(device, "labels", None), registry)
     exclusion_labels = {
         LABEL_EXCLUDE_OCCUPANCY,
         _normalised_label(LABEL_EXCLUDE_OCCUPANCY),
     }
-    return bool(exclusion_labels & (entity_labels | device_labels))
+    return bool(exclusion_labels & device_labels)
 
 
 def _state_options(hass: HomeAssistant, entity_id: str) -> tuple[str, ...]:

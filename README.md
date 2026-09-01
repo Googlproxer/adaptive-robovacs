@@ -47,7 +47,7 @@ automatically on supported versions.
    unlabelled entity inherits its device labels. Home Assistant normalizes
    underlying label IDs to underscores (for example, `robovac_bedroom`), which
    the integration handles automatically. To ignore a motion or occupancy
-   source, label the source or its device `robovac-exclude-occupancy`;
+   source, label its device `robovac-exclude-occupancy`;
    device-level exclusion applies to every occupancy source it exposes.
 6. Add the supplied dashboard card resource and compose the global, per-vacuum,
    and per-room cards using the example sections dashboard. Review schedule
