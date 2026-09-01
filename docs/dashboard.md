@@ -52,8 +52,10 @@ inactive, or unavailable. Markers and links use stable registry IDs/area IDs,
 so a display-name or entity-ID change does not redraw the plan. Saved records
 whose rooms or sensors are no longer discovered are retained and shown as a
 warning until an administrator explicitly removes them. An unplaced sensor's
-palette button remains disabled until its discovered room has been placed; then
-one click adds the marker in that room.
+palette button uses the source's Home Assistant friendly name and remains
+disabled until its discovered room has been placed; then one click adds the
+marker in that room. Hovering a placed marker shows that same name with its
+current activity state.
 
 ### Local editor preview
 

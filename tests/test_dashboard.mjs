@@ -67,6 +67,7 @@ await import("../custom_components/adaptive_robovacs/frontend/adaptive-robovacs-
 const GlobalCard = elements.get("adaptive-robovacs-global");
 const VacuumCard = elements.get("adaptive-robovacs-vacuum");
 const RoomCard = elements.get("adaptive-robovacs-room");
+const FloorPlanCard = elements.get("adaptive-robovacs-floorplan");
 
 const entry = "entry-one";
 const adaptiveState = (role, attributes = {}, state = "ready") => ({
@@ -532,6 +533,25 @@ test("cards request full section width and validate option types", () => {
   assert.deepEqual(card.getGridOptions(), { columns: "full" });
   assert.throws(() => configure(RoomCard, { area_id: ["kitchen"] }), /must be a string/);
   assert.throws(() => configure(GlobalCard, { title: 42 }), /must be a string/);
+});
+
+test("floor plan sensors use their Home Assistant friendly name", () => {
+  const card = new FloorPlanCard();
+  card._hass = {
+    states: {
+      "binary_sensor.entry_camera_motion": {
+        attributes: { friendly_name: "Entry Camera Motion" },
+      },
+    },
+  };
+  assert.equal(
+    card._sensorName({ entity_id: "binary_sensor.entry_camera_motion" }),
+    "Entry Camera Motion",
+  );
+  assert.equal(
+    card._sensorName({ entity_id: "binary_sensor.removed_sensor" }),
+    "binary_sensor.removed_sensor",
+  );
 });
 
 test("hidden-tab updates defer all card work and render only the newest state on return", async () => {

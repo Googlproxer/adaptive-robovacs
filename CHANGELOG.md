@@ -5,6 +5,15 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.12.2] - 2026-09-01
+
+### Changed
+
+- Floor-plan sensor palette entries and marker hover text now use each source's
+  Home Assistant friendly name instead of generated room/type labels.
+
+Detailed notes: [`docs/releases/v1.12.2.md`](docs/releases/v1.12.2.md).
+
 ## [1.12.1] - 2026-09-01
 
 ### Changed

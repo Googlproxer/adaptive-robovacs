@@ -770,6 +770,11 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
     return { ...context, plan, floor };
   }
 
+  _sensorName(sensor) {
+    const friendlyName = this._hass?.states?.[sensor.entity_id]?.attributes?.friendly_name;
+    return typeof friendlyName === "string" && friendlyName.trim() ? friendlyName : sensor.entity_id;
+  }
+
   _beginEditing(model) {
     const rooms = {};
     const sensors = {};
@@ -1036,7 +1041,8 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
         if (!marker || marker.area_id !== room.area_id) return "";
         const x = rectangle.x + rectangle.width * marker.x / 1000;
         const y = rectangle.y + rectangle.height * marker.y / 1000;
-        return `<g class="sensor ${escapeHtml(sensor.kind)} ${escapeHtml(sensor.state)}" data-sensor="${escapeHtml(sensor.registry_id)}" transform="translate(${x} ${y})" tabindex="0" role="img" aria-label="${escapeHtml(`${sensor.kind} sensor: ${sensor.state}`)}"><circle r="0.8" /><path d="M1.2,-1.2 A1.7,1.7 0 0 1 1.2,1.2" /><title>${escapeHtml(`${sensor.kind} sensor: ${sensor.state}`)}</title></g>`;
+        const sensorTitle = `${this._sensorName(sensor)}: ${sensor.state}`;
+        return `<g class="sensor ${escapeHtml(sensor.kind)} ${escapeHtml(sensor.state)}" data-sensor="${escapeHtml(sensor.registry_id)}" transform="translate(${x} ${y})" tabindex="0" role="img" aria-label="${escapeHtml(sensorTitle)}"><circle r="0.8" /><path d="M1.2,-1.2 A1.7,1.7 0 0 1 1.2,1.2" /><title>${escapeHtml(sensorTitle)}</title></g>`;
       }).join("");
       const occupancy = (room.sensors || []).some((sensor) => sensor.state === "active") ? "active" : "inactive";
       return `<g class="room ${occupancy}" data-room="${escapeHtml(room.area_id)}"><rect x="${rectangle.x}" y="${rectangle.y}" width="${rectangle.width}" height="${rectangle.height}" rx="0.8" /><text x="${rectangle.x + 1}" y="${rectangle.y + 2.1}">${escapeHtml(room.name)}</text><circle class="link-source" data-link-source="${escapeHtml(room.area_id)}" cx="${rectangle.x + rectangle.width}" cy="${rectangle.y + rectangle.height / 2}" r="0.7" />${this._editing ? `<rect class="resize" data-room="${escapeHtml(room.area_id)}" data-resize="true" x="${rectangle.x + rectangle.width - 0.8}" y="${rectangle.y + rectangle.height - 0.8}" width="0.8" height="0.8" />` : ""}${sensorMarkup}</g>`;
@@ -1045,10 +1051,11 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
     const unplacedSensors = model.floor.rooms.flatMap((room) => (room.sensors || []).filter((sensor) => !(this._editing ? this._draft.sensors[sensor.registry_id] : sensor.marker)).map((sensor) => ({ ...sensor, area_id: room.area_id, room_name: room.name })));
     const renderedUnplacedSensors = unplacedSensors.map((sensor) => {
       const roomIsPlaced = Boolean(rectangles[sensor.area_id]);
+      const sensorName = this._sensorName(sensor);
       const title = roomIsPlaced
-        ? `Place this ${sensor.kind} occupancy sensor in ${sensor.room_name}`
-        : `Place ${sensor.room_name} before adding this occupancy sensor`;
-      return `<button data-sensor-select="${escapeHtml(sensor.registry_id)}" data-sensor-room="${escapeHtml(sensor.area_id)}" title="${escapeHtml(title)}" ${roomIsPlaced ? "" : "disabled"}>${escapeHtml(`${sensor.room_name} ${sensor.kind}`)}</button>`;
+        ? `Place ${sensorName} in ${sensor.room_name}`
+        : `Place ${sensor.room_name} before adding ${sensorName}`;
+      return `<button data-sensor-select="${escapeHtml(sensor.registry_id)}" data-sensor-room="${escapeHtml(sensor.area_id)}" title="${escapeHtml(title)}" ${roomIsPlaced ? "" : "disabled"}>${escapeHtml(sensorName)}</button>`;
     }).join("");
     const admin = this._hass.user?.is_admin === true;
     root.innerHTML = `
