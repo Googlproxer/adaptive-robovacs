@@ -5,6 +5,15 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.12.1] - 2026-09-01
+
+### Changed
+
+- The dedicated Floor plan dashboard tab now uses the available page width,
+  and each plan canvas has an 800px minimum height for practical room layout.
+
+Detailed notes: [`docs/releases/v1.12.1.md`](docs/releases/v1.12.1.md).
+
 ## [1.12.0] - 2026-09-01
 
 ### Added
