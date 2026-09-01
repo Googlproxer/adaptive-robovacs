@@ -20,6 +20,30 @@ NATIVE_MOP_PROFILE_INTENSITIES = frozenset({"low", "medium", "high"})
 ROBOROCK_DISPATCHABLE_STATES = frozenset(
     {"idle", "docked", "charging", "charging_complete"}
 )
+FLOOR_PLAN_MAX_GRID_COORDINATE = 1000
+FLOOR_PLAN_MIN_ROOM_SPAN = 2
+
+
+def normalize_floor_plan_edge(left: object, right: object) -> tuple[str, str]:
+    """Return one canonical undirected area pair for the floor-plan graph."""
+
+    if not isinstance(left, str) or not left:
+        raise ValueError("floor-plan edge source must be a non-empty area ID")
+    if not isinstance(right, str) or not right:
+        raise ValueError("floor-plan edge target must be a non-empty area ID")
+    if left == right:
+        raise ValueError("floor-plan edges cannot link a room to itself")
+    return tuple(sorted((left, right)))
+
+
+def floor_plan_integer(value: object, name: str, minimum: int, maximum: int) -> int:
+    """Validate one finite integer used by a durable floor-plan document."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
 
 
 @dataclass(frozen=True, slots=True)

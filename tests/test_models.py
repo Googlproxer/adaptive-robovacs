@@ -39,6 +39,23 @@ class OccupancyTests(unittest.TestCase):
         self.assertEqual(result.source, "no_sensor")
 
 
+class FloorPlanModelTests(unittest.TestCase):
+    def test_floor_plan_edges_are_sorted_and_reject_self_links(self) -> None:
+        self.assertEqual(
+            models.normalize_floor_plan_edge("kitchen", "hall"),
+            ("hall", "kitchen"),
+        )
+        with self.assertRaises(ValueError):
+            models.normalize_floor_plan_edge("study", "study")
+
+    def test_floor_plan_values_are_bounded_integers(self) -> None:
+        self.assertEqual(models.floor_plan_integer(4, "x", 0, 10), 4)
+        for value in (True, 1.5, -1, 11):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    models.floor_plan_integer(value, "x", 0, 10)
+
+
 class CadenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.now = datetime(2026, 8, 7, 12, 0)

@@ -227,6 +227,16 @@ function formDefinition(targetField) {
   };
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#39;",
+    '"': "&quot;",
+  })[character]);
+}
+
 class AdaptiveRoboVacsCardBase extends HTMLElement {
   setConfig(config) {
     this._assertConfig(config || {});
@@ -654,9 +664,431 @@ class AdaptiveRoboVacsRoomCard extends AdaptiveRoboVacsCardBase {
   }
 }
 
+class AdaptiveRoboVacsFloorPlanEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = { ...(config || {}) };
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  _entryContext() {
+    const index = adaptiveEntityIndex(this._hass);
+    const entryId = this._config?.entry_id || (index.entryIds.length === 1 ? index.entryIds[0] : undefined);
+    const entry = entryId ? index.byEntry.get(entryId) : undefined;
+    const scheduler = entry?.entities.find((item) => item.attrs[ROLE_ATTRIBUTE] === "scheduler_status");
+    return { entryId, scheduler };
+  }
+
+  _change(key, value) {
+    const config = { ...this._config, [key]: value || undefined };
+    this.dispatchEvent(new CustomEvent("config-changed", {
+      detail: { config }, bubbles: true, composed: true,
+    }));
+  }
+
+  _render() {
+    if (!this._hass || !this.attachShadow && !this.shadowRoot) return;
+    const root = this.shadowRoot || this.attachShadow({ mode: "open" });
+    const context = this._entryContext();
+    const floors = context.scheduler?.attrs?.floor_plan?.floors || [];
+    const entries = adaptiveEntityIndex(this._hass).entryIds;
+    root.innerHTML = `
+      <style>:host { display:block; } label { display:block; margin: 12px 0 4px; } select,input { box-sizing:border-box; width:100%; padding:8px; }</style>
+      <label>Integration entry</label>
+      <select data-field="entry_id"><option value="">${entries.length === 1 ? "Automatic" : "Select an entry"}</option>${entries.map((entryId) => `<option value="${escapeHtml(entryId)}" ${context.entryId === entryId ? "selected" : ""}>${escapeHtml(entryId)}</option>`).join("")}</select>
+      <label>Floor</label>
+      <select data-field="floor_id"><option value="">Select a floor</option>${floors.map((floor) => `<option value="${escapeHtml(floor.floor_id)}" ${this._config?.floor_id === floor.floor_id ? "selected" : ""}>${escapeHtml(floor.floor_id)}</option>`).join("")}</select>
+      <label>Title</label><input data-field="title" value="${escapeHtml(this._config?.title || "")}" />
+    `;
+    root.querySelectorAll("[data-field]").forEach((element) => {
+      element.addEventListener("change", (event) => this._change(event.target.dataset.field, event.target.value));
+    });
+  }
+}
+
+class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
+  static getConfigElement() {
+    return document.createElement("adaptive-robovacs-floorplan-editor");
+  }
+
+  static getStubConfig() {
+    return {};
+  }
+
+  setConfig(config) {
+    assertCardConfig(config, "floor_id");
+    this._config = { ...(config || {}) };
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._editing) this._render();
+  }
+
+  connectedCallback() {
+    this._connected = true;
+    this._render();
+  }
+
+  disconnectedCallback() {
+    this._connected = false;
+  }
+
+  getCardSize() {
+    return 8;
+  }
+
+  getGridOptions() {
+    return { columns: "full" };
+  }
+
+  _context() {
+    const index = adaptiveEntityIndex(this._hass);
+    const configuredEntry = this._config?.entry_id;
+    if (configuredEntry) {
+      const entry = index.byEntry.get(configuredEntry);
+      return entry ? { entryId: configuredEntry, entry } : { error: "No Adaptive RoboVacs entities were found for the selected integration entry." };
+    }
+    if (index.entryIds.length !== 1) {
+      return { error: index.entryIds.length ? "Select an Adaptive RoboVacs integration entry for this floor plan." : "No Adaptive RoboVacs entities are currently available." };
+    }
+    return { entryId: index.entryIds[0], entry: index.byEntry.get(index.entryIds[0]) };
+  }
+
+  _model() {
+    const context = this._context();
+    if (context.error) return context;
+    const scheduler = context.entry.entities.find((item) => item.attrs[ROLE_ATTRIBUTE] === "scheduler_status");
+    const plan = scheduler?.attrs?.floor_plan;
+    const floor = plan?.floors?.find((item) => item.floor_id === this._config?.floor_id);
+    if (!floor) return { error: "Select a discovered floor in the card editor." };
+    return { ...context, plan, floor };
+  }
+
+  _beginEditing(model) {
+    const rooms = {};
+    const sensors = {};
+    for (const room of model.floor.rooms) {
+      if (room.rectangle) rooms[room.area_id] = { ...room.rectangle };
+      for (const sensor of room.sensors || []) {
+        if (sensor.marker) sensors[sensor.registry_id] = { ...sensor.marker };
+      }
+    }
+    this._draft = {
+      revision: model.plan.revision,
+      rooms,
+      sensors,
+      forget_area_ids: [],
+      forget_sensor_registry_ids: [],
+      edges: (model.plan.edges || []).filter((edge) =>
+        edge.length === 2 && model.floor.rooms.some((room) => room.area_id === edge[0])
+          && model.floor.rooms.some((room) => room.area_id === edge[1])
+      ).map((edge) => [...edge]),
+    };
+    this._editing = true;
+    this._message = undefined;
+    this._render();
+  }
+
+  _floorGeometry(model) {
+    const rectangles = this._editing ? this._draft.rooms : Object.fromEntries(
+      model.floor.rooms.filter((room) => room.rectangle).map((room) => [room.area_id, room.rectangle])
+    );
+    const height = Math.max(30, ...Object.values(rectangles).map((room) => room.y + room.height + 2));
+    return { rectangles, height };
+  }
+
+  _point(event, svg, height) {
+    const rect = svg.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(48, Math.round(((event.clientX - rect.left) / rect.width) * 48))),
+      y: Math.max(0, Math.min(height, Math.round(((event.clientY - rect.top) / rect.height) * height))),
+    };
+  }
+
+  _roomAt(point, rectangles) {
+    return Object.entries(rectangles).find(([, room]) =>
+      point.x >= room.x && point.x <= room.x + room.width && point.y >= room.y && point.y <= room.y + room.height
+    )?.[0];
+  }
+
+  _setDraftRoom(areaId, rectangle) {
+    this._draft.rooms[areaId] = {
+      floor_id: this._config.floor_id,
+      x: Math.max(0, rectangle.x),
+      y: Math.max(0, rectangle.y),
+      width: Math.max(2, rectangle.width),
+      height: Math.max(2, rectangle.height),
+    };
+  }
+
+  _defaultRoomRectangle(room) {
+    const width = Math.min(18, Math.max(12, Math.ceil(String(room.name).length * 1.15) + 4));
+    const height = 9;
+    const rectangles = Object.values(this._draft.rooms);
+    const bottom = Math.max(24, ...rectangles.map((rectangle) => rectangle.y + rectangle.height));
+    for (let y = 2; y <= bottom + height + 4; y += 2) {
+      for (let x = 2; x <= 48 - width - 2; x += 2) {
+        const overlaps = rectangles.some((rectangle) =>
+          x < rectangle.x + rectangle.width + 2
+          && x + width + 2 > rectangle.x
+          && y < rectangle.y + rectangle.height + 2
+          && y + height + 2 > rectangle.y
+        );
+        if (!overlaps) return { x, y, width, height };
+      }
+    }
+    return { x: 2, y: bottom + 2, width, height };
+  }
+
+  _placeUnplacedRoom(areaId, model) {
+    const room = model.floor.rooms.find((item) => item.area_id === areaId);
+    if (!room || this._draft.rooms[areaId]) return;
+    this._setDraftRoom(areaId, this._defaultRoomRectangle(room));
+    this._render();
+  }
+
+  _placeUnplacedSensor(registryId, areaId) {
+    if (!this._draft.rooms[areaId]) return;
+    const markerPositions = [
+      [500, 500], [700, 500], [300, 500], [500, 700], [500, 300], [700, 700], [300, 300],
+    ];
+    const existingMarkers = Object.values(this._draft.sensors).filter(
+      (marker) => marker.area_id === areaId
+    );
+    const [x, y] = markerPositions[existingMarkers.length % markerPositions.length];
+    this._draft.sensors[registryId] = { area_id: areaId, x, y };
+    this._render();
+  }
+
+  _setLinkPreview(svg, rectangles, point) {
+    const source = rectangles[this._drag?.areaId];
+    if (!source) return;
+    let preview = svg.querySelector("[data-link-preview]");
+    if (!preview) {
+      preview = svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
+      preview.setAttribute("data-link-preview", "true");
+      const line = svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("class", "edge preview");
+      const dot = svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dot.setAttribute("class", "link-preview-dot");
+      dot.setAttribute("r", "0.7");
+      preview.append(line, dot);
+      svg.append(preview);
+    }
+    const targetId = this._roomAt(point, rectangles);
+    const target = targetId && targetId !== this._drag.areaId ? rectangles[targetId] : undefined;
+    const sourcePoint = { x: source.x + source.width, y: source.y + source.height / 2 };
+    const targetPoint = target ? {
+      x: Math.max(target.x, Math.min(sourcePoint.x, target.x + target.width)),
+      y: Math.max(target.y, Math.min(sourcePoint.y, target.y + target.height)),
+    } : point;
+    const line = preview.querySelector("line");
+    const dot = preview.querySelector("circle");
+    line.setAttribute("x1", sourcePoint.x);
+    line.setAttribute("y1", sourcePoint.y);
+    line.setAttribute("x2", targetPoint.x);
+    line.setAttribute("y2", targetPoint.y);
+    if (target) {
+      dot.setAttribute("display", "none");
+    } else {
+      dot.removeAttribute("display");
+      dot.setAttribute("cx", point.x);
+      dot.setAttribute("cy", point.y);
+    }
+  }
+
+  _clearLinkPreview(svg) {
+    svg.querySelector("[data-link-preview]")?.remove();
+  }
+
+  _onPointerDown(event, model) {
+    if (!this._editing || event.button !== 0) return;
+    const svg = event.currentTarget;
+    const geometry = this._floorGeometry(model);
+    const point = this._point(event, svg, geometry.height);
+    const target = event.target.closest?.("[data-room],[data-sensor],[data-link-source],[data-edge]");
+    if (target?.dataset.edge) {
+      const [left, right] = target.dataset.edge.split("|");
+      this._draft.edges = this._draft.edges.filter((edge) => !(edge[0] === left && edge[1] === right));
+      this._render();
+      return;
+    }
+    if (target?.dataset.linkSource) {
+      this._drag = { kind: "link", areaId: target.dataset.linkSource };
+      svg.setPointerCapture?.(event.pointerId);
+      this._setLinkPreview(svg, geometry.rectangles, point);
+      return;
+    }
+    if (target?.dataset.sensor) {
+      const marker = this._draft.sensors[target.dataset.sensor];
+      this._drag = { kind: "sensor", registryId: target.dataset.sensor, marker: { ...marker } };
+      return;
+    }
+    if (target?.dataset.room) {
+      const areaId = target.dataset.room;
+      this._drag = { kind: target.dataset.resize ? "resize" : "room", areaId, origin: point, rectangle: { ...this._draft.rooms[areaId] } };
+      return;
+    }
+  }
+
+  _onPointerMove(event, model) {
+    if (!this._drag || !this._editing) return;
+    const svg = event.currentTarget;
+    const geometry = this._floorGeometry(model);
+    const point = this._point(event, svg, geometry.height);
+    if (this._drag.kind === "link") {
+      this._setLinkPreview(svg, geometry.rectangles, point);
+      return;
+    }
+    if (this._drag.kind === "room") {
+      this._setDraftRoom(this._drag.areaId, {
+        ...this._drag.rectangle,
+        x: this._drag.rectangle.x + point.x - this._drag.origin.x,
+        y: this._drag.rectangle.y + point.y - this._drag.origin.y,
+      });
+    } else if (this._drag.kind === "resize") {
+      this._setDraftRoom(this._drag.areaId, {
+        ...this._drag.rectangle,
+        width: point.x - this._drag.rectangle.x,
+        height: point.y - this._drag.rectangle.y,
+      });
+    } else if (this._drag.kind === "create") {
+      this._setDraftRoom(this._drag.areaId, {
+        x: Math.min(this._drag.origin.x, point.x),
+        y: Math.min(this._drag.origin.y, point.y),
+        width: Math.abs(point.x - this._drag.origin.x),
+        height: Math.abs(point.y - this._drag.origin.y),
+      });
+    } else if (this._drag.kind === "sensor") {
+      const marker = this._draft.sensors[this._drag.registryId];
+      const room = this._draft.rooms[marker.area_id];
+      if (room) {
+        marker.x = Math.max(0, Math.min(1000, Math.round(((point.x - room.x) / room.width) * 1000)));
+        marker.y = Math.max(0, Math.min(1000, Math.round(((point.y - room.y) / room.height) * 1000)));
+      }
+    }
+    this._render();
+  }
+
+  _onPointerUp(event, model) {
+    if (!this._drag) return;
+    const svg = event.currentTarget;
+    if (this._drag.kind === "link") {
+      const geometry = this._floorGeometry(model);
+      const target = this._roomAt(this._point(event, svg, geometry.height), geometry.rectangles);
+      if (target && target !== this._drag.areaId) {
+        const edge = [this._drag.areaId, target].sort();
+        if (!this._draft.edges.some((item) => item[0] === edge[0] && item[1] === edge[1])) this._draft.edges.push(edge);
+      }
+      this._clearLinkPreview(svg);
+      svg.releasePointerCapture?.(event.pointerId);
+    }
+    this._drag = undefined;
+    this._render();
+  }
+
+  async _save(model) {
+    try {
+      await this._hass.callService("adaptive_robovacs", "save_floor_plan", {
+        entry_id: model.entryId,
+        floor_id: this._config.floor_id,
+        revision: this._draft.revision,
+        rooms: this._draft.rooms,
+        edges: this._draft.edges,
+        sensors: this._draft.sensors,
+        forget_area_ids: this._draft.forget_area_ids,
+        forget_sensor_registry_ids: this._draft.forget_sensor_registry_ids,
+      });
+      this._editing = false;
+      this._draft = undefined;
+      this._message = "Floor plan saved.";
+    } catch (error) {
+      this._message = error?.message || "Could not save the floor plan. Reload and try again.";
+    }
+    this._render();
+  }
+
+  _render() {
+    if (!this._connected || !this._hass || !this._config) return;
+    const root = this.shadowRoot || this.attachShadow({ mode: "open" });
+    const model = this._model();
+    if (model.error) {
+      root.innerHTML = `<ha-card><div class="message">${escapeHtml(model.error)}</div></ha-card>`;
+      return;
+    }
+    const geometry = this._floorGeometry(model);
+    const rectangles = geometry.rectangles;
+    const edges = this._editing ? this._draft.edges : model.plan.edges || [];
+    const renderedEdges = edges.filter((edge) => rectangles[edge[0]] && rectangles[edge[1]]).map((edge) => {
+      const left = rectangles[edge[0]]; const right = rectangles[edge[1]];
+      return `<line class="edge ${this._editing ? "editable" : ""}" data-edge="${escapeHtml(edge.join("|"))}" x1="${left.x + left.width / 2}" y1="${left.y + left.height / 2}" x2="${right.x + right.width / 2}" y2="${right.y + right.height / 2}" />`;
+    }).join("");
+    const renderedRooms = model.floor.rooms.filter((room) => rectangles[room.area_id]).map((room) => {
+      const rectangle = rectangles[room.area_id];
+      const sensorMarkup = (room.sensors || []).map((sensor) => {
+        const marker = this._editing ? this._draft.sensors[sensor.registry_id] : sensor.marker;
+        if (!marker || marker.area_id !== room.area_id) return "";
+        const x = rectangle.x + rectangle.width * marker.x / 1000;
+        const y = rectangle.y + rectangle.height * marker.y / 1000;
+        return `<g class="sensor ${escapeHtml(sensor.kind)} ${escapeHtml(sensor.state)}" data-sensor="${escapeHtml(sensor.registry_id)}" transform="translate(${x} ${y})" tabindex="0" role="img" aria-label="${escapeHtml(`${sensor.kind} sensor: ${sensor.state}`)}"><circle r="0.8" /><path d="M1.2,-1.2 A1.7,1.7 0 0 1 1.2,1.2" /><title>${escapeHtml(`${sensor.kind} sensor: ${sensor.state}`)}</title></g>`;
+      }).join("");
+      const occupancy = (room.sensors || []).some((sensor) => sensor.state === "active") ? "active" : "inactive";
+      return `<g class="room ${occupancy}" data-room="${escapeHtml(room.area_id)}"><rect x="${rectangle.x}" y="${rectangle.y}" width="${rectangle.width}" height="${rectangle.height}" rx="0.8" /><text x="${rectangle.x + 1}" y="${rectangle.y + 2.1}">${escapeHtml(room.name)}</text><circle class="link-source" data-link-source="${escapeHtml(room.area_id)}" cx="${rectangle.x + rectangle.width}" cy="${rectangle.y + rectangle.height / 2}" r="0.7" />${this._editing ? `<rect class="resize" data-room="${escapeHtml(room.area_id)}" data-resize="true" x="${rectangle.x + rectangle.width - 0.8}" y="${rectangle.y + rectangle.height - 0.8}" width="0.8" height="0.8" />` : ""}${sensorMarkup}</g>`;
+    }).join("");
+    const unplacedRooms = model.floor.rooms.filter((room) => !rectangles[room.area_id]);
+    const unplacedSensors = model.floor.rooms.flatMap((room) => (room.sensors || []).filter((sensor) => !(this._editing ? this._draft.sensors[sensor.registry_id] : sensor.marker)).map((sensor) => ({ ...sensor, area_id: room.area_id, room_name: room.name })));
+    const renderedUnplacedSensors = unplacedSensors.map((sensor) => {
+      const roomIsPlaced = Boolean(rectangles[sensor.area_id]);
+      const title = roomIsPlaced
+        ? `Place this ${sensor.kind} occupancy sensor in ${sensor.room_name}`
+        : `Place ${sensor.room_name} before adding this occupancy sensor`;
+      return `<button data-sensor-select="${escapeHtml(sensor.registry_id)}" data-sensor-room="${escapeHtml(sensor.area_id)}" title="${escapeHtml(title)}" ${roomIsPlaced ? "" : "disabled"}>${escapeHtml(`${sensor.room_name} ${sensor.kind}`)}</button>`;
+    }).join("");
+    const admin = this._hass.user?.is_admin === true;
+    root.innerHTML = `
+      <style>
+        :host { display:block; } ha-card { display:block; overflow:hidden; } .header,.toolbar,.palette,.message { padding:12px 16px; } .header { display:flex; justify-content:space-between; align-items:center; } .toolbar button,.palette button { margin:2px; } .message { color:var(--secondary-text-color); } svg { display:block; width:100%; min-height:360px; background:var(--card-background-color); background-image:radial-gradient(var(--divider-color) .6px, transparent .7px); background-size:12px 12px; touch-action:none; } .edge { stroke:var(--primary-color); stroke-width:.35; } .edge.editable { cursor:pointer; stroke-width:.55; } .edge.preview { stroke-dasharray:1 1; pointer-events:none; } .link-preview-dot { fill:var(--primary-color); pointer-events:none; } .room rect { fill:var(--secondary-background-color); stroke:var(--primary-text-color); stroke-width:.28; } .room.active rect { stroke:var(--success-color, #4caf50); stroke-width:.55; } .room text { fill:var(--primary-text-color); font-size:1.35px; pointer-events:none; } .link-source,.resize { fill:var(--primary-color); cursor:crosshair; } .sensor { cursor:move; } .sensor circle { fill:var(--disabled-text-color); stroke:var(--primary-text-color); stroke-width:.2; } .sensor.active circle { fill:var(--success-color, #4caf50); } .sensor.unavailable circle { fill:var(--error-color); } .sensor.fallback path { display:none; } .sensor path { fill:none; stroke:var(--primary-text-color); stroke-width:.18; } .palette { border-top:1px solid var(--divider-color); } .warning { color:var(--warning-color); }
+      </style>
+      <ha-card>
+        <div class="header"><span>${escapeHtml(this._config.title || `${this._config.floor_id} floor plan`)}</span>${admin ? `<button data-action="${this._editing ? "cancel" : "edit"}">${this._editing ? "Cancel" : "Edit plan"}</button>` : ""}</div>
+        ${this._message ? `<div class="message">${escapeHtml(this._message)}</div>` : ""}
+        ${this._editing ? `<div class="toolbar">Add unplaced rooms and sensors from the palette, then drag room bodies, corner handles, sensor markers, or room connection dots. Click a connector to remove it. <button data-action="save">Save</button></div>` : ""}
+        <svg viewBox="0 0 48 ${geometry.height}" aria-label="${escapeHtml(`${this._config.floor_id} floor plan`)}">${renderedEdges}${renderedRooms}</svg>
+        ${this._editing ? `<div class="palette"><strong>Unplaced rooms</strong><br>${unplacedRooms.map((room) => `<button data-room-select="${escapeHtml(room.area_id)}">${escapeHtml(room.name)}</button>`).join("") || "All rooms are placed."}<br><strong>Unplaced occupancy sensors</strong><br>${renderedUnplacedSensors || "All discovered sensors are placed."}</div>` : ""}
+        ${(model.plan.orphaned_rooms?.length || model.plan.orphaned_sensors?.length) ? `<div class="palette warning">Saved unavailable rooms: ${escapeHtml((model.plan.orphaned_rooms || []).join(", ") || "none")}. Saved unavailable sensors: ${escapeHtml((model.plan.orphaned_sensors || []).join(", ") || "none")}.${this._editing ? `<br>${(model.plan.orphaned_rooms || []).map((areaId) => `<button data-forget-area="${escapeHtml(areaId)}">Forget ${escapeHtml(areaId)}</button>`).join("")}${(model.plan.orphaned_sensors || []).map((registryId) => `<button data-forget-sensor="${escapeHtml(registryId)}">Forget sensor</button>`).join("")}` : ""}</div>` : ""}
+      </ha-card>
+    `;
+    const svg = root.querySelector("svg");
+    svg.addEventListener("pointerdown", (event) => this._onPointerDown(event, model));
+    svg.addEventListener("pointermove", (event) => this._onPointerMove(event, model));
+    svg.addEventListener("pointerup", (event) => this._onPointerUp(event, model));
+    root.querySelector("[data-action=edit]")?.addEventListener("click", () => this._beginEditing(model));
+    root.querySelector("[data-action=cancel]")?.addEventListener("click", () => { this._editing = false; this._draft = undefined; this._message = undefined; this._render(); });
+    root.querySelector("[data-action=save]")?.addEventListener("click", () => this._save(model));
+    root.querySelectorAll("[data-room-select]").forEach((button) => button.addEventListener("click", () => this._placeUnplacedRoom(button.dataset.roomSelect, model)));
+    root.querySelectorAll("[data-sensor-select]").forEach((button) => button.addEventListener("click", () => this._placeUnplacedSensor(button.dataset.sensorSelect, button.dataset.sensorRoom)));
+    root.querySelectorAll("[data-forget-area]").forEach((button) => button.addEventListener("click", () => {
+      this._draft.forget_area_ids.push(button.dataset.forgetArea);
+      this._render();
+    }));
+    root.querySelectorAll("[data-forget-sensor]").forEach((button) => button.addEventListener("click", () => {
+      this._draft.forget_sensor_registry_ids.push(button.dataset.forgetSensor);
+      this._render();
+    }));
+  }
+}
+
 customElements.define("adaptive-robovacs-global", AdaptiveRoboVacsGlobalCard);
 customElements.define("adaptive-robovacs-vacuum", AdaptiveRoboVacsVacuumCard);
 customElements.define("adaptive-robovacs-room", AdaptiveRoboVacsRoomCard);
+customElements.define("adaptive-robovacs-floorplan-editor", AdaptiveRoboVacsFloorPlanEditor);
+customElements.define("adaptive-robovacs-floorplan", AdaptiveRoboVacsFloorPlanCard);
 
 window.customCards = window.customCards || [];
 [
@@ -674,6 +1106,11 @@ window.customCards = window.customCards || [];
     type: "adaptive-robovacs-room",
     name: "Adaptive RoboVacs Room",
     description: "Status and controls for one Adaptive RoboVacs room.",
+  },
+  {
+    type: "adaptive-robovacs-floorplan",
+    name: "Adaptive RoboVacs Floor Plan",
+    description: "Visual room layout, occupancy sensors, and direct room links for one floor.",
   },
 ].forEach((card) => {
   if (!window.customCards.some((registered) => registered.type === card.type)) {

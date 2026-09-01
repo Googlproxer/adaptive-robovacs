@@ -95,9 +95,17 @@ from .models import (
     stage_pass_count,
     should_assume_native_app_clean,
     unresolved_occupancy_allowed,
+    normalize_floor_plan_edge,
 )
 from .projections import robot_state, room_state
-from .state import SchedulerState, StateSchemaError, migrate_runtime_robot_identity
+from .state import (
+    FloorPlanRectangle,
+    FloorPlanSensorMarker,
+    FloorPlanState,
+    SchedulerState,
+    StateSchemaError,
+    migrate_runtime_robot_identity,
+)
 from .runtime import HomeAssistantRuntime
 from .map_recovery import MapRecoveryManager
 from .repairs_manager import (
@@ -191,6 +199,7 @@ def _blank_data(entry: ConfigEntry) -> dict[str, Any]:
         "water_notification_episodes": {},
         "first_scheduler_online_at": None,
         "room_decisions": [],
+        "floor_plan": FloorPlanState().to_store(),
     }
 
 
@@ -919,7 +928,224 @@ class AdaptiveRoboVacCoordinator:
             "scheduler_fault": self.scheduler_fault_view(),
             "robot_faults": self._fault_views("robot_faults"),
             "room_faults": self._fault_views("room_faults"),
+            "floor_plan": self.floor_plan_view(),
         }
+
+    @staticmethod
+    def _occupancy_source_state(entity_state: str | None) -> str:
+        """Return a presentation-only activity state for one raw sensor."""
+
+        if entity_state == "on":
+            return "active"
+        if entity_state == "off":
+            return "inactive"
+        return "unavailable"
+
+    def _floor_plan(self) -> FloorPlanState:
+        """Decode the current durable graph before a topology mutation."""
+
+        return FloorPlanState.from_mapping(self.data.get("floor_plan", {}))
+
+    def floor_plan_view(self) -> dict[str, Any]:
+        """Return a card-safe floor-plan projection built from live discovery."""
+
+        plan = self._floor_plan()
+        live_room_ids = set(self.discovery.rooms)
+        source_by_registry = {
+            source.registry_id: (room, source)
+            for room in self.discovery.rooms.values()
+            for source in room.occupancy_sources
+        }
+        floors: dict[str, list[dict[str, Any]]] = {}
+        for room in self.discovery.rooms.values():
+            rectangle = plan.rooms.get(room.area_id)
+            floors.setdefault(room.floor_id, []).append(
+                {
+                    "area_id": room.area_id,
+                    "name": room.name,
+                    "floor_id": room.floor_id,
+                    "rectangle": (
+                        rectangle.to_store()
+                        if rectangle and rectangle.floor_id == room.floor_id
+                        else None
+                    ),
+                    "sensors": [
+                        {
+                            "registry_id": source.registry_id,
+                            "entity_id": source.entity_id,
+                            "kind": source.kind,
+                            "state": self._occupancy_source_state(
+                                self.hass.states.get(source.entity_id).state
+                                if self.hass.states.get(source.entity_id)
+                                else None
+                            ),
+                            "marker": (
+                                plan.sensors[source.registry_id].to_store()
+                                if source.registry_id in plan.sensors
+                                and plan.sensors[source.registry_id].area_id == room.area_id
+                                else None
+                            ),
+                        }
+                        for source in room.occupancy_sources
+                    ],
+                }
+            )
+        for room_list in floors.values():
+            room_list.sort(key=lambda item: (str(item["name"]).lower(), str(item["area_id"])))
+        orphaned_rooms = sorted(area_id for area_id in plan.rooms if area_id not in live_room_ids)
+        orphaned_sensors = sorted(
+            registry_id for registry_id in plan.sensors if registry_id not in source_by_registry
+        )
+        return {
+            "revision": plan.revision,
+            "floors": [
+                {"floor_id": floor_id, "rooms": rooms}
+                for floor_id, rooms in sorted(floors.items())
+            ],
+            "edges": [list(edge) for edge in sorted(plan.edges)],
+            "orphaned_rooms": orphaned_rooms,
+            "orphaned_sensors": orphaned_sensors,
+        }
+
+    def _require_floor_plan_write_ready(self) -> None:
+        if self._closing:
+            raise ValueError("Adaptive RoboVacs is shutting down")
+        if self._storage_safe_mode:
+            raise ValueError("floor-plan changes are disabled while storage is unsafe")
+
+    async def async_save_floor_plan(
+        self,
+        floor_id: str,
+        revision: int,
+        rooms: Mapping[str, Mapping[str, object]],
+        edges: list[list[str]],
+        sensors: Mapping[str, Mapping[str, object]],
+        forget_area_ids: list[str] | None = None,
+        forget_sensor_registry_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically replace one floor's live layout, markers, and links."""
+
+        async with self._lock:
+            self._require_floor_plan_write_ready()
+            plan = self._floor_plan()
+            if (
+                isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or revision != plan.revision
+            ):
+                raise ValueError("floor plan changed; reload before saving")
+            live_rooms = {
+                area_id: room
+                for area_id, room in self.discovery.rooms.items()
+                if room.floor_id == floor_id
+            }
+            if not live_rooms:
+                raise ValueError("unknown floor")
+            room_rectangles: dict[str, FloorPlanRectangle] = {}
+            for area_id, raw in rooms.items():
+                if area_id not in live_rooms:
+                    raise ValueError("room layouts must use discovered rooms on the selected floor")
+                if not isinstance(raw, Mapping):
+                    raise ValueError("each room layout must be an object")
+                room_rectangles[area_id] = FloorPlanRectangle.from_mapping(
+                    {**dict(raw), "floor_id": floor_id}
+                )
+            live_source_by_registry = {
+                source.registry_id: (room, source)
+                for room in live_rooms.values()
+                for source in room.occupancy_sources
+            }
+            sensor_markers: dict[str, FloorPlanSensorMarker] = {}
+            for registry_id, raw in sensors.items():
+                owner = live_source_by_registry.get(registry_id)
+                if owner is None:
+                    raise ValueError("sensor markers must use discovered sensors on the selected floor")
+                marker = FloorPlanSensorMarker.from_mapping(raw)
+                if marker.area_id != owner[0].area_id:
+                    raise ValueError("a sensor marker must remain in its discovered room")
+                sensor_markers[registry_id] = marker
+            floor_edges: set[tuple[str, str]] = set()
+            for raw_edge in edges:
+                if not isinstance(raw_edge, list) or len(raw_edge) != 2:
+                    raise ValueError("each floor-plan link must contain two rooms")
+                edge = normalize_floor_plan_edge(raw_edge[0], raw_edge[1])
+                if edge[0] not in live_rooms or edge[1] not in live_rooms:
+                    raise ValueError("floor-plan links must use rooms on the selected floor")
+                floor_edges.add(edge)
+            selected_ids = set(live_rooms)
+            next_rooms = {
+                area_id: rectangle
+                for area_id, rectangle in plan.rooms.items()
+                if area_id not in selected_ids
+            }
+            next_rooms.update(room_rectangles)
+            next_edges = {
+                edge
+                for edge in plan.edges
+                if not (edge[0] in selected_ids and edge[1] in selected_ids)
+            }
+            next_edges.update(floor_edges)
+            next_sensors = {
+                registry_id: marker
+                for registry_id, marker in plan.sensors.items()
+                if registry_id not in live_source_by_registry
+            }
+            next_sensors.update(sensor_markers)
+            live_room_ids = set(self.discovery.rooms)
+            for area_id in forget_area_ids or []:
+                if area_id in live_room_ids:
+                    raise ValueError("only unavailable rooms can be forgotten")
+                next_rooms.pop(area_id, None)
+                next_edges = {edge for edge in next_edges if area_id not in edge}
+            all_sources = {
+                source.registry_id
+                for room in self.discovery.rooms.values()
+                for source in room.occupancy_sources
+            }
+            for registry_id in forget_sensor_registry_ids or []:
+                if registry_id in all_sources:
+                    raise ValueError("only unavailable sensors can be forgotten")
+                next_sensors.pop(registry_id, None)
+            next_plan = FloorPlanState(
+                revision=plan.revision + 1,
+                rooms=next_rooms,
+                edges=next_edges,
+                sensors=next_sensors,
+            )
+            self.state.floor_plan = next_plan
+            self.data["floor_plan"] = next_plan.to_store()
+            await self._async_save()
+            self._notify_listeners()
+            return self.floor_plan_view()
+
+    async def async_set_room_adjacency(
+        self, area_id: str, neighbor_area_ids: list[str]
+    ) -> dict[str, Any]:
+        """Replace one room's direct same-floor neighbours for scripts."""
+
+        async with self._lock:
+            self._require_floor_plan_write_ready()
+            room = self.discovery.rooms.get(area_id)
+            if room is None:
+                raise ValueError("unknown room")
+            plan = self._floor_plan()
+            edges = {edge for edge in plan.edges if area_id not in edge}
+            for neighbor_id in neighbor_area_ids:
+                neighbor = self.discovery.rooms.get(neighbor_id)
+                if neighbor is None or neighbor.floor_id != room.floor_id:
+                    raise ValueError("adjacent rooms must be discovered on the same floor")
+                edges.add(normalize_floor_plan_edge(area_id, neighbor_id))
+            next_plan = FloorPlanState(
+                revision=plan.revision + 1,
+                rooms=plan.rooms,
+                edges=edges,
+                sensors=plan.sensors,
+            )
+            self.state.floor_plan = next_plan
+            self.data["floor_plan"] = next_plan.to_store()
+            await self._async_save()
+            self._notify_listeners()
+            return self.floor_plan_view()
 
     def robot_for_registry_id(self, registry_id: str) -> DiscoveredRobot | None:
         """Resolve a stable entity-registry identity to the current vacuum."""

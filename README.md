@@ -25,8 +25,10 @@ automatically on supported versions.
   ordered vacuum/mop programs, independent
   vacuum/mop pass counts, water-aware mopping, robot cleaning-profile defaults,
   and exact per-room fan/mode/mop overrides.
-- Provides target-scoped Lovelace cards for global settings, each vacuum, and
-  each room, with generated status and control rows. Every room card includes
+- Provides target-scoped Lovelace cards for global settings, each vacuum, each
+  room, and a per-floor visual plan. The floor plan can show and place all
+  discovered occupancy sensors, draw direct room links, and display their live
+  activity without relying on fixed entity IDs. Every room card includes
   explicit manual clean, vacuum-only, and mop-only override actions.
 
 ## Installation

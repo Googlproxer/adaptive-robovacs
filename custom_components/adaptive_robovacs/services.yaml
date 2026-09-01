@@ -100,6 +100,76 @@ manual_clean_room:
       selector:
         config_entry:
           integration: adaptive_robovacs
+save_floor_plan:
+  name: Save floor plan
+  description: Administrator-only atomic save of one visual floor-plan draft. This does not start, stop, defer, or otherwise change cleaning work.
+  fields:
+    floor_id:
+      name: Floor
+      required: true
+      selector:
+        text:
+    revision:
+      name: Revision
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+    rooms:
+      name: Room rectangles
+      description: Mapping of discovered same-floor area IDs to snap-grid x, y, width, and height values.
+      required: true
+      selector:
+        object:
+    edges:
+      name: Room links
+      description: Direct two-area links for the selected floor.
+      required: true
+      selector:
+        object:
+    sensors:
+      name: Sensor markers
+      description: Mapping of occupancy-source registry IDs to their room-local x/y marker positions.
+      required: true
+      selector:
+        object:
+    forget_area_ids:
+      name: Forget unavailable rooms
+      selector:
+        area:
+          multiple: true
+    forget_sensor_registry_ids:
+      name: Forget unavailable sensors
+      selector:
+        text:
+          multiple: true
+    entry_id:
+      name: Config entry
+      description: Required only when more than one Adaptive RoboVacs entry is loaded.
+      selector:
+        config_entry:
+          integration: adaptive_robovacs
+set_room_adjacency:
+  name: Set room adjacency
+  description: Administrator-only replacement of one discovered room's direct same-floor neighbours. This saves topology only; scheduler cross-room occupancy blocking is not enabled by this release.
+  fields:
+    area_id:
+      name: Room
+      required: true
+      selector:
+        area:
+    neighbor_area_ids:
+      name: Adjacent rooms
+      selector:
+        area:
+          multiple: true
+    entry_id:
+      name: Config entry
+      description: Required only when more than one Adaptive RoboVacs entry is loaded.
+      selector:
+        config_entry:
+          integration: adaptive_robovacs
 list_retained_maps:
   name: List retained maps
   description: Lists the maps the selected robot currently retains. This reads the existing Roborock Home Assistant connection and never moves the robot.

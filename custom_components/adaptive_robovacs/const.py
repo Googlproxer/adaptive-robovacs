@@ -51,6 +51,8 @@ SERVICE_ACTIVATE_RETAINED_MAP: Final = "activate_retained_map"
 SERVICE_CONFIRM_MAP_SELECTION: Final = "confirm_map_selection"
 SERVICE_LIST_LEGACY_DEFERRALS: Final = "list_legacy_deferrals"
 SERVICE_CLEAR_LEGACY_DEFERRALS: Final = "clear_legacy_deferrals"
+SERVICE_SAVE_FLOOR_PLAN: Final = "save_floor_plan"
+SERVICE_SET_ROOM_ADJACENCY: Final = "set_room_adjacency"
 
 SIGNAL_DISCOVERY_UPDATED: Final = f"{DOMAIN}_discovery_updated"
 
