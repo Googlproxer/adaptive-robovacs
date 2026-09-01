@@ -1371,6 +1371,12 @@ def manual_clean_robot_is_docked(state: str | None) -> bool:
     return state == "docked"
 
 
+def startup_dispatch_allowed(now: datetime, settle_until: datetime | None) -> bool:
+    """Return whether Home Assistant has finished its startup settle period."""
+
+    return settle_until is None or now >= settle_until
+
+
 def can_request_return_to_dock(state: str | None) -> bool:
     """Return whether Home Assistant can send a physical return command."""
 

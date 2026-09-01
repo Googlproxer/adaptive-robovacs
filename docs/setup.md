@@ -63,6 +63,12 @@ integration can use a complete all-clear motion/occupancy fallback. A
 room without any occupancy source is eligible when due. A new entry after a
 clean starts does not interrupt it.
 
+For the first minute after Home Assistant starts, Adaptive RoboVacs only
+observes and refreshes discovery; it never sends a new cleaning request. The
+dashboard manual room actions are rejected during this non-bypassable settling
+period rather than queued. This allows occupancy providers to restore their
+actual states before any robot can start.
+
 The global **Desired cleaning start** and **Desired cleaning end** provide the
 default daily interval. Every room card also has its own start and end select.
 Choose **Use global** to inherit that bound or choose a 15-minute value to

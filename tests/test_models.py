@@ -98,6 +98,13 @@ class CadenceTests(unittest.TestCase):
         self.assertFalse(models.manual_clean_robot_is_docked("cleaning"))
         self.assertFalse(models.manual_clean_robot_is_docked(None))
 
+    def test_startup_settle_blocks_dispatch_only_until_its_deadline(self) -> None:
+        settle_until = self.now + timedelta(minutes=1)
+
+        self.assertFalse(models.startup_dispatch_allowed(self.now, settle_until))
+        self.assertTrue(models.startup_dispatch_allowed(settle_until, settle_until))
+        self.assertTrue(models.startup_dispatch_allowed(self.now, None))
+
     def test_docked_robot_can_acknowledge_a_halt_without_dispatch_readiness(self) -> None:
         result = models.scheduler_halt_recheck_result("docked")
         self.assertTrue(result.cleared)

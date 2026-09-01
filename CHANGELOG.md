@@ -11,6 +11,8 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 - The dedicated Floor plan dashboard tab now uses the available page width,
   and each plan canvas has an 800px minimum height for practical room layout.
+- New scheduled and dashboard-manual cleans wait for the first minute after
+  Home Assistant starts, allowing occupancy providers to restore live state.
 
 Detailed notes: [`docs/releases/v1.12.1.md`](docs/releases/v1.12.1.md).
 

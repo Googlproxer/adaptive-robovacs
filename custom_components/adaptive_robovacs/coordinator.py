@@ -43,6 +43,7 @@ from .const import (
     READY_CONFIRMATION_DELAY,
     SIGNAL_DISCOVERY_UPDATED,
     START_CONFIRMATION_TIMEOUT,
+    STARTUP_STATE_SETTLE_DELAY,
     STORAGE_KEY,
     STORE_VERSION,
 )
@@ -92,6 +93,7 @@ from .models import (
     ready_confirmation_elapsed,
     scheduler_halt_recheck_result,
     scheduled_mop_revalidation_allowed,
+    startup_dispatch_allowed,
     stage_pass_count,
     should_assume_native_app_clean,
     unresolved_occupancy_allowed,
@@ -225,6 +227,7 @@ class AdaptiveRoboVacCoordinator:
         self._ready_confirmation_timers: dict[str, Callable[[], None]] = {}
         self._ready_since: dict[str, datetime] = {}
         self._water_confirmation_timers: dict[str, Callable[[], None]] = {}
+        self._startup_state_settle_until: datetime | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closing = False
         self._identity_migrated = False
@@ -235,6 +238,7 @@ class AdaptiveRoboVacCoordinator:
     async def async_initialize(self) -> None:
         """Restore state, discover the house, and begin passive observation."""
 
+        self._startup_state_settle_until = _now() + STARTUP_STATE_SETTLE_DELAY
         stored = await self.store.async_load()
         try:
             self.state, migrated = SchedulerState.from_store(stored, self.entry.data)
@@ -295,6 +299,20 @@ class AdaptiveRoboVacCoordinator:
                 self.hass,
                 refresh_late_vendor_entities,
                 _now() + timedelta(seconds=30),
+            )
+        )
+
+        @callback
+        def finish_startup_state_settle(_timestamp: datetime) -> None:
+            self._async_create_task(
+                self.async_evaluate(dry_run=False, reason="startup-state-settled")
+            )
+
+        self._unsubscribers.append(
+            async_track_point_in_utc_time(
+                self.hass,
+                finish_startup_state_settle,
+                self._startup_state_settle_until,
             )
         )
 
@@ -2687,6 +2705,13 @@ class AdaptiveRoboVacCoordinator:
             window.end,
         )
 
+    def _startup_state_settle_reason(self, now: datetime) -> str | None:
+        """Block new physical work until Home Assistant has restored live state."""
+
+        if startup_dispatch_allowed(now, self._startup_state_settle_until):
+            return None
+        return "awaiting Home Assistant state restoration"
+
     def _manual_candidate(
         self,
         room: DiscoveredRoom,
@@ -2731,6 +2756,8 @@ class AdaptiveRoboVacCoordinator:
         if not settings.get("enabled", True) and not manual_override:
             self.data.get("water_notification_episodes", {}).pop(room.area_id, None)
             return None, "room disabled"
+        if (settle_reason := self._startup_state_settle_reason(now)):
+            return None, settle_reason
         if occurrence:
             if occurrence.get("source") == "manual_dashboard":
                 due = _as_datetime(occurrence.get("scheduled_at")) or now
@@ -3954,6 +3981,7 @@ class AdaptiveRoboVacCoordinator:
                 "party_mode": self.party_mode,
                 "dispatch_halted": False,
                 "dispatch_limited": self.scheduler_limited,
+                "startup_state_settle_until": _iso(self._startup_state_settle_until),
                 "scheduler_fault": self.scheduler_fault_view(),
                 "candidates": [
                     {
@@ -4208,6 +4236,8 @@ class AdaptiveRoboVacCoordinator:
                 return await reject("observe-only mode")
             if self.party_mode:
                 return await reject("party mode")
+            if (settle_reason := self._startup_state_settle_reason(_now())):
+                return await reject(settle_reason)
             base_candidate = self._manual_candidate(
                 room, now, mode, context_id, user_id
             )

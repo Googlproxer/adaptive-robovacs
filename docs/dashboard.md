@@ -132,9 +132,14 @@ than being changed silently.
 Each room card ends with **Manual clean**, **Manual vacuum only**, and **Manual
 mop only**. These are immediate integration-owned requests, not shortcuts to
 the external manual-clean observer. They use the displayed effective profile
-and pass counts and bypass only cadence and the desired window. A currently
-blocked press is rejected rather than queued. The room schedule attributes
-expose the latest dashboard-manual outcome and any active occurrence source.
+and pass counts and bypass the ordinary scheduler eligibility gates. Party
+Mode, observe-only mode, and the startup state-settling safety hold remain
+non-bypassable. A currently blocked press is rejected rather than queued. The
+room schedule attributes expose the latest dashboard-manual outcome and any
+active occurrence source.
+For the first minute after Home Assistant starts, the state-settling safety
+hold is non-bypassable: these actions are rejected until occupancy providers
+have had time to restore their live states.
 
 ## Migrating from 1.3
 

@@ -75,7 +75,12 @@ occupied. It never dispatches work in observe-only mode or Party Mode. By
 default, due rooms wait for their effective desired cleaning window. Each
 room's start and end can independently use the global value or select a
 15-minute daily override, including an interval that crosses midnight. The
-room's **Ignore desired cleaning window** entity remains available for advanced
+first minute after Home Assistant starts is a non-bypassable state-settling
+period: the integration keeps observing but sends no new cleaning request,
+including from its dashboard manual actions. This lets occupancy providers
+restore their live state before a robot can start.
+
+The room's **Ignore desired cleaning window** entity remains available for advanced
 Home Assistant use, but is intentionally omitted from the simple room card; it
 can permit an otherwise-safe clean outside those hours. A room with unresolved
 occupancy is retried only in that room's effective window, and bedroom-transit
