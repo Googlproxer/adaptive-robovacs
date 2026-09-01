@@ -63,7 +63,7 @@ class DynamicDiscoveryContractTests(unittest.TestCase):
             Path(__file__).parents[1] / "dashboard" / "floorplan-preview.html"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('src="adaptive-robovacs-dashboard.js"', preview)
+        self.assertIn('src="adaptive-robovacs-dashboard.js?preview=', preview)
         self.assertIn("adaptive-robovacs-floorplan", preview)
         self.assertIn('"save_floor_plan"', preview)
         self.assertIn("no Home Assistant server", preview)

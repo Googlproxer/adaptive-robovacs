@@ -43,6 +43,7 @@ class FloorPlanContractTests(unittest.TestCase):
         self.assertIn("_setLinkPreview", dashboard)
         self.assertIn("link-preview-dot", dashboard)
         self.assertIn("var(--success-color, #4caf50)", dashboard)
+        self.assertIn(".room.active rect { stroke:var(--success-color, #4caf50);", dashboard)
         self.assertIn(".sensor.unavailable circle { fill:var(--error-color); }", dashboard)
         self.assertIn("_require_admin", services)
         self.assertIn("SERVICE_SAVE_FLOOR_PLAN", services)
