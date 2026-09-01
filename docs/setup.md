@@ -11,6 +11,7 @@ floor as a room. Use labels instead of editing configuration files:
 | `robovac-bedroom-transit` | Area | Daytime-only; blocks while any bedroom is occupied. |
 | `robovac-exclude` | Area | Never scheduled. |
 | `robovac-radar` | Radar device (recommended) or occupancy binary sensor | Preferred over older occupancy/motion sensors. |
+| `robovac-exclude-occupancy` | Motion/occupancy sensor or its device | Never use that source when determining the room's occupancy. |
 
 Home Assistant normalizes the label registry IDs to underscores (for example,
 `robovac_bedroom`). The names above are what you create in the UI; the
@@ -25,6 +26,11 @@ authoritative. When the entity has no labels, Adaptive RoboVacs inherits its
 owning device's labels. This lets a single `robovac-radar` device label cover
 all of a radar's occupancy entities, while a direct entity label remains an
 explicit override.
+
+To ignore a false-positive source, apply **robovac-exclude-occupancy** to
+the motion/occupancy entity or, for a device such as a doorbell, to its device.
+Exclusion is additive: a device-level exclusion suppresses every motion or
+occupancy entity from that device even when an entity has direct labels.
 
 ## Native room mapping
 

@@ -33,6 +33,7 @@ LABEL_BEDROOM: Final = "robovac_bedroom"
 LABEL_BEDROOM_TRANSIT: Final = "robovac_bedroom_transit"
 LABEL_EXCLUDE: Final = "robovac_exclude"
 LABEL_RADAR: Final = "robovac_radar"
+LABEL_EXCLUDE_OCCUPANCY: Final = "robovac_exclude_occupancy"
 
 DEFAULT_COMMON_INTERVAL: Final = 84
 DEFAULT_BEDROOM_INTERVAL: Final = 168

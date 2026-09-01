@@ -18,6 +18,7 @@ from .const import (
     LABEL_BEDROOM,
     LABEL_BEDROOM_TRANSIT,
     LABEL_EXCLUDE,
+    LABEL_EXCLUDE_OCCUPANCY,
     LABEL_RADAR,
 )
 from .models import AdapterCapabilities, profile_control_kind
@@ -185,6 +186,28 @@ def _occupancy_labels(
         return _labels_for(entity_labels, registry)
     device = devices.async_get(entry.device_id) if entry.device_id else None
     return _labels_for(getattr(device, "labels", None), registry)
+
+
+def _occupancy_source_is_excluded(
+    entry: er.RegistryEntry,
+    devices: dr.DeviceRegistry,
+    registry: lr.LabelRegistry,
+) -> bool:
+    """Return whether an occupancy source is explicitly excluded.
+
+    Exclusion is additive rather than a classification override: an exclusion
+    label placed on a device must suppress all of its occupancy entities, even
+    when an entity has its own labels for radar classification.
+    """
+
+    entity_labels = _labels_for(getattr(entry, "labels", None), registry)
+    device = devices.async_get(entry.device_id) if entry.device_id else None
+    device_labels = _labels_for(getattr(device, "labels", None), registry)
+    exclusion_labels = {
+        LABEL_EXCLUDE_OCCUPANCY,
+        _normalised_label(LABEL_EXCLUDE_OCCUPANCY),
+    }
+    return bool(exclusion_labels & (entity_labels | device_labels))
 
 
 def _state_options(hass: HomeAssistant, entity_id: str) -> tuple[str, ...]:
@@ -391,6 +414,8 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
             continue
         area_id = _entity_area_id(entry, devices)
         if not area_id:
+            continue
+        if _occupancy_source_is_excluded(entry, devices, labels):
             continue
         radars, fallbacks, sources = occupancy_by_area.setdefault(area_id, ([], [], []))
         occupancy_labels = _occupancy_labels(entry, devices, labels)

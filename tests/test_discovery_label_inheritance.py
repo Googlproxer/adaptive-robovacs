@@ -19,7 +19,12 @@ def _load_label_helpers() -> dict[str, object]:
     """Load the small pure label helpers without requiring Home Assistant."""
 
     tree = ast.parse(DISCOVERY_PATH.read_text(encoding="utf-8"))
-    wanted = {"_normalised_label", "_labels_for", "_occupancy_labels"}
+    wanted = {
+        "_normalised_label",
+        "_labels_for",
+        "_occupancy_labels",
+        "_occupancy_source_is_excluded",
+    }
     helpers = [
         node
         for node in tree.body
@@ -30,6 +35,7 @@ def _load_label_helpers() -> dict[str, object]:
         "dr": types.SimpleNamespace(DeviceRegistry=object),
         "er": types.SimpleNamespace(RegistryEntry=object),
         "lr": types.SimpleNamespace(LabelRegistry=object),
+        "LABEL_EXCLUDE_OCCUPANCY": "robovac_exclude_occupancy",
     }
     exec(
         compile(ast.fix_missing_locations(module), str(DISCOVERY_PATH), "exec"),
@@ -75,10 +81,57 @@ class DiscoveryLabelInheritanceTests(unittest.TestCase):
         self.assertNotIn("robovac_radar", result)
         devices.async_get.assert_not_called()
 
+    def test_device_occupancy_exclusion_overrides_direct_entity_labels(self) -> None:
+        entry = types.SimpleNamespace(
+            labels=frozenset({"robovac_radar"}), device_id="doorbell-device"
+        )
+        devices = types.SimpleNamespace(
+            async_get=lambda device_id: types.SimpleNamespace(
+                labels=frozenset({"robovac_exclude_occupancy"})
+            )
+        )
+
+        result = self.helpers["_occupancy_source_is_excluded"](
+            entry, devices, self.label_registry
+        )
+
+        self.assertTrue(result)
+
+    def test_entity_occupancy_exclusion_is_honoured(self) -> None:
+        entry = types.SimpleNamespace(
+            labels=frozenset({"robovac_exclude_occupancy"}), device_id=None
+        )
+        devices = types.SimpleNamespace(async_get=Mock())
+
+        result = self.helpers["_occupancy_source_is_excluded"](
+            entry, devices, self.label_registry
+        )
+
+        self.assertTrue(result)
+        devices.async_get.assert_not_called()
+
+    def test_occupancy_exclusion_matches_the_label_display_name(self) -> None:
+        entry = types.SimpleNamespace(labels=frozenset({"label-id"}), device_id=None)
+        devices = types.SimpleNamespace(async_get=Mock())
+        label_registry = types.SimpleNamespace(
+            async_get_label=lambda label_id: types.SimpleNamespace(
+                name="robovac-exclude-occupancy"
+            )
+        )
+
+        result = self.helpers["_occupancy_source_is_excluded"](
+            entry, devices, label_registry
+        )
+
+        self.assertTrue(result)
+
     def test_discovery_uses_the_inheritance_helper_for_occupancy_sources(self) -> None:
         source = DISCOVERY_PATH.read_text(encoding="utf-8")
         self.assertIn(
             "occupancy_labels = _occupancy_labels(entry, devices, labels)", source
+        )
+        self.assertIn(
+            "if _occupancy_source_is_excluded(entry, devices, labels):", source
         )
 
 
