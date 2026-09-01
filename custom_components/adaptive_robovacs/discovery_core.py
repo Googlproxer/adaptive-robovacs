@@ -87,6 +87,7 @@ class DiscoveredRoom:
     labels: set[str]
     radar_entity_ids: tuple[str, ...] = ()
     fallback_entity_ids: tuple[str, ...] = ()
+    occupancy_sources: tuple["DiscoveredOccupancySource", ...] = ()
 
     @property
     def is_bedroom(self) -> bool:
@@ -95,6 +96,15 @@ class DiscoveredRoom:
     @property
     def is_bedroom_transit(self) -> bool:
         return LABEL_BEDROOM_TRANSIT in self.labels
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredOccupancySource:
+    """One registry-backed occupancy source owned by a scheduler room."""
+
+    registry_id: str
+    entity_id: str
+    kind: str
 
 
 @dataclass(slots=True)
@@ -367,7 +377,9 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
             adapter_entities=adapter_entities,
         )
 
-    occupancy_by_area: dict[str, tuple[list[str], list[str]]] = {}
+    occupancy_by_area: dict[
+        str, tuple[list[str], list[str], list[DiscoveredOccupancySource]]
+    ] = {}
     for entry in entities.entities.values():
         if not entry.entity_id.startswith("binary_sensor."):
             continue
@@ -380,9 +392,20 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
         area_id = _entity_area_id(entry, devices)
         if not area_id:
             continue
-        radars, fallbacks = occupancy_by_area.setdefault(area_id, ([], []))
+        radars, fallbacks, sources = occupancy_by_area.setdefault(area_id, ([], [], []))
         occupancy_labels = _occupancy_labels(entry, devices, labels)
-        (radars if LABEL_RADAR in occupancy_labels else fallbacks).append(entry.entity_id)
+        kind = "radar" if LABEL_RADAR in occupancy_labels else "fallback"
+        (radars if kind == "radar" else fallbacks).append(entry.entity_id)
+        sources.append(
+            DiscoveredOccupancySource(
+                registry_id=str(
+                    getattr(entry, "id", None)
+                    or f"{entry.platform}:{entry.unique_id}"
+                ),
+                entity_id=entry.entity_id,
+                kind=kind,
+            )
+        )
 
     served_floors = {robot.floor_id for robot in result.robots.values() if robot.floor_id}
     for area in areas.areas.values():
@@ -391,7 +414,7 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
         area_labels = _labels_for(getattr(area, "labels", None), labels)
         if LABEL_EXCLUDE in area_labels:
             continue
-        radars, fallbacks = occupancy_by_area.get(area.id, ([], []))
+        radars, fallbacks, sources = occupancy_by_area.get(area.id, ([], [], []))
         result.rooms[area.id] = DiscoveredRoom(
             area_id=area.id,
             name=area.name,
@@ -399,5 +422,6 @@ async def async_discover(hass: HomeAssistant) -> DiscoveryResult:
             labels=area_labels,
             radar_entity_ids=tuple(sorted(radars)),
             fallback_entity_ids=tuple(sorted(fallbacks)),
+            occupancy_sources=tuple(sorted(sources, key=lambda source: source.registry_id)),
         )
     return result

@@ -1,6 +1,6 @@
 # Dynamic dashboard cards
 
-The integration serves three target-scoped cards after Home Assistant starts.
+The integration serves four target-scoped cards after Home Assistant starts.
 Add the module once in **Settings > Dashboards > Resources**:
 
 ```yaml
@@ -15,8 +15,9 @@ The available card types are:
 | `custom:adaptive-robovacs-global` | One | Scheduler status, Repairs halt/resume, Party Mode, observe-only mode, cleaning windows, forecast confidence, and schedule preview. |
 | `custom:adaptive-robovacs-vacuum` | One per vacuum | Status/activity, water readiness, cleaning program, independent vacuum/mop pass defaults, adapter capabilities, safe failure diagnostics, and robot-owned controls. |
 | `custom:adaptive-robovacs-room` | One per room | Single-cadence schedule, last-cleaned and occupancy status, program and exact profile overrides, independent vacuum/mop pass overrides, occurrence/water-confirmation diagnostics, and three manual actions. |
+| `custom:adaptive-robovacs-floorplan` | One per floor | User-authored floor diagram with direct room links and live radar/fallback occupancy-sensor markers. |
 
-All three cards are available in Home Assistant's card picker and have visual
+All four cards are available in Home Assistant's card picker and have visual
 editors. The integration entry is optional when only one Adaptive RoboVacs
 entry is loaded. Select a vacuum entity for each vacuum card and a Home
 Assistant area for each room card. An optional title overrides the live vacuum
@@ -27,6 +28,47 @@ The cards discover their rows through integration attributes rather than fixed
 entity IDs. A newly supported control therefore appears automatically on its
 existing vacuum or room card. A newly discovered vacuum or room still needs a
 new card to be added and positioned manually.
+
+## Floor-plan cards
+
+Add one `custom:adaptive-robovacs-floorplan` card for each Home Assistant floor
+you want to display. Its visual editor selects the integration entry and one
+currently discovered floor. The diagram is a user-authored overview, not a
+robot map or navigation source.
+
+Everyone with dashboard access can view the diagram. Only Home Assistant
+administrators can enter **Edit plan** or call the topology services. In Edit
+mode, click an unplaced room to add a readable snap-grid rectangle with enough
+space for a sensor marker. Drag a room to move it, its lower-right handle to
+resize it, and its connection dot to another room to create a direct two-way
+link. The dragged connection shows a live line: it follows the pointer until
+it snaps to a compatible room. Click a connector to remove it. Save applies
+the complete floor draft atomically; Cancel leaves the saved plan unchanged.
+
+Every discovered `robovac-radar` sensor and every fallback motion/occupancy
+source is shown with a distinct marker. Its marker can be placed only inside
+the area where Home Assistant discovered it. Marker status is live: active,
+inactive, or unavailable. Markers and links use stable registry IDs/area IDs,
+so a display-name or entity-ID change does not redraw the plan. Saved records
+whose rooms or sensors are no longer discovered are retained and shown as a
+warning until an administrator explicitly removes them. An unplaced sensor's
+palette button remains disabled until its discovered room has been placed; then
+one click adds the marker in that room.
+
+### Local editor preview
+
+You can try the floor-plan editor without a Home Assistant instance. From the
+repository root, run:
+
+```powershell
+python -m http.server 8765 --directory dashboard
+```
+
+Then open [the local preview](http://localhost:8765/floorplan-preview.html) in
+a browser. It loads the same standalone dashboard JavaScript and supplies
+sample rooms, links, and occupancy sensors. Its Save action is simulated
+locally and shows the exact service payload; it never contacts Home Assistant
+or a robot. Stop the local server with `Ctrl+C` when finished.
 
 Each room card places two mobile-friendly selectors immediately below its
 occupancy status:

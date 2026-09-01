@@ -5,6 +5,23 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.12.0] - 2026-09-01
+
+### Added
+
+- Per-floor visual dashboard plans with snap-to-grid room rectangles, direct
+  two-way room links, and live radar/fallback occupancy-sensor markers.
+- Admin-only services for atomically saving a diagram and managing direct room
+  adjacency. The new durable graph and sensor placements are restart-safe.
+
+### Changed
+
+- Scheduler Store schema v15 adds the visual floor-plan document. This release
+  does not alter cleaning eligibility; cross-room occupancy blocking remains a
+  later feature built on the saved topology.
+
+Detailed notes: [`docs/releases/v1.12.0.md`](docs/releases/v1.12.0.md).
+
 ## [1.11.5] - 2026-08-31
 
 ### Fixed

@@ -20,6 +20,8 @@ from .const import (
     SERVICE_LIST_LEGACY_DEFERRALS,
     SERVICE_MANUAL_CLEAN_ROOM,
     SERVICE_RECORD_MANUAL_CLEAN,
+    SERVICE_SAVE_FLOOR_PLAN,
+    SERVICE_SET_ROOM_ADJACENCY,
 )
 
 
@@ -34,6 +36,16 @@ def _coordinator(hass: HomeAssistant, entry_id: str | None = None):
     if len(entries) != 1:
         raise vol.Invalid("entry_id is required when multiple Adaptive RoboVacs entries are loaded")
     return next(iter(entries.values()))
+
+
+async def _require_admin(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Keep topology changes limited to an authenticated Home Assistant admin."""
+
+    if not call.context.user_id:
+        raise vol.Invalid("floor-plan changes require an authenticated administrator")
+    user = await hass.auth.async_get_user(call.context.user_id)
+    if user is None or not user.is_admin:
+        raise vol.Invalid("floor-plan changes require a Home Assistant administrator")
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -97,6 +109,26 @@ async def async_register_services(hass: HomeAssistant) -> None:
         return await _coordinator(
             hass, call.data.get("entry_id")
         ).async_clear_legacy_deferrals(list(call.data["area_ids"]))
+
+    async def save_floor_plan(call: ServiceCall) -> dict[str, Any]:
+        await _require_admin(hass, call)
+        return await _coordinator(hass, call.data.get("entry_id")).async_save_floor_plan(
+            call.data["floor_id"],
+            call.data["revision"],
+            call.data["rooms"],
+            call.data["edges"],
+            call.data["sensors"],
+            list(call.data.get("forget_area_ids", [])),
+            list(call.data.get("forget_sensor_registry_ids", [])),
+        )
+
+    async def set_room_adjacency(call: ServiceCall) -> dict[str, Any]:
+        await _require_admin(hass, call)
+        return await _coordinator(
+            hass, call.data.get("entry_id")
+        ).async_set_room_adjacency(
+            call.data["area_id"], list(call.data.get("neighbor_area_ids", []))
+        )
 
     hass.services.async_register(
         DOMAIN,
@@ -212,6 +244,43 @@ async def async_register_services(hass: HomeAssistant) -> None:
         ),
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SAVE_FLOOR_PLAN,
+        save_floor_plan,
+        schema=vol.Schema(
+            {
+                vol.Required("floor_id"): str,
+                vol.Required("revision"): vol.All(int, vol.Range(min=0)),
+                vol.Required("rooms"): dict,
+                vol.Required("edges"): list,
+                vol.Required("sensors"): dict,
+                vol.Optional("forget_area_ids", default=[]): vol.All(cv.ensure_list, [str]),
+                vol.Optional("forget_sensor_registry_ids", default=[]): vol.All(
+                    cv.ensure_list, [str]
+                ),
+                vol.Optional("entry_id"): str,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_ROOM_ADJACENCY,
+        set_room_adjacency,
+        schema=vol.Schema(
+            {
+                vol.Required("area_id"): str,
+                vol.Optional("neighbor_area_ids", default=[]): vol.All(
+                    cv.ensure_list, [str]
+                ),
+                vol.Optional("entry_id"): str,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+
 async def async_unregister_services(hass: HomeAssistant) -> None:
     """Keep global services available once registered during the HA process."""
 

@@ -251,11 +251,13 @@ function mount(Card, config, states = baseStates()) {
   return card;
 }
 
-test("registers the three target-scoped cards only", () => {
+test("registers target-scoped cards and keeps the editor private", () => {
   assert.deepEqual([...elements.keys()], [
     "adaptive-robovacs-global",
     "adaptive-robovacs-vacuum",
     "adaptive-robovacs-room",
+    "adaptive-robovacs-floorplan-editor",
+    "adaptive-robovacs-floorplan",
   ]);
   assert.deepEqual(
     window.customCards.map((card) => card.type),
@@ -263,6 +265,7 @@ test("registers the three target-scoped cards only", () => {
       "adaptive-robovacs-global",
       "adaptive-robovacs-vacuum",
       "adaptive-robovacs-room",
+      "adaptive-robovacs-floorplan",
     ]
   );
 });

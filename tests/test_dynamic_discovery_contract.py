@@ -40,6 +40,10 @@ class DynamicDiscoveryContractTests(unittest.TestCase):
             'customElements.define("adaptive-robovacs-room"',
             source,
         )
+        self.assertIn(
+            'customElements.define("adaptive-robovacs-floorplan"',
+            source,
+        )
         self.assertNotIn(
             'customElements.define("adaptive-robovacs-dashboard"',
             source,
@@ -53,6 +57,16 @@ class DynamicDiscoveryContractTests(unittest.TestCase):
             DASHBOARD_PATH.read_text(encoding="utf-8"),
             local_copy.read_text(encoding="utf-8"),
         )
+
+    def test_floor_plan_preview_is_a_local_mock_of_the_standalone_card(self) -> None:
+        preview = (
+            Path(__file__).parents[1] / "dashboard" / "floorplan-preview.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('src="adaptive-robovacs-dashboard.js"', preview)
+        self.assertIn("adaptive-robovacs-floorplan", preview)
+        self.assertIn('"save_floor_plan"', preview)
+        self.assertIn("no Home Assistant server", preview)
 
     def test_robot_entities_follow_the_robot_friendly_name(self) -> None:
         entity_source = ENTITY_PATH.read_text(encoding="utf-8")

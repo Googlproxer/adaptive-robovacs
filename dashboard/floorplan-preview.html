@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Adaptive RoboVacs floor-plan preview</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --card-background-color: #1d1f23;
+      --secondary-background-color: #292c31;
+      --primary-text-color: #f2f4f8;
+      --secondary-text-color: #b8c0cc;
+      --divider-color: #5b6472;
+      --primary-color: #72b7ff;
+      --error-color: #ff8b8b;
+      --warning-color: #ffd166;
+      --disabled-text-color: #a7b0bd;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background: #121417;
+      color: var(--primary-text-color);
+    }
+    body { max-width: 980px; margin: 0 auto; padding: 28px 20px 48px; }
+    h1 { margin: 0 0 8px; font-size: 1.55rem; }
+    p { color: var(--secondary-text-color); line-height: 1.5; }
+    .controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0; }
+    button { color: inherit; background: #2d333b; border: 1px solid #687386; border-radius: 6px; padding: 7px 10px; cursor: pointer; }
+    button:hover { background: #3a4350; }
+    .note, #service-log { border: 1px solid #3b4350; border-radius: 8px; padding: 12px; background: #191c20; }
+    #service-log { min-height: 1.3em; font-family: ui-monospace, monospace; font-size: .85rem; color: var(--secondary-text-color); }
+    adaptive-robovacs-floorplan { margin-top: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Adaptive RoboVacs floor-plan editor preview</h1>
+  <p>This is a local mock: no Home Assistant server, credentials, or robot actions are involved. Use <strong>Edit plan</strong> in the card to add rooms and sensors, move/resize them, link rooms, and save or cancel a draft.</p>
+  <div class="controls">
+    <button type="button" data-sensor="radar-kitchen" data-state="active">Kitchen radar: active</button>
+    <button type="button" data-sensor="radar-kitchen" data-state="inactive">Kitchen radar: inactive</button>
+    <button type="button" data-sensor="motion-hall" data-state="unavailable">Hall fallback: unavailable</button>
+    <button type="button" id="reset">Reset example</button>
+  </div>
+  <div class="note">Save is simulated locally. The line below shows the service payload the card would send to Home Assistant.</div>
+  <p id="service-log" aria-live="polite">No simulated save yet.</p>
+  <adaptive-robovacs-floorplan id="floorplan"></adaptive-robovacs-floorplan>
+
+  <script src="adaptive-robovacs-dashboard.js"></script>
+  <script>
+    const entryId = "local-floor-plan-preview";
+    const fixture = {
+      revision: 3,
+      floors: [{
+        floor_id: "ground",
+        rooms: [
+          {
+            area_id: "kitchen", name: "Kitchen", floor_id: "ground",
+            rectangle: { floor_id: "ground", x: 3, y: 3, width: 15, height: 11 },
+            sensors: [{ registry_id: "radar-kitchen", entity_id: "binary_sensor.kitchen_presence", kind: "radar", state: "active", marker: { area_id: "kitchen", x: 700, y: 400 } }],
+          },
+          {
+            area_id: "hall", name: "Hall", floor_id: "ground",
+            rectangle: { floor_id: "ground", x: 20, y: 3, width: 8, height: 18 },
+            sensors: [{ registry_id: "motion-hall", entity_id: "binary_sensor.hall_motion", kind: "fallback", state: "inactive", marker: { area_id: "hall", x: 500, y: 250 } }],
+          },
+          {
+            area_id: "living", name: "Living room", floor_id: "ground",
+            rectangle: { floor_id: "ground", x: 30, y: 3, width: 15, height: 18 },
+            sensors: [{ registry_id: "radar-living", entity_id: "binary_sensor.living_presence", kind: "radar", state: "inactive", marker: { area_id: "living", x: 300, y: 600 } }],
+          },
+          {
+            area_id: "laundry", name: "Laundry", floor_id: "ground",
+            rectangle: null,
+            sensors: [{ registry_id: "motion-laundry", entity_id: "binary_sensor.laundry_motion", kind: "fallback", state: "unavailable", marker: null }],
+          },
+        ],
+      }],
+      edges: [["hall", "kitchen"], ["hall", "living"]],
+      orphaned_rooms: ["retired-utility"],
+      orphaned_sensors: ["retired-radar"],
+    };
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    let plan = clone(fixture);
+    let card;
+    const log = document.querySelector("#service-log");
+
+    const publish = () => {
+      hass.states = {
+        "sensor.adaptive_robovacs_preview": {
+          state: "ready",
+          attributes: {
+            adaptive_robovacs_entry_id: entryId,
+            adaptive_robovacs_role: "scheduler_status",
+            floor_plan: plan,
+          },
+        },
+      };
+      card.hass = hass;
+    };
+
+    const hass = {
+      user: { name: "Preview admin", is_admin: true },
+      states: {},
+      async callService(domain, service, data) {
+        if (domain !== "adaptive_robovacs" || service !== "save_floor_plan") {
+          throw new Error("The preview only simulates adaptive_robovacs.save_floor_plan.");
+        }
+        const floor = plan.floors.find((item) => item.floor_id === data.floor_id);
+        if (!floor || data.revision !== plan.revision) throw new Error("Preview revision is stale; reset and try again.");
+        floor.rooms = floor.rooms.map((room) => ({
+          ...room,
+          rectangle: data.rooms[room.area_id] || null,
+          sensors: room.sensors.map((sensor) => ({
+            ...sensor,
+            marker: data.sensors[sensor.registry_id] || null,
+          })),
+        }));
+        plan = {
+          ...plan,
+          revision: plan.revision + 1,
+          edges: data.edges,
+          orphaned_rooms: plan.orphaned_rooms.filter((areaId) => !data.forget_area_ids.includes(areaId)),
+          orphaned_sensors: plan.orphaned_sensors.filter((registryId) => !data.forget_sensor_registry_ids.includes(registryId)),
+        };
+        log.textContent = `${domain}.${service} ${JSON.stringify(data)}`;
+        publish();
+        return plan;
+      },
+    };
+
+    const setSensorState = (registryId, state) => {
+      plan = clone(plan);
+      for (const floor of plan.floors) {
+        for (const room of floor.rooms) {
+          for (const sensor of room.sensors) {
+            if (sensor.registry_id === registryId) sensor.state = state;
+          }
+        }
+      }
+      publish();
+    };
+
+    card = document.querySelector("#floorplan");
+    card.setConfig({ entry_id: entryId, floor_id: "ground", title: "Ground floor — preview" });
+    publish();
+    document.querySelectorAll("[data-sensor]").forEach((button) => button.addEventListener("click", () => {
+      setSensorState(button.dataset.sensor, button.dataset.state);
+    }));
+    document.querySelector("#reset").addEventListener("click", () => {
+      plan = clone(fixture);
+      log.textContent = "Example reset. No simulated save yet.";
+      publish();
+    });
+  </script>
+</body>
+</html>

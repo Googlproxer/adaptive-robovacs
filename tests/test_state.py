@@ -643,6 +643,70 @@ class SchedulerStateTests(unittest.TestCase):
         with self.assertRaises(StateSchemaError):
             SchedulerState.from_store({"schema_version": SCHEMA_VERSION + 1}, ENTRY_DATA)
 
+    def test_v14_store_migrates_to_an_empty_floor_plan(self) -> None:
+        payload = SchedulerState.create(ENTRY_DATA).to_store()
+        payload["schema_version"] = 14
+        payload.pop("floor_plan")
+
+        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertTrue(migrated)
+        self.assertEqual(
+            restored.to_store()["floor_plan"],
+            {"revision": 0, "rooms": {}, "edges": [], "sensors": {}},
+        )
+
+    def test_floor_plan_round_trip_is_canonical_and_registry_backed(self) -> None:
+        payload = SchedulerState.create(ENTRY_DATA).to_store()
+        payload["floor_plan"] = {
+            "revision": 4,
+            "rooms": {
+                "kitchen": {"floor_id": "ground", "x": 1, "y": 2, "width": 8, "height": 6},
+                "hall": {"floor_id": "ground", "x": 10, "y": 2, "width": 4, "height": 6},
+            },
+            "edges": [["hall", "kitchen"]],
+            "sensors": {
+                "registry-radar": {"area_id": "kitchen", "x": 500, "y": 250}
+            },
+        }
+
+        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+
+        self.assertFalse(migrated)
+        self.assertEqual(restored.floor_plan.revision, 4)
+        self.assertEqual(restored.to_store()["floor_plan"], payload["floor_plan"])
+
+    def test_runtime_save_path_preserves_floor_plan(self) -> None:
+        runtime = SchedulerState.create(ENTRY_DATA).to_runtime_data()
+        runtime["floor_plan"] = {
+            "revision": 1,
+            "rooms": {
+                "kitchen": {
+                    "floor_id": "ground",
+                    "x": 1,
+                    "y": 2,
+                    "width": 8,
+                    "height": 6,
+                }
+            },
+            "edges": [],
+            "sensors": {
+                "registry-radar": {"area_id": "kitchen", "x": 500, "y": 250}
+            },
+        }
+
+        restored, migrated = SchedulerState.from_store(runtime, ENTRY_DATA)
+
+        self.assertTrue(migrated)
+        self.assertEqual(restored.to_store()["floor_plan"], runtime["floor_plan"])
+
+    def test_current_schema_rejects_noncanonical_floor_plan_edges(self) -> None:
+        payload = SchedulerState.create(ENTRY_DATA).to_store()
+        payload["floor_plan"]["edges"] = [["kitchen", "hall"]]
+
+        with self.assertRaises(StateSchemaError):
+            SchedulerState.from_store(payload, ENTRY_DATA)
+
     def test_current_schema_requires_all_structural_sections(self) -> None:
         with self.assertRaises(StateSchemaError):
             SchedulerState.from_store({"schema_version": SCHEMA_VERSION, "global": {}}, ENTRY_DATA)

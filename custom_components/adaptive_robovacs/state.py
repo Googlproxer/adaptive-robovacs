@@ -29,13 +29,17 @@ from .const import (
     DEFAULT_EXPECTED_MINUTES,
 )
 from .models import (
+    FLOOR_PLAN_MAX_GRID_COORDINATE,
+    FLOOR_PLAN_MIN_ROOM_SPAN,
     ROOM_PROFILE_OVERRIDE_KEYS,
+    floor_plan_integer,
     is_valid_daily_time,
+    normalize_floor_plan_edge,
     room_cleaning_profile_is_custom,
 )
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 DAILY_WINDOW_VERSION = 1
 
 
@@ -1320,9 +1324,137 @@ class AuditState:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class FloorPlanRectangle:
+    """One room rectangle on a named Home Assistant floor grid."""
+
+    floor_id: str
+    x: int
+    y: int
+    width: int
+    height: int
+
+    @classmethod
+    def from_mapping(cls, value: object) -> FloorPlanRectangle:
+        data = _mapping(value, "floor-plan room rectangle")
+        floor_id = data.get("floor_id")
+        if not isinstance(floor_id, str) or not floor_id:
+            raise StateSchemaError("floor-plan rectangle floor_id must be a non-empty string")
+        try:
+            return cls(
+                floor_id=floor_id,
+                x=floor_plan_integer(
+                    data.get("x"), "floor-plan rectangle x", 0, FLOOR_PLAN_MAX_GRID_COORDINATE
+                ),
+                y=floor_plan_integer(
+                    data.get("y"), "floor-plan rectangle y", 0, FLOOR_PLAN_MAX_GRID_COORDINATE
+                ),
+                width=floor_plan_integer(
+                    data.get("width"),
+                    "floor-plan rectangle width",
+                    FLOOR_PLAN_MIN_ROOM_SPAN,
+                    FLOOR_PLAN_MAX_GRID_COORDINATE,
+                ),
+                height=floor_plan_integer(
+                    data.get("height"),
+                    "floor-plan rectangle height",
+                    FLOOR_PLAN_MIN_ROOM_SPAN,
+                    FLOOR_PLAN_MAX_GRID_COORDINATE,
+                ),
+            )
+        except ValueError as err:
+            raise StateSchemaError(str(err)) from err
+
+    def to_store(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class FloorPlanSensorMarker:
+    """A normalized sensor marker kept inside its discovered room rectangle."""
+
+    area_id: str
+    x: int
+    y: int
+
+    @classmethod
+    def from_mapping(cls, value: object) -> FloorPlanSensorMarker:
+        data = _mapping(value, "floor-plan sensor marker")
+        area_id = data.get("area_id")
+        if not isinstance(area_id, str) or not area_id:
+            raise StateSchemaError("floor-plan sensor marker area_id must be a non-empty string")
+        try:
+            return cls(
+                area_id=area_id,
+                x=floor_plan_integer(data.get("x"), "floor-plan sensor x", 0, 1000),
+                y=floor_plan_integer(data.get("y"), "floor-plan sensor y", 0, 1000),
+            )
+        except ValueError as err:
+            raise StateSchemaError(str(err)) from err
+
+    def to_store(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class FloorPlanState:
+    """Durable user-authored floor-plan geometry and room topology."""
+
+    revision: int = 0
+    rooms: dict[str, FloorPlanRectangle] = field(default_factory=dict)
+    edges: set[tuple[str, str]] = field(default_factory=set)
+    sensors: dict[str, FloorPlanSensorMarker] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, value: object) -> FloorPlanState:
+        data = _mapping(value, "floor_plan")
+        revision = data.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise StateSchemaError("floor-plan revision must be a non-negative integer")
+        raw_rooms = _mapping(data.get("rooms"), "floor_plan.rooms")
+        raw_sensors = _mapping(data.get("sensors"), "floor_plan.sensors")
+        raw_edges = data.get("edges")
+        if not isinstance(raw_edges, list):
+            raise StateSchemaError("floor_plan.edges must be an array")
+        rooms: dict[str, FloorPlanRectangle] = {}
+        for area_id, item in raw_rooms.items():
+            if not isinstance(area_id, str) or not area_id:
+                raise StateSchemaError("floor-plan room keys must be non-empty area IDs")
+            rooms[area_id] = FloorPlanRectangle.from_mapping(item)
+        sensors: dict[str, FloorPlanSensorMarker] = {}
+        for registry_id, item in raw_sensors.items():
+            if not isinstance(registry_id, str) or not registry_id:
+                raise StateSchemaError("floor-plan sensor keys must be non-empty registry IDs")
+            sensors[registry_id] = FloorPlanSensorMarker.from_mapping(item)
+        edges: set[tuple[str, str]] = set()
+        for item in raw_edges:
+            if not isinstance(item, list) or len(item) != 2:
+                raise StateSchemaError("each floor-plan edge must contain exactly two area IDs")
+            try:
+                edge = normalize_floor_plan_edge(item[0], item[1])
+            except ValueError as err:
+                raise StateSchemaError(str(err)) from err
+            if edge in edges or item != [edge[0], edge[1]]:
+                raise StateSchemaError("floor-plan edges must be unique canonical area-ID pairs")
+            edges.add(edge)
+        return cls(revision=revision, rooms=rooms, edges=edges, sensors=sensors)
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "revision": self.revision,
+            "rooms": {area_id: room.to_store() for area_id, room in self.rooms.items()},
+            "edges": [list(edge) for edge in sorted(self.edges)],
+            "sensors": {
+                registry_id: marker.to_store()
+                for registry_id, marker in self.sensors.items()
+            },
+        }
+
+
 @dataclass(slots=True)
 class SchedulerState:
     global_settings: GlobalSettings
+    floor_plan: FloorPlanState = field(default_factory=FloorPlanState)
     room_settings: dict[str, RoomSettings] = field(default_factory=dict)
     robot_settings: dict[str, RobotSettings] = field(default_factory=dict)
     robot_entity_aliases: dict[str, str] = field(default_factory=dict)
@@ -1347,7 +1479,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v14 or convert older shapes, returning whether a save is required."""
+        """Load v15 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -1355,7 +1487,7 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}:
+        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
@@ -1380,6 +1512,7 @@ class SchedulerState:
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
         raw_robot_faults = _mapping_or_empty(data.get("robot_faults"))
         raw_room_faults = _mapping_or_empty(data.get("room_faults"))
+        raw_floor_plan = data.get("floor_plan")
         legacy_fault = (
             SchedulerFault.from_mapping(value)
             if isinstance((value := data.get("scheduler_fault")), Mapping)
@@ -1387,6 +1520,11 @@ class SchedulerState:
         )
         return cls(
             global_settings=global_settings,
+            floor_plan=(
+                FloorPlanState.from_mapping(raw_floor_plan)
+                if isinstance(raw_floor_plan, Mapping)
+                else FloorPlanState()
+            ),
             room_settings={
                 area_id: RoomSettings.from_mapping(value, RoomSettings.defaults(False))
                 for area_id, value in raw_room_settings.items()
@@ -1479,6 +1617,11 @@ class SchedulerState:
     ) -> SchedulerState:
         defaults = GlobalSettings.from_entry(entry_data)
         raw_global = _mapping(data.get("global"), "global")
+        raw_floor_plan = (
+            _mapping(data.get("floor_plan"), "floor_plan")
+            if data.get("schema_version") == SCHEMA_VERSION
+            else None
+        )
         raw_room_settings = _mapping(data.get("room_settings"), "room_settings")
         raw_robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
         raw_robot_aliases = (
@@ -1512,6 +1655,11 @@ class SchedulerState:
             raw_room_faults = {}
         return cls(
             global_settings=GlobalSettings.from_mapping(raw_global, defaults),
+            floor_plan=(
+                FloorPlanState.from_mapping(raw_floor_plan)
+                if raw_floor_plan is not None
+                else FloorPlanState()
+            ),
             room_settings={
                 area_id: RoomSettings.from_mapping(value, RoomSettings.defaults(False))
                 for area_id, value in raw_room_settings.items()
@@ -1603,6 +1751,7 @@ class SchedulerState:
         return {
             "schema_version": SCHEMA_VERSION,
             "global": asdict(self.global_settings),
+            "floor_plan": self.floor_plan.to_store(),
             "room_settings": {
                 area_id: settings.to_store()
                 for area_id, settings in self.room_settings.items()
@@ -1655,12 +1804,13 @@ class SchedulerState:
         """Expose a temporary runtime view while scheduler logic is extracted.
 
         The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v14 codec, and platform entities use
+        persistent I/O stays on the typed v15 codec, and platform entities use
         coordinator accessors instead of this compatibility representation.
         """
 
         return {
             "version": SCHEMA_VERSION,
+            "floor_plan": self.floor_plan.to_store(),
             "observe_only": self.global_settings.observe_only,
             "party_mode": self.global_settings.party_mode,
             "forecast_confidence": self.global_settings.forecast_confidence,
