@@ -5,6 +5,16 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.12.7] - 2026-09-02
+
+### Changed
+
+- Floor-plan editing handles and move cursors now appear only during editing.
+- Room connections now route between nearest room edges using straight and
+  45-degree grid-aligned segments.
+
+Detailed notes: [`docs/releases/v1.12.7.md`](docs/releases/v1.12.7.md).
+
 ## [1.12.6] - 2026-09-02
 
 ### Changed

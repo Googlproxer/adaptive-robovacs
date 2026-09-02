@@ -876,6 +876,30 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
     this._render();
   }
 
+  _edgePoints(source, target) {
+    const nearest = (sourceStart, sourceEnd, targetStart, targetEnd) => {
+      if (sourceEnd < targetStart) return [sourceEnd, targetStart];
+      if (sourceStart > targetEnd) return [sourceStart, targetEnd];
+      const shared = Math.round((Math.max(sourceStart, targetStart) + Math.min(sourceEnd, targetEnd)) / 2);
+      return [shared, shared];
+    };
+    const [sourceX, targetX] = nearest(source.x, source.x + source.width, target.x, target.x + target.width);
+    const [sourceY, targetY] = nearest(source.y, source.y + source.height, target.y, target.y + target.height);
+    const points = [{ x: sourceX, y: sourceY }];
+    const deltaX = targetX - sourceX;
+    const deltaY = targetY - sourceY;
+    if (!deltaX && !deltaY) return points;
+    if (deltaX && deltaY && Math.abs(deltaX) !== Math.abs(deltaY)) {
+      const diagonal = Math.min(Math.abs(deltaX), Math.abs(deltaY));
+      points.push({
+        x: sourceX + Math.sign(deltaX) * diagonal,
+        y: sourceY + Math.sign(deltaY) * diagonal,
+      });
+    }
+    points.push({ x: targetX, y: targetY });
+    return points;
+  }
+
   _setLinkPreview(svg, rectangles, point) {
     const source = rectangles[this._drag?.areaId];
     if (!source) return;
@@ -883,8 +907,9 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
     if (!preview) {
       preview = svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "g");
       preview.setAttribute("data-link-preview", "true");
-      const line = svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "line");
+      const line = svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "polyline");
       line.setAttribute("class", "edge preview");
+      line.setAttribute("fill", "none");
       const dot = svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "circle");
       dot.setAttribute("class", "link-preview-dot");
       dot.setAttribute("r", "0.7");
@@ -894,16 +919,10 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
     const targetId = this._roomAt(point, rectangles);
     const target = targetId && targetId !== this._drag.areaId ? rectangles[targetId] : undefined;
     const sourcePoint = { x: source.x + source.width, y: source.y + source.height / 2 };
-    const targetPoint = target ? {
-      x: Math.max(target.x, Math.min(sourcePoint.x, target.x + target.width)),
-      y: Math.max(target.y, Math.min(sourcePoint.y, target.y + target.height)),
-    } : point;
-    const line = preview.querySelector("line");
+    const points = target ? this._edgePoints(source, target) : [sourcePoint, point];
+    const line = preview.querySelector("polyline");
     const dot = preview.querySelector("circle");
-    line.setAttribute("x1", sourcePoint.x);
-    line.setAttribute("y1", sourcePoint.y);
-    line.setAttribute("x2", targetPoint.x);
-    line.setAttribute("y2", targetPoint.y);
+    line.setAttribute("points", points.map((item) => `${item.x},${item.y}`).join(" "));
     if (target) {
       dot.setAttribute("display", "none");
     } else {
@@ -1037,7 +1056,8 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
     const edges = this._editing ? this._draft.edges : model.plan.edges || [];
     const renderedEdges = edges.filter((edge) => rectangles[edge[0]] && rectangles[edge[1]]).map((edge) => {
       const left = rectangles[edge[0]]; const right = rectangles[edge[1]];
-      return `<line class="edge ${this._editing ? "editable" : ""}" data-edge="${escapeHtml(edge.join("|"))}" x1="${left.x + left.width / 2}" y1="${left.y + left.height / 2}" x2="${right.x + right.width / 2}" y2="${right.y + right.height / 2}" />`;
+      const points = this._edgePoints(left, right).map((item) => `${item.x},${item.y}`).join(" ");
+      return `<polyline class="edge ${this._editing ? "editable" : ""}" data-edge="${escapeHtml(edge.join("|"))}" fill="none" points="${points}" />`;
     }).join("");
     const renderedRooms = model.floor.rooms.filter((room) => rectangles[room.area_id]).map((room) => {
       const rectangle = rectangles[room.area_id];
@@ -1047,10 +1067,11 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
         const x = rectangle.x + rectangle.width * marker.x / 1000;
         const y = rectangle.y + rectangle.height * marker.y / 1000;
         const sensorTitle = `${this._sensorName(sensor)}: ${sensor.state}`;
-        return `<g class="sensor ${escapeHtml(sensor.kind)} ${escapeHtml(sensor.state)}" data-sensor="${escapeHtml(sensor.registry_id)}" transform="translate(${x} ${y})" tabindex="0" role="img" aria-label="${escapeHtml(sensorTitle)}"><circle r="0.8" /><path d="M1.2,-1.2 A1.7,1.7 0 0 1 1.2,1.2" /><title>${escapeHtml(sensorTitle)}</title></g>`;
+        return `<g class="sensor ${escapeHtml(sensor.kind)} ${escapeHtml(sensor.state)}${this._editing ? " editable" : ""}" data-sensor="${escapeHtml(sensor.registry_id)}" transform="translate(${x} ${y})" style="cursor:${this._editing ? "move" : "default"}" tabindex="0" role="img" aria-label="${escapeHtml(sensorTitle)}"><circle r="0.8" /><path d="M1.2,-1.2 A1.7,1.7 0 0 1 1.2,1.2" /><title>${escapeHtml(sensorTitle)}</title></g>`;
       }).join("");
       const occupancy = (room.sensors || []).some((sensor) => sensor.state === "active") ? "active" : "inactive";
-      return `<g class="room ${occupancy}" data-room="${escapeHtml(room.area_id)}"><rect x="${rectangle.x}" y="${rectangle.y}" width="${rectangle.width}" height="${rectangle.height}" rx="0.8" /><text x="${rectangle.x + 1}" y="${rectangle.y + 2.1}">${escapeHtml(room.name)}</text><circle class="link-source" data-link-source="${escapeHtml(room.area_id)}" cx="${rectangle.x + rectangle.width}" cy="${rectangle.y + rectangle.height / 2}" r="0.7" />${this._editing ? `<rect class="resize" data-room="${escapeHtml(room.area_id)}" data-resize="true" x="${rectangle.x + rectangle.width - 0.8}" y="${rectangle.y + rectangle.height - 0.8}" width="0.8" height="0.8" />` : ""}${sensorMarkup}</g>`;
+      const editingAffordances = this._editing ? `<circle class="link-source" data-link-source="${escapeHtml(room.area_id)}" cx="${rectangle.x + rectangle.width}" cy="${rectangle.y + rectangle.height / 2}" r="0.7" /><rect class="resize" data-room="${escapeHtml(room.area_id)}" data-resize="true" x="${rectangle.x + rectangle.width - 0.8}" y="${rectangle.y + rectangle.height - 0.8}" width="0.8" height="0.8" />` : "";
+      return `<g class="room ${occupancy}" data-room="${escapeHtml(room.area_id)}"><rect x="${rectangle.x}" y="${rectangle.y}" width="${rectangle.width}" height="${rectangle.height}" rx="0.8" /><text x="${rectangle.x + 1}" y="${rectangle.y + 2.1}">${escapeHtml(room.name)}</text>${editingAffordances}${sensorMarkup}</g>`;
     }).join("");
     const unplacedRooms = model.floor.rooms.filter((room) => !rectangles[room.area_id]);
     const unplacedSensors = model.floor.rooms.flatMap((room) => (room.sensors || []).filter((sensor) => !(this._editing ? this._draft.sensors[sensor.registry_id] : sensor.marker)).map((sensor) => ({ ...sensor, area_id: room.area_id, room_name: room.name })));

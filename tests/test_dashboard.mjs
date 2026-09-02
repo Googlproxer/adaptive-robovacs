@@ -568,6 +568,40 @@ test("floor plan fits the viewport height without offsetting wide-screen edits",
   assert.deepEqual(card._point({ clientX: 840, clientY: 600 }, svg, 60), { x: 48, y: 60 });
 });
 
+test("floor plan only renders editing handles and cursors in edit mode", () => {
+  const source = FloorPlanCard.prototype._render.toString();
+
+  assert.match(source, /const editingAffordances = this\._editing \? `<circle class="link-source"/);
+  assert.match(source, /style="cursor:\$\{this\._editing \? "move" : "default"\}"/);
+});
+
+test("floor plan routes connections between nearest edges on the grid", () => {
+  const card = new FloorPlanCard();
+
+  assert.deepEqual(
+    card._edgePoints(
+      { x: 2, y: 2, width: 4, height: 4 },
+      { x: 12, y: 3, width: 4, height: 4 },
+    ),
+    [{ x: 6, y: 5 }, { x: 12, y: 5 }],
+  );
+  assert.deepEqual(
+    card._edgePoints(
+      { x: 0, y: 0, width: 4, height: 4 },
+      { x: 11, y: 8, width: 4, height: 4 },
+    ),
+    [{ x: 4, y: 4 }, { x: 8, y: 8 }, { x: 11, y: 8 }],
+  );
+  assert.deepEqual(
+    card._edgePoints(
+      { x: 2, y: 2, width: 4, height: 4 },
+      { x: 3, y: 12, width: 5, height: 4 },
+    ),
+    [{ x: 5, y: 6 }, { x: 5, y: 12 }],
+  );
+  assert.match(FloorPlanCard.prototype._render.toString(), /<polyline class="edge/);
+});
+
 test("hidden-tab updates defer all card work and render only the newest state on return", async () => {
   const initialCreated = createdCards.length;
   setVisibility("hidden");
