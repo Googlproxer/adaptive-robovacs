@@ -810,9 +810,14 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
 
   _point(event, svg, height) {
     const rect = svg.getBoundingClientRect();
+    const scale = Math.min(rect.width / 48, rect.height / height);
+    const contentWidth = 48 * scale;
+    const contentHeight = height * scale;
+    const left = rect.left + (rect.width - contentWidth) / 2;
+    const top = rect.top + (rect.height - contentHeight) / 2;
     return {
-      x: Math.max(0, Math.min(48, Math.round(((event.clientX - rect.left) / rect.width) * 48))),
-      y: Math.max(0, Math.min(height, Math.round(((event.clientY - rect.top) / rect.height) * height))),
+      x: Math.max(0, Math.min(48, Math.round((event.clientX - left) / scale))),
+      y: Math.max(0, Math.min(height, Math.round((event.clientY - top) / scale))),
     };
   }
 
@@ -1060,7 +1065,7 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
     const admin = this._hass.user?.is_admin === true;
     root.innerHTML = `
       <style>
-        :host { display:block; } ha-card { display:block; overflow:hidden; } .header,.toolbar,.palette,.message { padding:12px 16px; } .header { display:flex; justify-content:space-between; align-items:center; } .toolbar button,.palette button { margin:2px; } .message { color:var(--secondary-text-color); } svg { display:block; width:100%; min-height:800px; background:var(--card-background-color); background-image:radial-gradient(var(--divider-color) .6px, transparent .7px); background-size:12px 12px; touch-action:none; } .edge { stroke:var(--primary-color); stroke-width:.35; } .edge.editable { cursor:pointer; stroke-width:.55; } .edge.preview { stroke-dasharray:1 1; pointer-events:none; } .link-preview-dot { fill:var(--primary-color); pointer-events:none; } .room rect { fill:var(--secondary-background-color); stroke:var(--primary-text-color); stroke-width:.28; } .room.active rect { stroke:var(--success-color, #4caf50); stroke-width:.55; } .room text { fill:var(--primary-text-color); font-size:1.35px; pointer-events:none; } .link-source,.resize { fill:var(--primary-color); cursor:crosshair; } .sensor { cursor:move; } .sensor circle { fill:var(--disabled-text-color); stroke:var(--primary-text-color); stroke-width:.2; } .sensor.active circle { fill:var(--success-color, #4caf50); } .sensor.unavailable circle { fill:var(--error-color); } .sensor.fallback path { display:none; } .sensor path { fill:none; stroke:var(--primary-text-color); stroke-width:.18; } .palette { border-top:1px solid var(--divider-color); } .warning { color:var(--warning-color); }
+        :host { display:block; } ha-card { display:block; overflow:hidden; } .header,.toolbar,.palette,.message { padding:12px 16px; } .header { display:flex; justify-content:space-between; align-items:center; } .toolbar button,.palette button { margin:2px; } .message { color:var(--secondary-text-color); } svg { display:block; width:100%; height:calc(100dvh - 112px); min-height:320px; background:var(--card-background-color); background-image:radial-gradient(var(--divider-color) .6px, transparent .7px); background-size:12px 12px; touch-action:none; } .edge { stroke:var(--primary-color); stroke-width:.35; } .edge.editable { cursor:pointer; stroke-width:.55; } .edge.preview { stroke-dasharray:1 1; pointer-events:none; } .link-preview-dot { fill:var(--primary-color); pointer-events:none; } .room rect { fill:var(--secondary-background-color); stroke:var(--primary-text-color); stroke-width:.28; } .room.active rect { stroke:var(--success-color, #4caf50); stroke-width:.55; } .room text { fill:var(--primary-text-color); font-size:1.35px; pointer-events:none; } .link-source,.resize { fill:var(--primary-color); cursor:crosshair; } .sensor { cursor:move; } .sensor circle { fill:var(--disabled-text-color); stroke:var(--primary-text-color); stroke-width:.2; } .sensor.active circle { fill:var(--success-color, #4caf50); } .sensor.unavailable circle { fill:var(--error-color); } .sensor.fallback path { display:none; } .sensor path { fill:none; stroke:var(--primary-text-color); stroke-width:.18; } .palette { border-top:1px solid var(--divider-color); } .warning { color:var(--warning-color); }
       </style>
       <ha-card>
         <div class="header"><span>${escapeHtml(this._config.title || `${this._config.floor_id} floor plan`)}</span>${admin ? `<button data-action="${this._editing ? "cancel" : "edit"}">${this._editing ? "Cancel" : "Edit plan"}</button>` : ""}</div>

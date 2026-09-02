@@ -36,6 +36,11 @@ you want to display. Its visual editor selects the integration entry and one
 currently discovered floor. The diagram is a user-authored overview, not a
 robot map or navigation source.
 
+In view mode, the diagram uses the available browser height and preserves the
+floor's proportions. On a wide display the plan is centered rather than made
+tall enough to require scrolling. Edit-mode pointer coordinates account for
+the resulting side space, so moving or resizing a room remains accurate.
+
 Everyone with dashboard access can view the diagram. Only Home Assistant
 administrators can enter **Edit plan** or call the topology services. In Edit
 mode, click an unplaced room to add a readable snap-grid rectangle with enough

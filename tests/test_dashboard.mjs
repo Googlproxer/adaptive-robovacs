@@ -554,6 +554,20 @@ test("floor plan sensors use their Home Assistant friendly name", () => {
   );
 });
 
+test("floor plan fits the viewport height without offsetting wide-screen edits", () => {
+  const card = new FloorPlanCard();
+  const svg = {
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 1200, height: 600 }),
+  };
+  assert.match(
+    FloorPlanCard.prototype._render.toString(),
+    /height:calc\(100dvh - 112px\)/,
+  );
+  assert.deepEqual(card._point({ clientX: 360, clientY: 0 }, svg, 60), { x: 0, y: 0 });
+  assert.deepEqual(card._point({ clientX: 600, clientY: 300 }, svg, 60), { x: 24, y: 30 });
+  assert.deepEqual(card._point({ clientX: 840, clientY: 600 }, svg, 60), { x: 48, y: 60 });
+});
+
 test("hidden-tab updates defer all card work and render only the newest state on return", async () => {
   const initialCreated = createdCards.length;
   setVisibility("hidden");
