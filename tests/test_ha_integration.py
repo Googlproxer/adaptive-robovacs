@@ -151,6 +151,7 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
         self.hass = await self.hass_context.__aenter__()
 
     async def asyncTearDown(self) -> None:
+        await self.hass.async_stop(force=True)
         await self.hass_context.__aexit__(None, None, None)
         self.temp_dir.cleanup()
 
