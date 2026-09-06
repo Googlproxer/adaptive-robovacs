@@ -8,11 +8,10 @@ future decoder.  It does not attempt to mutate or reconstruct a robot map.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import struct
 import zlib
-
+from dataclasses import dataclass
 
 MAX_PACKET_BYTES = 512 * 1024
 MAX_GRID_CELLS = 1_000_000
@@ -66,7 +65,9 @@ def _read_lz4_block(data: bytes, expected_size: int | None = None) -> bytes:
     original so this integration has no additional runtime dependency.
     """
 
-    maximum_size = expected_size if expected_size is not None else MAX_GRID_CELLS + 64 * 1024
+    maximum_size = (
+        expected_size if expected_size is not None else MAX_GRID_CELLS + 64 * 1024
+    )
     if maximum_size < 0 or maximum_size > MAX_GRID_CELLS + 64 * 1024:
         raise Q10MapFrameError("declared map block is too large")
     output = bytearray()
@@ -168,11 +169,7 @@ def parse_q10_map_frame(packet: bytes) -> Q10MapFrame:
     height = _u16be(packet, 9)
     compressed_layout = _u16be(packet, 27)
     grid_size = width * height
-    if (
-        width == 0
-        or height == 0
-        or grid_size > MAX_GRID_CELLS
-    ):
+    if width == 0 or height == 0 or grid_size > MAX_GRID_CELLS:
         raise Q10MapFrameError("invalid Q10 map dimensions")
     layout_start = 29
     layout_end = layout_start + compressed_layout
@@ -219,10 +216,19 @@ def render_q10_map_preview(frame: Q10MapFrame) -> bytes:
                 rows.extend((28, 34, 42))
             elif pixel % 4 == 0:
                 seed = pixel // 4
-                rows.extend(((53 * seed + 75) % 176 + 48, (97 * seed + 45) % 160 + 48, (149 * seed + 15) % 144 + 64))
+                rows.extend(
+                    (
+                        (53 * seed + 75) % 176 + 48,
+                        (97 * seed + 45) % 160 + 48,
+                        (149 * seed + 15) % 144 + 64,
+                    )
+                )
             else:
                 rows.extend((92, 103, 117))
     header = struct.pack(">IIBBBBB", frame.width, frame.height, 8, 2, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header) + _png_chunk(
-        b"IDAT", zlib.compress(bytes(rows), level=9)
-    ) + _png_chunk(b"IEND", b"")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", header)
+        + _png_chunk(b"IDAT", zlib.compress(bytes(rows), level=9))
+        + _png_chunk(b"IEND", b"")
+    )

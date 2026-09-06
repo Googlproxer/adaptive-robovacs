@@ -2,20 +2,36 @@
 
 from __future__ import annotations
 
-import voluptuous as vol
+from collections.abc import Awaitable, Callable
+from typing import Any
 
+import voluptuous as vol
 from homeassistant import data_entry_flow
 from homeassistant.components.repairs import RepairsFlow
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
+from .commands import (
+    RecheckAndResumeCommand,
+    RecheckCleaningProgramCommand,
+    RecheckNotificationTargetsCommand,
+    RecheckRoomFaultCommand,
+    RecheckTwoPassCompatibilityCommand,
+    SchedulerCommand,
+    SchedulerCommandResult,
+)
 from .const import DOMAIN
-from .repairs_manager import robot_dispatch_fault_issue_id
-from .repairs_manager import room_dispatch_fault_issue_id
-from .repairs_manager import two_pass_issue_id
-from .repairs_manager import notification_delivery_issue_id
-from .repairs_manager import cleaning_program_issue_id
-from .repairs_manager import async_set_notification_delivery_issue
+from .repairs_manager import (
+    cleaning_program_issue_id,
+    notification_delivery_issue_id,
+    robot_dispatch_fault_issue_id,
+    room_dispatch_fault_issue_id,
+    two_pass_issue_id,
+)
+from .runtime_data import AdaptiveRoboVacsRuntimeData
+
+type CommandSubmitter = Callable[[SchedulerCommand], Awaitable[SchedulerCommandResult]]
 
 
 def _description_placeholders(flow: RepairsFlow) -> dict[str, str] | None:
@@ -28,8 +44,12 @@ def _description_placeholders(flow: RepairsFlow) -> dict[str, str] | None:
 class RobotDispatchFaultRepairFlow(RepairsFlow):
     """Recheck one held robot without dispatching cleaning work."""
 
-    def __init__(self, coordinator, robot_registry_id: str) -> None:
-        self._coordinator = coordinator
+    def __init__(
+        self,
+        submit: CommandSubmitter,
+        robot_registry_id: str,
+    ) -> None:
+        self._submit = submit
         self._robot_registry_id = robot_registry_id
 
     async def async_step_init(
@@ -47,12 +67,13 @@ class RobotDispatchFaultRepairFlow(RepairsFlow):
 
         errors: dict[str, str] = {}
         if user_input is not None:
-            result = await self._coordinator.async_recheck_and_resume(
-                self._robot_registry_id
+            result = await self._submit(
+                RecheckAndResumeCommand(self._robot_registry_id)
             )
-            if result.cleared:
+            response = result.as_response() if result else {}
+            if response.get("cleared"):
                 return self.async_create_entry(title="", data={})
-            errors["base"] = result.reason
+            errors["base"] = str(response.get("reason", "recheck_failed"))
         return self.async_show_form(
             step_id="confirm",
             data_schema=vol.Schema({}),
@@ -64,17 +85,23 @@ class RobotDispatchFaultRepairFlow(RepairsFlow):
 class RoomDispatchFaultRepairFlow(RepairsFlow):
     """Recheck one blocked room configuration without dispatching work."""
 
-    def __init__(self, coordinator, area_id: str) -> None:
-        self._coordinator = coordinator
+    def __init__(self, submit: CommandSubmitter, area_id: str) -> None:
+        self._submit = submit
         self._area_id = area_id
 
-    async def async_step_init(self, user_input=None) -> data_entry_flow.FlowResult:
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
         return await self.async_step_confirm()
 
-    async def async_step_confirm(self, user_input=None) -> data_entry_flow.FlowResult:
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            if await self._coordinator.async_recheck_room_fault(self._area_id):
+            result = await self._submit(RecheckRoomFaultCommand(self._area_id))
+            response = result.as_response() if result else {}
+            if response.get("cleared"):
                 return self.async_create_entry(title="", data={})
             errors["base"] = "recheck_failed"
         return self.async_show_form(
@@ -88,8 +115,8 @@ class RoomDispatchFaultRepairFlow(RepairsFlow):
 class TwoPassCompatibilityRepairFlow(RepairsFlow):
     """Recheck whether a room again has a compatible two-pass vacuum."""
 
-    def __init__(self, coordinator, area_id: str) -> None:
-        self._coordinator = coordinator
+    def __init__(self, submit: CommandSubmitter, area_id: str) -> None:
+        self._submit = submit
         self._area_id = area_id
 
     async def async_step_init(
@@ -104,9 +131,11 @@ class TwoPassCompatibilityRepairFlow(RepairsFlow):
     ) -> data_entry_flow.FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            if await self._coordinator.async_recheck_room_compatibility(
-                self._area_id
-            ):
+            result = await self._submit(
+                RecheckTwoPassCompatibilityCommand(self._area_id)
+            )
+            response = result.as_response() if result else {}
+            if response.get("cleared"):
                 return self.async_create_entry(title="", data={})
             errors["base"] = "recheck_failed"
         return self.async_show_form(
@@ -120,18 +149,23 @@ class TwoPassCompatibilityRepairFlow(RepairsFlow):
 class NotificationDeliveryRepairFlow(RepairsFlow):
     """Recheck whether at least one Companion notification target exists."""
 
-    def __init__(self, coordinator) -> None:
-        self._coordinator = coordinator
+    def __init__(self, submit: CommandSubmitter) -> None:
+        self._submit = submit
 
-    async def async_step_init(self, user_input=None) -> data_entry_flow.FlowResult:
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
         # Do not let opening this issue recheck and resolve it automatically.
         return await self.async_step_confirm()
 
-    async def async_step_confirm(self, user_input=None) -> data_entry_flow.FlowResult:
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            if self._coordinator.has_notification_targets():
-                async_set_notification_delivery_issue(self._coordinator, False)
+            result = await self._submit(RecheckNotificationTargetsCommand())
+            response = result.as_response() if result else {}
+            if response.get("cleared"):
                 return self.async_create_entry(title="", data={})
             errors["base"] = "recheck_failed"
         return self.async_show_form(
@@ -145,16 +179,20 @@ class NotificationDeliveryRepairFlow(RepairsFlow):
 class CleaningProgramCompatibilityRepairFlow(TwoPassCompatibilityRepairFlow):
     """Recheck a room's complete ordered program without dispatching."""
 
-    async def async_step_confirm(self, user_input=None) -> data_entry_flow.FlowResult:
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            if await self._coordinator.async_recheck_cleaning_program_compatibility(
-                self._area_id
-            ):
+            result = await self._submit(RecheckCleaningProgramCommand(self._area_id))
+            response = result.as_response() if result else {}
+            if response.get("cleared"):
                 return self.async_create_entry(title="", data={})
             errors["base"] = "recheck_failed"
         return self.async_show_form(
-            step_id="confirm", data_schema=vol.Schema({}), errors=errors,
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            errors=errors,
             description_placeholders=_description_placeholders(self),
         )
 
@@ -167,19 +205,32 @@ async def async_create_fix_flow(
     """Create the matching repair flow."""
 
     entry_id = str((data or {}).get("entry_id", ""))
-    coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
-    if coordinator is None:
+    runtime = next(
+        (
+            candidate
+            for entry in hass.config_entries.async_entries(DOMAIN)
+            if entry.entry_id == entry_id
+            and entry.state is ConfigEntryState.LOADED
+            and isinstance(
+                (candidate := getattr(entry, "runtime_data", None)),
+                AdaptiveRoboVacsRuntimeData,
+            )
+        ),
+        None,
+    )
+    if runtime is None:
         raise ValueError("The Adaptive RoboVacs repair is no longer available")
+    submit = runtime.application.async_execute
     robot_registry_id = str((data or {}).get("robot_registry_id", ""))
     if issue_id == robot_dispatch_fault_issue_id(entry_id, robot_registry_id):
-        return RobotDispatchFaultRepairFlow(coordinator, robot_registry_id)
+        return RobotDispatchFaultRepairFlow(submit, robot_registry_id)
     if issue_id == notification_delivery_issue_id(entry_id):
-        return NotificationDeliveryRepairFlow(coordinator)
+        return NotificationDeliveryRepairFlow(submit)
     area_id = str((data or {}).get("area_id", ""))
     if issue_id == room_dispatch_fault_issue_id(entry_id, area_id):
-        return RoomDispatchFaultRepairFlow(coordinator, area_id)
+        return RoomDispatchFaultRepairFlow(submit, area_id)
     if issue_id == cleaning_program_issue_id(entry_id, area_id):
-        return CleaningProgramCompatibilityRepairFlow(coordinator, area_id)
+        return CleaningProgramCompatibilityRepairFlow(submit, area_id)
     if issue_id == two_pass_issue_id(entry_id, area_id):
-        return TwoPassCompatibilityRepairFlow(coordinator, area_id)
+        return TwoPassCompatibilityRepairFlow(submit, area_id)
     raise ValueError("The Adaptive RoboVacs repair is no longer available")

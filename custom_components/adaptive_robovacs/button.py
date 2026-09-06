@@ -3,23 +3,45 @@
 from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, SERVICE_MANUAL_CLEAN_ROOM
-from .entity import AdaptiveEntity, async_setup_dynamic_entities
+from .commands import (
+    CaptureMapSnapshotCommand,
+    EvaluateCommand,
+    ManualCleanRoomCommand,
+    RecheckAndResumeCommand,
+    StopAndReturnCommand,
+)
+from .coordinator import AdaptiveRoboVacsCoordinator
+from .entity import (
+    AdaptiveEntity,
+    async_setup_dynamic_entities,
+    robot_unique_fragment,
+)
+from .models import EvaluationCause, EvaluationMode
+from .runtime_data import AdaptiveRoboVacsConfigEntry
+
+PARALLEL_UPDATES = 0
 
 
 class _PreviewButton(AdaptiveEntity, ButtonEntity):
-    def __init__(self, coordinator) -> None:
-        super().__init__(coordinator, "preview_schedule", "Preview schedule", "scheduler_control")
+    def __init__(self, coordinator: AdaptiveRoboVacsCoordinator) -> None:
+        super().__init__(
+            coordinator, "preview_schedule", "Preview schedule", "scheduler_control"
+        )
 
     async def async_press(self) -> None:
-        await self.coordinator.async_evaluate(dry_run=True, reason="dashboard_preview")
+        await self.coordinator.async_execute(
+            EvaluateCommand(
+                mode=EvaluationMode.PREVIEW,
+                cause=EvaluationCause.USER_PREVIEW,
+            )
+        )
 
 
 class _ResumeButton(AdaptiveEntity, ButtonEntity):
-    def __init__(self, coordinator) -> None:
+    def __init__(self, coordinator: AdaptiveRoboVacsCoordinator) -> None:
         super().__init__(
             coordinator,
             "recheck_and_resume",
@@ -28,16 +50,19 @@ class _ResumeButton(AdaptiveEntity, ButtonEntity):
         )
 
     async def async_press(self) -> None:
-        await self.coordinator.async_recheck_and_resume()
+        await self.coordinator.async_execute(RecheckAndResumeCommand())
 
 
 class _StopAndReturnButton(AdaptiveEntity, ButtonEntity):
     """Return one vacuum to its dock and cancel its tracked clean, if any."""
 
-    def __init__(self, coordinator, robot_entity_id: str) -> None:
+    def __init__(
+        self, coordinator: AdaptiveRoboVacsCoordinator, robot_entity_id: str
+    ) -> None:
         super().__init__(
             coordinator,
-            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_stop_and_return",
+            "robot_"
+            f"{robot_unique_fragment(coordinator, robot_entity_id)}_stop_and_return",
             "stop and return to dock",
             "robot_stop_return_control",
             robot_entity_id=robot_entity_id,
@@ -46,19 +71,24 @@ class _StopAndReturnButton(AdaptiveEntity, ButtonEntity):
         self.robot_entity_id = robot_entity_id
 
     async def async_press(self) -> None:
-        await self.coordinator.async_stop_and_return_to_dock(
-            self.robot_entity_id,
-            context=getattr(self, "_context", None),
+        await self.coordinator.async_execute(
+            StopAndReturnCommand(
+                self.robot_entity_id,
+                context=getattr(self, "_context", None),
+            )
         )
 
 
 class _CaptureMapSnapshotButton(AdaptiveEntity, ButtonEntity):
     """Request a read-only server-side capture of the robot's map data."""
 
-    def __init__(self, coordinator, robot_entity_id: str) -> None:
+    def __init__(
+        self, coordinator: AdaptiveRoboVacsCoordinator, robot_entity_id: str
+    ) -> None:
+        unique_fragment = robot_unique_fragment(coordinator, robot_entity_id)
         super().__init__(
             coordinator,
-            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_capture_map_snapshot",
+            f"robot_{unique_fragment}_capture_map_snapshot",
             "capture map snapshot",
             "robot_map_capture",
             robot_entity_id=robot_entity_id,
@@ -67,13 +97,22 @@ class _CaptureMapSnapshotButton(AdaptiveEntity, ButtonEntity):
         self.robot_entity_id = robot_entity_id
 
     async def async_press(self) -> None:
-        await self.coordinator.map_recovery.async_capture(self.robot_entity_id)
+        await self.coordinator.async_execute(
+            CaptureMapSnapshotCommand(self.robot_entity_id)
+        )
 
 
 class _RoomManualCleanButton(AdaptiveEntity, ButtonEntity):
     """One non-queueing room action with its mode fixed by entity identity."""
 
-    def __init__(self, coordinator, area_id: str, name: str, mode: str, label: str) -> None:
+    def __init__(
+        self,
+        coordinator: AdaptiveRoboVacsCoordinator,
+        area_id: str,
+        name: str,
+        mode: str,
+        label: str,
+    ) -> None:
         role = {
             "configured": "room_manual_clean_control",
             "vacuum_only": "room_manual_vacuum_control",
@@ -91,38 +130,43 @@ class _RoomManualCleanButton(AdaptiveEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         context = getattr(self, "_context", None)
-        await self.coordinator.hass.services.async_call(
-            DOMAIN,
-            SERVICE_MANUAL_CLEAN_ROOM,
-            {
-                "entry_id": self.coordinator.entry.entry_id,
-                "area_id": self.area_id,
-                "mode": self.mode,
-            },
-            blocking=True,
-            context=context,
+        await self.coordinator.async_execute(
+            ManualCleanRoomCommand(
+                self.area_id,
+                self.mode,
+                context_id=getattr(context, "id", None),
+                user_id=getattr(context, "user_id", None),
+            )
         )
 
 
-def _entities(coordinator) -> list[AdaptiveEntity]:
-    entities: list[AdaptiveEntity] = [_ResumeButton(coordinator), _PreviewButton(coordinator)]
+def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
+    entities: list[AdaptiveEntity] = [
+        _ResumeButton(coordinator),
+        _PreviewButton(coordinator),
+    ]
     entities.extend(
         _StopAndReturnButton(coordinator, robot.entity_id)
-        for robot in coordinator.discovery.robots.values()
+        for robot in coordinator.data.robots
     )
     entities.extend(
         _CaptureMapSnapshotButton(coordinator, robot.entity_id)
-        for robot in coordinator.discovery.robots.values()
-        if coordinator.map_recovery.capability(robot.entity_id).available
+        for robot in coordinator.data.robots
+        if (map_view := coordinator.data.map_for_robot(robot.registry_id))
+        and map_view.available
     )
-    for room in coordinator.discovery.rooms.values():
+    for room in coordinator.data.rooms:
         entities.extend(
             [
                 _RoomManualCleanButton(
                     coordinator, room.area_id, room.name, "configured", "manual clean"
                 ),
                 _RoomManualCleanButton(
-                    coordinator, room.area_id, room.name, "vacuum_only", "manual vacuum only"
+                    coordinator,
+                    room.area_id,
+                    room.name,
+                    "vacuum_only",
+                    "manual vacuum only",
                 ),
                 _RoomManualCleanButton(
                     coordinator, room.area_id, room.name, "mop_only", "manual mop only"
@@ -132,10 +176,14 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
     return entities
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: AdaptiveRoboVacsConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up the scheduler preview control."""
 
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data.coordinator
     async_setup_dynamic_entities(
         entry, async_add_entities, coordinator, lambda: _entities(coordinator)
     )

@@ -8,13 +8,55 @@ permissions:
   contents: read
 
 jobs:
-  scheduler-decisions:
+  integration:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
-      - run: node --test tests/test_dashboard.mjs
-      - run: python -m unittest discover -s tests -v
-      - run: python -m py_compile custom_components/adaptive_robovacs/*.py
+          python-version: "3.14.2"
+          cache: pip
+      - name: Install pinned test environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            homeassistant==2026.9.0 \
+            pytest-homeassistant-custom-component==0.13.363 \
+            pytest-cov==7.1.0 \
+            ruff==0.16.6 \
+            mypy==2.3.1
+          # The HA plugin currently pins pytest 9.0.3. The v2 acceptance
+          # environment deliberately validates the requested 9.1.1 runtime.
+          python -m pip install --no-deps pytest==9.1.1
+      - name: Verify toolchain pins
+        run: |
+          python --version
+          pytest --version
+          ruff --version
+          mypy --version
+      - name: Ruff format
+        run: ruff format --check custom_components tests
+      - name: Ruff lint
+        run: ruff check custom_components tests
+      - name: Strict typing
+        run: mypy custom_components/adaptive_robovacs
+      - name: Pytest and coverage
+        run: >-
+          pytest
+          --cov=custom_components.adaptive_robovacs
+          --cov-report=term-missing
+          --cov-fail-under=95
+      - name: Dashboard tests
+        run: node --test tests/test_dashboard.mjs
+      - name: Unittest compatibility
+        run: python -m unittest discover -s tests -v
+      - name: Compile production modules
+        run: python -m compileall -q custom_components/adaptive_robovacs
+      - name: Verify shipped file parity
+        run: |
+          cmp \
+            custom_components/adaptive_robovacs/frontend/adaptive-robovacs-dashboard.js \
+            dashboard/adaptive-robovacs-dashboard.js
+          cmp \
+            custom_components/adaptive_robovacs/brand/icon.png \
+            icon.png

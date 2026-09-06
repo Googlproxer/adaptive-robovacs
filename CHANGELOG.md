@@ -5,6 +5,26 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.13.0] - 2026-09-06
+
+### Changed
+
+- Replaced the monolithic coordinator runtime with a typed FIFO application
+  queue, pure planning and job reducers, explicit discovery/observation/gateway
+  boundaries, independent infrastructure services, immutable snapshots, and a
+  push-only Home Assistant coordinator.
+- Moved per-entry runtime ownership to typed `ConfigEntry.runtime_data` and
+  converted every platform to `CoordinatorEntity` presentation over snapshots.
+- Advanced durable scheduler storage to schema 16 with validate-before-write
+  migrations, registry-stable robot identities, retained unresolved legacy
+  references, and storage-safe observe-only startup.
+- Corrected manual room cleaning to use the documented physically-docked rule
+  while preserving its non-bypassable global and adapter safety checks.
+- Raised the minimum Home Assistant version to 2026.9 and added strict Ruff,
+  mypy, behavioral, migration, coverage, and architecture-boundary checks.
+
+Detailed notes: [`docs/releases/v1.13.0.md`](docs/releases/v1.13.0.md).
+
 ## [1.12.7] - 2026-09-02
 
 ### Changed

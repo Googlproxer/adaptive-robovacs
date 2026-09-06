@@ -5,16 +5,28 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, SIGNAL_DISCOVERY_UPDATED
-from .coordinator import AdaptiveRoboVacCoordinator
+from .const import SIGNAL_DISCOVERY_UPDATED
+from .coordinator import AdaptiveRoboVacsCoordinator
+from .runtime_data import AdaptiveRoboVacsConfigEntry
+from .snapshots import MapView, RobotView, RoomView
 
 
-class AdaptiveEntity(Entity):
+def robot_unique_fragment(
+    coordinator: AdaptiveRoboVacsCoordinator, robot_entity_id: str
+) -> str:
+    """Return the durable fragment retained for an existing entity identity."""
+
+    robot = coordinator.data.robot_by_entity_id(robot_entity_id)
+    return robot.unique_fragment if robot else robot_entity_id
+
+
+class AdaptiveEntity(CoordinatorEntity[AdaptiveRoboVacsCoordinator]):
     """Base entity backed by the scheduler's durable state."""
 
     _attr_has_entity_name = True
@@ -22,7 +34,7 @@ class AdaptiveEntity(Entity):
 
     def __init__(
         self,
-        coordinator: AdaptiveRoboVacCoordinator,
+        coordinator: AdaptiveRoboVacsCoordinator,
         unique_key: str,
         name: str,
         role: str,
@@ -30,14 +42,14 @@ class AdaptiveEntity(Entity):
         robot_entity_id: str | None = None,
         robot_name_suffix: str | None = None,
     ) -> None:
-        self.coordinator = coordinator
+        super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.entry.entry_id}_{unique_key}"
         self._attr_name = name
         self._role = role
         self._area_id = area_id
         self._robot_entity_id = robot_entity_id
         robot = (
-            coordinator.discovery.robots.get(robot_entity_id)
+            coordinator.data.robot_by_entity_id(robot_entity_id)
             if robot_entity_id
             else None
         )
@@ -48,12 +60,38 @@ class AdaptiveEntity(Entity):
         """Follow a vacuum entity rename through its stable registry entry."""
 
         if self._robot_registry_id:
-            robot = self.coordinator.robot_for_registry_id(self._robot_registry_id)
+            robot = self.coordinator.data.robot_by_registry_id(self._robot_registry_id)
             if robot:
                 self._robot_entity_id = robot.entity_id
                 if hasattr(self, "robot_entity_id"):
                     self.robot_entity_id = robot.entity_id
         return self._robot_entity_id
+
+    def room_view(self, area_id: str) -> RoomView:
+        """Return this update's room view."""
+
+        room = self.coordinator.data.room(area_id)
+        if room is None:
+            raise KeyError(area_id)
+        return room
+
+    def robot_view(self, entity_id: str) -> RobotView:
+        """Return this update's robot view, following registry renames."""
+
+        current_entity_id = self._resolve_robot_entity_id() or entity_id
+        robot = self.coordinator.data.robot_by_entity_id(current_entity_id)
+        if robot is None:
+            raise KeyError(current_entity_id)
+        return robot
+
+    def map_view(self, entity_id: str) -> MapView:
+        """Return this update's map view, following registry renames."""
+
+        robot = self.robot_view(entity_id)
+        result = self.coordinator.data.map_for_robot(robot.registry_id)
+        if result is None:
+            raise KeyError(robot.registry_id)
+        return result
 
     @property
     def name(self) -> str | None:
@@ -61,32 +99,24 @@ class AdaptiveEntity(Entity):
 
         if self._robot_entity_id and self._robot_name_suffix:
             entity_id = self._resolve_robot_entity_id()
-            robot = self.coordinator.discovery.robots.get(entity_id)
+            robot = self.coordinator.data.robot_by_entity_id(entity_id or "")
             robot_name = robot.name if robot else self._robot_entity_id
             return f"{robot_name} {self._robot_name_suffix}"
         return self._attr_name
 
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to scheduler updates."""
+    @property
+    def available(self) -> bool:
+        """Mark entities unavailable when their registry-backed object disappears."""
 
-        self.async_on_remove(self.coordinator.async_add_listener(self._handle_update))
-
-    @callback
-    def _handle_update(self) -> None:
-        """Publish a state change while the discovered object still exists.
-
-        Discovery is live: applying an exclusion label can remove a room while
-        its existing platform entities are still registered for this runtime.
-        Those stale entities must not call back into ``room_state`` or
-        ``robot_state`` until Home Assistant reloads the platform.
-        """
-
-        if self._area_id and self._area_id not in self.coordinator.discovery.rooms:
-            return
+        if not super().available:
+            return False
+        if self._area_id and self.coordinator.data.room(self._area_id) is None:
+            return False
         self._resolve_robot_entity_id()
-        if self._robot_entity_id and self._robot_entity_id not in self.coordinator.discovery.robots:
-            return
-        self.async_write_ha_state()
+        return not self._robot_entity_id or any(
+            robot.registry_id == self._robot_registry_id
+            for robot in self.coordinator.data.robots
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -105,9 +135,9 @@ class AdaptiveEntity(Entity):
 
 
 def async_setup_dynamic_entities(
-    entry: ConfigEntry,
-    async_add_entities: Callable[[list[Entity]], None],
-    coordinator: AdaptiveRoboVacCoordinator,
+    entry: AdaptiveRoboVacsConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+    coordinator: AdaptiveRoboVacsCoordinator,
     factory: Callable[[], list[AdaptiveEntity]],
 ) -> None:
     """Add initial and newly discovered entities without an integration reload."""
@@ -117,11 +147,14 @@ def async_setup_dynamic_entities(
     @callback
     def add_entities(_entry_id: str | None = None) -> None:
         entities = [
-            entity for entity in factory() if entity.unique_id is not None and entity.unique_id not in known
+            entity
+            for entity in factory()
+            if entity.unique_id is not None and entity.unique_id not in known
         ]
         known.update(entity.unique_id for entity in entities if entity.unique_id)
         if entities:
-            async_add_entities(entities)
+            entities_to_add: list[Entity] = list(entities)
+            async_add_entities(entities_to_add)
 
     add_entities()
     entry.async_on_unload(

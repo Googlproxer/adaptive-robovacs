@@ -5,10 +5,25 @@ from __future__ import annotations
 from typing import Any
 
 import voluptuous as vol
-
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
+from .application import SchedulerApplication
+from .commands import (
+    ActivateRetainedMapCommand,
+    CaptureMapSnapshotCommand,
+    ClearLegacyDeferralsCommand,
+    EvaluateCommand,
+    ListRetainedMapsCommand,
+    ManualCleanRoomCommand,
+    RecordManualCleanCommand,
+    SaveFloorPlanCommand,
+    SchedulerCommandResult,
+    SetRoomAdjacencyCommand,
+    VerifyRetainedMapCommand,
+)
 from .const import (
     DOMAIN,
     SERVICE_ACTIVATE_RETAINED_MAP,
@@ -16,25 +31,50 @@ from .const import (
     SERVICE_CLEAR_LEGACY_DEFERRALS,
     SERVICE_CONFIRM_MAP_SELECTION,
     SERVICE_EVALUATE,
-    SERVICE_LIST_RETAINED_MAPS,
     SERVICE_LIST_LEGACY_DEFERRALS,
+    SERVICE_LIST_RETAINED_MAPS,
     SERVICE_MANUAL_CLEAN_ROOM,
     SERVICE_RECORD_MANUAL_CLEAN,
     SERVICE_SAVE_FLOOR_PLAN,
     SERVICE_SET_ROOM_ADJACENCY,
 )
+from .floor_plans import decode_floor_plan_write
+from .models import EvaluationCause, EvaluationMode
+from .runtime_data import AdaptiveRoboVacsRuntimeData
 
 
-def _coordinator(hass: HomeAssistant, entry_id: str | None = None):
-    entries = hass.data.get(DOMAIN, {})
+def _service_response(result: SchedulerCommandResult) -> dict[str, Any]:
+    """Serialize a typed command result at the Home Assistant boundary."""
+
+    if result is None:
+        raise ServiceValidationError("The scheduler command returned no response")
+    return result.as_response()
+
+
+def _application(
+    hass: HomeAssistant, entry_id: str | None = None
+) -> SchedulerApplication:
+    entries = {
+        entry.entry_id: runtime.application
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.state is ConfigEntryState.LOADED
+        and isinstance(
+            (runtime := getattr(entry, "runtime_data", None)),
+            AdaptiveRoboVacsRuntimeData,
+        )
+    }
     if not entries:
-        raise vol.Invalid("Adaptive RoboVacs is not configured")
+        raise ServiceValidationError("Adaptive RoboVacs is not configured")
     if entry_id:
         if entry_id not in entries:
-            raise vol.Invalid("The selected Adaptive RoboVacs entry is not loaded")
+            raise ServiceValidationError(
+                "The selected Adaptive RoboVacs entry is not loaded"
+            )
         return entries[entry_id]
     if len(entries) != 1:
-        raise vol.Invalid("entry_id is required when multiple Adaptive RoboVacs entries are loaded")
+        raise ServiceValidationError(
+            "entry_id is required when multiple Adaptive RoboVacs entries are loaded"
+        )
     return next(iter(entries.values()))
 
 
@@ -42,10 +82,14 @@ async def _require_admin(hass: HomeAssistant, call: ServiceCall) -> None:
     """Keep topology changes limited to an authenticated Home Assistant admin."""
 
     if not call.context.user_id:
-        raise vol.Invalid("floor-plan changes require an authenticated administrator")
+        raise ServiceValidationError(
+            "floor-plan changes require an authenticated administrator"
+        )
     user = await hass.auth.async_get_user(call.context.user_id)
     if user is None or not user.is_admin:
-        raise vol.Invalid("floor-plan changes require a Home Assistant administrator")
+        raise ServiceValidationError(
+            "floor-plan changes require a Home Assistant administrator"
+        )
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -55,79 +99,119 @@ async def async_register_services(hass: HomeAssistant) -> None:
         return
 
     async def evaluate(call: ServiceCall) -> dict[str, Any]:
-        return await _coordinator(hass, call.data.get("entry_id")).async_evaluate(
-            dry_run=bool(call.data.get("dry_run", False)), reason="service"
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                EvaluateCommand(
+                    mode=(
+                        EvaluationMode.PREVIEW
+                        if bool(call.data.get("dry_run", False))
+                        else EvaluationMode.DISPATCH
+                    ),
+                    cause=EvaluationCause.SERVICE,
+                )
+            )
         )
 
     async def manual_clean(call: ServiceCall) -> dict[str, Any]:
-        return await _coordinator(hass, call.data.get("entry_id")).async_record_manual_clean(
-            call.data["robot_entity_id"],
-            list(call.data["area_ids"]),
-            list(call.data.get("operations", ["vacuum"])),
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                RecordManualCleanCommand(
+                    robot_entity_id=call.data["robot_entity_id"],
+                    area_ids=tuple(call.data["area_ids"]),
+                    operations=tuple(call.data.get("operations", ["vacuum"])),
+                )
+            )
         )
 
     async def manual_clean_room(call: ServiceCall) -> dict[str, Any]:
-        return await _coordinator(
-            hass, call.data.get("entry_id")
-        ).async_manual_clean_room(
-            call.data["area_id"],
-            call.data.get("mode", "configured"),
-            context_id=call.context.id,
-            user_id=call.context.user_id,
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                ManualCleanRoomCommand(
+                    area_id=call.data["area_id"],
+                    mode=call.data.get("mode", "configured"),
+                    context_id=call.context.id,
+                    user_id=call.context.user_id,
+                )
+            )
         )
 
     async def list_retained_maps(call: ServiceCall) -> dict[str, Any]:
-        return await _coordinator(
-            hass, call.data.get("entry_id")
-        ).map_recovery.async_list_maps(call.data["robot_entity_id"])
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                ListRetainedMapsCommand(call.data["robot_entity_id"])
+            )
+        )
 
     async def capture_map_snapshot(call: ServiceCall) -> dict[str, Any]:
-        return await _coordinator(
-            hass, call.data.get("entry_id")
-        ).map_recovery.async_capture(call.data["robot_entity_id"])
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                CaptureMapSnapshotCommand(call.data["robot_entity_id"])
+            )
+        )
 
     async def activate_retained_map(call: ServiceCall) -> dict[str, Any]:
-        return await _coordinator(
-            hass, call.data.get("entry_id")
-        ).map_recovery.async_activate(
-            call.data["robot_entity_id"], call.data["map_id"], confirm=call.data["confirm"]
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                ActivateRetainedMapCommand(
+                    call.data["robot_entity_id"],
+                    call.data["map_id"],
+                    call.data["confirm"],
+                )
+            )
         )
 
     async def confirm_map_selection(call: ServiceCall) -> dict[str, Any]:
-        return await _coordinator(
-            hass, call.data.get("entry_id")
-        ).map_recovery.async_verify(call.data["robot_entity_id"], confirm=call.data["confirm"])
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                VerifyRetainedMapCommand(
+                    call.data["robot_entity_id"], call.data["confirm"]
+                )
+            )
+        )
 
     async def list_legacy_deferrals(call: ServiceCall) -> dict[str, Any]:
         return {
-            "legacy_deferrals": _coordinator(
+            "legacy_deferrals": _application(
                 hass, call.data.get("entry_id")
             ).legacy_deferral_report()
         }
 
     async def clear_legacy_deferrals(call: ServiceCall) -> dict[str, Any]:
-        return await _coordinator(
-            hass, call.data.get("entry_id")
-        ).async_clear_legacy_deferrals(list(call.data["area_ids"]))
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                ClearLegacyDeferralsCommand(tuple(call.data["area_ids"]))
+            )
+        )
 
     async def save_floor_plan(call: ServiceCall) -> dict[str, Any]:
         await _require_admin(hass, call)
-        return await _coordinator(hass, call.data.get("entry_id")).async_save_floor_plan(
-            call.data["floor_id"],
-            call.data["revision"],
-            call.data["rooms"],
-            call.data["edges"],
-            call.data["sensors"],
-            list(call.data.get("forget_area_ids", [])),
-            list(call.data.get("forget_sensor_registry_ids", [])),
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                SaveFloorPlanCommand(
+                    decode_floor_plan_write(
+                        floor_id=call.data["floor_id"],
+                        revision=call.data["revision"],
+                        rooms=call.data["rooms"],
+                        edges=tuple(tuple(edge) for edge in call.data["edges"]),
+                        sensors=call.data["sensors"],
+                        forget_area_ids=tuple(call.data.get("forget_area_ids", [])),
+                        forget_sensor_registry_ids=tuple(
+                            call.data.get("forget_sensor_registry_ids", [])
+                        ),
+                    )
+                )
+            )
         )
 
     async def set_room_adjacency(call: ServiceCall) -> dict[str, Any]:
         await _require_admin(hass, call)
-        return await _coordinator(
-            hass, call.data.get("entry_id")
-        ).async_set_room_adjacency(
-            call.data["area_id"], list(call.data.get("neighbor_area_ids", []))
+        return _service_response(
+            await _application(hass, call.data.get("entry_id")).async_execute(
+                SetRoomAdjacencyCommand(
+                    area_id=call.data["area_id"],
+                    neighbor_area_ids=tuple(call.data.get("neighbor_area_ids", [])),
+                )
+            )
         )
 
     hass.services.async_register(
@@ -255,7 +339,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 vol.Required("rooms"): dict,
                 vol.Required("edges"): list,
                 vol.Required("sensors"): dict,
-                vol.Optional("forget_area_ids", default=[]): vol.All(cv.ensure_list, [str]),
+                vol.Optional("forget_area_ids", default=[]): vol.All(
+                    cv.ensure_list, [str]
+                ),
                 vol.Optional("forget_sensor_registry_ids", default=[]): vol.All(
                     cv.ensure_list, [str]
                 ),

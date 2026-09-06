@@ -4,24 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import logging
 from typing import Any
 
 from homeassistant.helpers import entity_registry as er
 
 from ..models import (
+    NATIVE_MOP_PROFILE_INTENSITIES,
+    NATIVE_MOP_PROFILE_ROUTES,
     AdapterCapabilities,
     AdapterDispatchRequest,
     AdapterDispatchResult,
-    NATIVE_MOP_PROFILE_INTENSITIES,
-    NATIVE_MOP_PROFILE_ROUTES,
+    DispatchOutcome,
     WaterReadiness,
 )
 from .base import AdapterEntityEvidence, AdapterMatchContext, VacuumAdapter
 from .generic import GenericVacuumAdapter
-
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -169,9 +169,7 @@ def resolve_roborock_water_readiness(
     }
     watched = tuple(
         dict.fromkeys(
-            evidence.entity_id
-            for values in matches.values()
-            for evidence in values
+            evidence.entity_id for values in matches.values() for evidence in values
         )
     )
     if any(len(matches[key]) != 1 for key in WATER_ENTITY_KEYS):
@@ -288,7 +286,9 @@ def _live_segment_snapshot(
     return snapshot
 
 
-def _last_seen_segment_ids(vacuum_options: Mapping[str, object]) -> frozenset[str] | None:
+def _last_seen_segment_ids(
+    vacuum_options: Mapping[str, object],
+) -> frozenset[str] | None:
     """Return complete stored segment IDs, or None when the evidence is unsafe."""
 
     last_seen = vacuum_options.get("last_seen_segments")
@@ -385,7 +385,11 @@ def resolve_roborock_area_mapping(
     raw_targets: list[object] = []
     for area_id in area_ids:
         values = mapping.get(area_id)
-        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)) or not values:
+        if (
+            not isinstance(values, Sequence)
+            or isinstance(values, (str, bytes))
+            or not values
+        ):
             raise RoborockMappingError(
                 "area_mapping_missing",
                 "The room is not mapped to this vacuum in Home Assistant.",
@@ -466,9 +470,7 @@ def supports_roborock_native_two_pass(vacuum_options: Mapping[str, object]) -> b
     if not isinstance(last_seen, Sequence) or isinstance(last_seen, (str, bytes)):
         return True
     segment_ids = [
-        item["id"]
-        for item in last_seen
-        if isinstance(item, Mapping) and "id" in item
+        item["id"] for item in last_seen if isinstance(item, Mapping) and "id" in item
     ]
     if not segment_ids:
         return True
@@ -494,9 +496,7 @@ def is_roborock_q10_protocol(vacuum_options: Mapping[str, object]) -> bool:
     if not isinstance(last_seen, Sequence) or isinstance(last_seen, (str, bytes)):
         return False
     segment_ids = [
-        item["id"]
-        for item in last_seen
-        if isinstance(item, Mapping) and "id" in item
+        item["id"] for item in last_seen if isinstance(item, Mapping) and "id" in item
     ]
     if not segment_ids:
         return False
@@ -548,7 +548,11 @@ def build_q10_customer_clean_payload(
         )
     payload: list[int] = [len(targets)]
     for target in targets:
-        if isinstance(target, bool) or not isinstance(target, int) or not 1 <= target <= 255:
+        if (
+            isinstance(target, bool)
+            or not isinstance(target, int)
+            or not 1 <= target <= 255
+        ):
             raise Q10CustomCleanError(
                 "area_mapping_ambiguous",
                 "The Home Assistant area mapping uses an unsupported Q10 segment.",
@@ -606,9 +610,7 @@ def resolve_q10_custom_clean_profile(
     fan_speed = request.cleaning_profile.get("fan_speed")
     if fan_speed is None:
         vacuum_state = hass.states.get(request.robot_entity_id)
-        fan_speed = (
-            vacuum_state.attributes.get("fan_speed") if vacuum_state else None
-        )
+        fan_speed = vacuum_state.attributes.get("fan_speed") if vacuum_state else None
     if not isinstance(fan_speed, str) or fan_speed not in Q10_FAN_LEVELS:
         raise Q10CustomCleanError(
             "profile_option_unsupported",
@@ -648,8 +650,8 @@ class RoborockVacuumAdapter(VacuumAdapter):
         generic = await self._generic.async_capabilities(hass, context)
         vacuum_options = self._vacuum_options(hass, context.entity_id)
         is_q10 = is_roborock_q10_protocol(vacuum_options)
-        native_mop_profile = (
-            not is_q10 and supports_roborock_native_mop_profile(context)
+        native_mop_profile = not is_q10 and supports_roborock_native_mop_profile(
+            context
         )
         vacuum_pass_counts = set(generic.vacuum_pass_counts)
         mop_pass_counts = set(generic.mop_pass_counts)
@@ -729,7 +731,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
         registry = er.async_get(hass)
         entry = registry.async_get(entity_id) if registry else None
         options = getattr(entry, "options", {}) if entry else {}
-        vacuum_options = options.get("vacuum", {}) if isinstance(options, Mapping) else {}
+        vacuum_options = (
+            options.get("vacuum", {}) if isinstance(options, Mapping) else {}
+        )
         return vacuum_options if isinstance(vacuum_options, Mapping) else {}
 
     @staticmethod
@@ -739,11 +743,17 @@ class RoborockVacuumAdapter(VacuumAdapter):
         registry = er.async_get(hass)
         entry = registry.async_get(entity_id) if registry else None
         options = getattr(entry, "options", {}) if entry else {}
-        vacuum_options = options.get("vacuum", {}) if isinstance(options, Mapping) else {}
-        if not isinstance(vacuum_options, Mapping) or not vacuum_options.get("area_mapping"):
+        vacuum_options = (
+            options.get("vacuum", {}) if isinstance(options, Mapping) else {}
+        )
+        if not isinstance(vacuum_options, Mapping) or not vacuum_options.get(
+            "area_mapping"
+        ):
             return False
         hass_data = getattr(hass, "data", None)
-        vacuum_component = hass_data.get("vacuum") if isinstance(hass_data, Mapping) else None
+        vacuum_component = (
+            hass_data.get("vacuum") if isinstance(hass_data, Mapping) else None
+        )
         entity = (
             vacuum_component.get_entity(entity_id)
             if vacuum_component and hasattr(vacuum_component, "get_entity")
@@ -755,7 +765,8 @@ class RoborockVacuumAdapter(VacuumAdapter):
             segments = await entity.async_get_segments()
         except Exception:
             _LOGGER.debug(
-                "Adaptive RoboVacs could not read current Roborock segments for reconciliation: robot=%s",
+                "Adaptive RoboVacs could not read current Roborock segments "
+                "for reconciliation: robot=%s",
                 entity_id,
                 exc_info=True,
             )
@@ -771,7 +782,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
         latest_entry = registry.async_get(entity_id)
         latest_options = getattr(latest_entry, "options", {}) if latest_entry else {}
         latest_vacuum_options = (
-            latest_options.get("vacuum", {}) if isinstance(latest_options, Mapping) else {}
+            latest_options.get("vacuum", {})
+            if isinstance(latest_options, Mapping)
+            else {}
         )
         if not isinstance(latest_vacuum_options, Mapping):
             return False
@@ -788,13 +801,15 @@ class RoborockVacuumAdapter(VacuumAdapter):
             registry.async_update_entity_options(entity_id, "vacuum", updated_options)
         except Exception:
             _LOGGER.warning(
-                "Adaptive RoboVacs could not save Roborock mapping reconciliation: robot=%s",
+                "Adaptive RoboVacs could not save Roborock mapping "
+                "reconciliation: robot=%s",
                 entity_id,
                 exc_info=True,
             )
             return False
         _LOGGER.info(
-            "Adaptive RoboVacs refreshed stale Roborock room-mapping evidence: robot=%s",
+            "Adaptive RoboVacs refreshed stale Roborock room-mapping "
+            "evidence: robot=%s",
             entity_id,
         )
         return True
@@ -804,9 +819,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
     ) -> bool:
         return (
             request.operation == "vacuum"
-            and is_roborock_q10_protocol(
-                self._vacuum_options(hass, context.entity_id)
-            )
+            and is_roborock_q10_protocol(self._vacuum_options(hass, context.entity_id))
             and (
                 request.passes == 2
                 or request.cleaning_profile.get("cleaning_depth") is not None
@@ -832,7 +845,12 @@ class RoborockVacuumAdapter(VacuumAdapter):
         fan_speed = request.cleaning_profile.get("fan_speed")
         route = request.cleaning_profile.get("mop_mode")
         intensity = request.cleaning_profile.get("mop_intensity")
-        if not all(isinstance(value, str) for value in (mode, fan_speed, route, intensity)):
+        if not (
+            isinstance(mode, str)
+            and isinstance(fan_speed, str)
+            and isinstance(route, str)
+            and isinstance(intensity, str)
+        ):
             return None
         if (
             _normalised_option(mode) != "mop"
@@ -847,7 +865,12 @@ class RoborockVacuumAdapter(VacuumAdapter):
         resolved_intensity = _option(
             profile.mop_intensity_options, _normalised_option(intensity)
         )
-        if not all((resolved_mode, resolved_fan, resolved_route, resolved_intensity)):
+        if (
+            resolved_mode is None
+            or resolved_fan is None
+            or resolved_route is None
+            or resolved_intensity is None
+        ):
             return None
         return resolved_mode, resolved_route, resolved_intensity, resolved_fan
 
@@ -871,7 +894,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
         values = self._native_mop_profile_values(context, request)
         if values is None:
             return AdapterDispatchResult(
-                "blocked",
+                DispatchOutcome.BLOCKED,
                 "native_mop_profile_invalid",
                 "Rob needs an explicit native mop-only profile.",
             )
@@ -887,18 +910,18 @@ class RoborockVacuumAdapter(VacuumAdapter):
             for entity_id, option in controls
         ):
             return AdapterDispatchResult(
-                "blocked",
+                DispatchOutcome.BLOCKED,
                 "native_mop_profile_control_unavailable",
                 "Rob's native mop-only controls are unavailable.",
             )
         vacuum_state = hass.states.get(request.robot_entity_id)
         if not vacuum_state or vacuum_state.state in {"unavailable", "unknown"}:
             return AdapterDispatchResult(
-                "blocked",
+                DispatchOutcome.BLOCKED,
                 "native_mop_profile_control_unavailable",
                 "Rob's native mop-only controls are unavailable.",
             )
-        return AdapterDispatchResult("ready", "ready", "Ready")
+        return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
 
     async def _async_apply_native_mop_profile(
         self,
@@ -908,7 +931,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
     ) -> AdapterDispatchResult:
         """Apply and observe a native suction-off mop profile before dispatch."""
 
-        validation = await self._async_validate_native_mop_profile(hass, context, request)
+        validation = await self._async_validate_native_mop_profile(
+            hass, context, request
+        )
         if not validation.ready:
             return validation
         values = self._native_mop_profile_values(context, request)
@@ -939,7 +964,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
             async with asyncio.timeout(NATIVE_MOP_PROFILE_TIMEOUT_SECONDS):
                 for attempt in range(NATIVE_MOP_PROFILE_RETRY_ATTEMPTS + 1):
                     if context.can_mutate and not context.can_mutate():
-                        return AdapterDispatchResult("ready", "ready", "Ready")
+                        return AdapterDispatchResult(
+                            DispatchOutcome.READY, "ready", "Ready"
+                        )
                     # Route and intensity select the concrete profile first.
                     # Rob reports a transient combined state while doing so,
                     # but it is still docked and no clean has been dispatched.
@@ -955,7 +982,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
                             blocking=True,
                         )
                     if context.can_mutate and not context.can_mutate():
-                        return AdapterDispatchResult("ready", "ready", "Ready")
+                        return AdapterDispatchResult(
+                            DispatchOutcome.READY, "ready", "Ready"
+                        )
                     await hass.services.async_call(
                         "vacuum",
                         "set_fan_speed",
@@ -963,34 +992,39 @@ class RoborockVacuumAdapter(VacuumAdapter):
                         blocking=True,
                     )
                     if observed():
-                        return AdapterDispatchResult("ready", "ready", "Ready")
+                        return AdapterDispatchResult(
+                            DispatchOutcome.READY, "ready", "Ready"
+                        )
                     if attempt < NATIVE_MOP_PROFILE_RETRY_ATTEMPTS:
                         await asyncio.sleep(NATIVE_MOP_PROFILE_RETRY_INTERVAL_SECONDS)
         except TimeoutError:
             _LOGGER.warning(
-                "Adaptive RoboVacs timed out confirming Roborock native mop profile: robot=%s timeout=%ss",
+                "Adaptive RoboVacs timed out confirming Roborock native mop "
+                "profile: robot=%s timeout=%ss",
                 request.robot_entity_id,
                 NATIVE_MOP_PROFILE_TIMEOUT_SECONDS,
             )
         except Exception:
             _LOGGER.warning(
-                "Adaptive RoboVacs could not apply Roborock native mop profile: robot=%s",
+                "Adaptive RoboVacs could not apply Roborock native mop "
+                "profile: robot=%s",
                 request.robot_entity_id,
                 exc_info=True,
             )
             return AdapterDispatchResult(
-                "blocked",
+                DispatchOutcome.BLOCKED,
                 "native_mop_profile_apply_failed",
                 "Rob's native mop-only profile could not be applied.",
             )
 
         _LOGGER.warning(
-            "Adaptive RoboVacs could not confirm Roborock native mop profile: robot=%s retries=%s",
+            "Adaptive RoboVacs could not confirm Roborock native mop profile: "
+            "robot=%s retries=%s",
             request.robot_entity_id,
             NATIVE_MOP_PROFILE_RETRY_ATTEMPTS,
         )
         return AdapterDispatchResult(
-            "blocked",
+            DispatchOutcome.BLOCKED,
             "native_mop_profile_unconfirmed",
             "Rob's native mop-only profile could not be confirmed.",
         )
@@ -1011,8 +1045,10 @@ class RoborockVacuumAdapter(VacuumAdapter):
         try:
             resolve_q10_custom_clean_profile(hass, context, request)
         except Q10CustomCleanError as err:
-            return AdapterDispatchResult("unsupported", err.code, err.summary)
-        return AdapterDispatchResult("ready", "ready", "Ready")
+            return AdapterDispatchResult(
+                DispatchOutcome.UNSUPPORTED, err.code, err.summary
+            )
+        return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
 
     async def async_apply_profile(
         self,
@@ -1025,7 +1061,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
         if self._is_native_mop_profile_request(context, request):
             return await self._async_apply_native_mop_profile(hass, context, request)
         if self._is_q10_request(hass, context, request):
-            return AdapterDispatchResult("ready", "ready", "Ready")
+            return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
         return await super().async_apply_profile(hass, context, request)
 
     async def async_preflight(
@@ -1037,7 +1073,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
         capabilities = await self.async_capabilities(hass, context)
         if not capabilities.supports(request.operation, request.passes):
             return AdapterDispatchResult(
-                "unsupported",
+                DispatchOutcome.UNSUPPORTED,
                 "two_pass_no_longer_supported",
                 "This vacuum no longer supports native two-pass room cleaning.",
             )
@@ -1047,12 +1083,14 @@ class RoborockVacuumAdapter(VacuumAdapter):
             if water.status == "sensor_blocked" and not (
                 ignore_water and water.revalidation_eligible
             ):
-                return AdapterDispatchResult("blocked", water.reason, "Water is not ready.")
+                return AdapterDispatchResult(
+                    DispatchOutcome.BLOCKED, water.reason, "Water is not ready."
+                )
             if water.status == "confirmation_required" and not bool(
                 request.cleaning_profile.get("water_confirmed")
             ):
                 return AdapterDispatchResult(
-                    "blocked",
+                    DispatchOutcome.BLOCKED,
                     "water_confirmation_required",
                     "Water confirmation is required before mopping.",
                 )
@@ -1062,18 +1100,22 @@ class RoborockVacuumAdapter(VacuumAdapter):
             and await self._async_reconcile_area_mapping(hass, request.robot_entity_id)
         ):
             return AdapterDispatchResult(
-                "mapping_error",
+                DispatchOutcome.MAPPING_ERROR,
                 "area_mapping_recheck_required",
-                "Home Assistant refreshed this vacuum's room mapping. Recheck it before scheduling resumes.",
+                "Home Assistant refreshed this vacuum's room mapping. "
+                "Recheck it before scheduling resumes.",
             )
         if request.passes == 2 or self._is_q10_request(hass, context, request):
             try:
                 resolve_roborock_area_mapping(
-                    self._vacuum_options(hass, request.robot_entity_id), request.area_ids
+                    self._vacuum_options(hass, request.robot_entity_id),
+                    request.area_ids,
                 )
             except RoborockMappingError as err:
-                return AdapterDispatchResult("mapping_error", err.code, err.summary)
-        return AdapterDispatchResult("ready", "ready", "Ready")
+                return AdapterDispatchResult(
+                    DispatchOutcome.MAPPING_ERROR, err.code, err.summary
+                )
+        return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
 
     async def async_dispatch(
         self,
@@ -1097,10 +1139,14 @@ class RoborockVacuumAdapter(VacuumAdapter):
                     clean_line=profile.clean_line,
                 )
             except Q10CustomCleanError as err:
-                return AdapterDispatchResult("unsupported", err.code, err.summary)
+                return AdapterDispatchResult(
+                    DispatchOutcome.UNSUPPORTED, err.code, err.summary
+                )
             if context.can_mutate and not context.can_mutate():
                 return AdapterDispatchResult(
-                    "blocked", "coordinator_shutting_down", "Coordinator is shutting down."
+                    DispatchOutcome.BLOCKED,
+                    "coordinator_shutting_down",
+                    "Coordinator is shutting down.",
                 )
             try:
                 await hass.services.async_call(
@@ -1119,7 +1165,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 # its one-way fallback to Max without retrying a clean.
                 if request.cleaning_profile.get("fan_speed") == "max_plus":
                     return AdapterDispatchResult(
-                        "unsupported",
+                        DispatchOutcome.UNSUPPORTED,
                         "q10_max_plus_profile_write_failed",
                         "The Q10 rejected the Max+ custom cleaning profile.",
                     )
@@ -1127,7 +1173,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
             await asyncio.sleep(Q10_CUSTOM_CLEAN_SETTLE_SECONDS)
             if context.can_mutate and not context.can_mutate():
                 return AdapterDispatchResult(
-                    "blocked", "coordinator_shutting_down", "Coordinator is shutting down."
+                    DispatchOutcome.BLOCKED,
+                    "coordinator_shutting_down",
+                    "Coordinator is shutting down.",
                 )
             await hass.services.async_call(
                 "select",
@@ -1137,13 +1185,18 @@ class RoborockVacuumAdapter(VacuumAdapter):
             )
             if context.can_mutate and not context.can_mutate():
                 return AdapterDispatchResult(
-                    "blocked", "coordinator_shutting_down", "Coordinator is shutting down."
+                    DispatchOutcome.BLOCKED,
+                    "coordinator_shutting_down",
+                    "Coordinator is shutting down.",
                 )
             try:
                 await hass.services.async_call(
                     "vacuum",
                     "send_command",
-                    {"entity_id": request.robot_entity_id, **build_q10_start_payload(resolved.targets)},
+                    {
+                        "entity_id": request.robot_entity_id,
+                        **build_q10_start_payload(resolved.targets),
+                    },
                     blocking=True,
                 )
             except Exception:
@@ -1152,7 +1205,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 # safe setting for subsequent work.
                 if request.cleaning_profile.get("fan_speed") == "max_plus":
                     return AdapterDispatchResult(
-                        "failed",
+                        DispatchOutcome.FAILED,
                         "q10_max_plus_start_failed",
                         "The Q10 did not accept the Max+ room-clean start.",
                         native_attempted=True,
@@ -1160,7 +1213,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
                     )
                 raise
             return AdapterDispatchResult(
-                "accepted",
+                DispatchOutcome.ACCEPTED,
                 "accepted",
                 "Cleaning request accepted",
                 native_attempted=True,
@@ -1178,7 +1231,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
             blocking=True,
         )
         return AdapterDispatchResult(
-            "accepted",
+            DispatchOutcome.ACCEPTED,
             "accepted",
             "Cleaning request accepted",
             native_attempted=True,

@@ -7,9 +7,10 @@ the nested, partially optional dictionaries written by the first release.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime
+from typing import Any
 
 from .const import (
     CONF_FORECAST_CONFIDENCE,
@@ -18,28 +19,36 @@ from .const import (
     CONF_OBSERVE_ONLY,
     CONF_UNRESOLVED_END,
     CONF_UNRESOLVED_START,
+    DEFAULT_BEDROOM_INTERVAL,
+    DEFAULT_COMMON_INTERVAL,
+    DEFAULT_EXPECTED_MINUTES,
     DEFAULT_FORECAST_CONFIDENCE,
     DEFAULT_HALL_END,
     DEFAULT_HALL_START,
     DEFAULT_MINIMUM_BATTERY,
     DEFAULT_UNRESOLVED_END,
     DEFAULT_UNRESOLVED_START,
-    DEFAULT_BEDROOM_INTERVAL,
-    DEFAULT_COMMON_INTERVAL,
-    DEFAULT_EXPECTED_MINUTES,
 )
 from .models import (
     FLOOR_PLAN_MAX_GRID_COORDINATE,
     FLOOR_PLAN_MIN_ROOM_SPAN,
     ROOM_PROFILE_OVERRIDE_KEYS,
+    CleaningOperation,
+    CleaningProgram,
+    FaultCode,
+    JobPhase,
+    JobSource,
+    OccurrenceSource,
+    RequestedCleaningProfile,
+    ResolvedCleaningProfile,
+    StageStatus,
     floor_plan_integer,
     is_valid_daily_time,
     normalize_floor_plan_edge,
     room_cleaning_profile_is_custom,
 )
 
-
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 DAILY_WINDOW_VERSION = 1
 
 
@@ -78,16 +87,20 @@ def _boolean(value: object, default: bool, name: str) -> bool:
 
 
 def _number(value: object, default: float) -> float:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return default
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
 def _integer(value: object, default: int) -> int:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return default
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -100,14 +113,15 @@ def _bounded_number(
 ) -> float:
     """Decode one persisted bounded number without hiding corruption."""
 
+    candidate = default if value is None else value
+    if not isinstance(candidate, (str, bytes, bytearray, int, float)):
+        raise StateSchemaError(f"{name} must be a number")
     try:
-        parsed = float(value if value is not None else default)
+        parsed = float(candidate)
     except (TypeError, ValueError) as err:
         raise StateSchemaError(f"{name} must be a number") from err
     if not minimum <= parsed <= maximum:
-        raise StateSchemaError(
-            f"{name} must be between {minimum:g} and {maximum:g}"
-        )
+        raise StateSchemaError(f"{name} must be between {minimum:g} and {maximum:g}")
     return parsed
 
 
@@ -126,12 +140,12 @@ def _timestamp(value: object) -> datetime | None:
     if not value:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -144,10 +158,47 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-def _event_list(value: object) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [dict(item) for item in value if isinstance(item, Mapping)]
+def _sequence(value: object) -> tuple[object, ...]:
+    """Return one persisted JSON array as an immutable decode sequence."""
+
+    return tuple(value) if isinstance(value, (list, tuple)) else ()
+
+
+def _cleaning_operation(value: object) -> CleaningOperation | None:
+    try:
+        return CleaningOperation(str(value))
+    except ValueError:
+        return None
+
+
+def _cleaning_operations(value: object) -> tuple[CleaningOperation, ...]:
+    operations: list[CleaningOperation] = []
+    for item in _sequence(value):
+        operation = _cleaning_operation(item)
+        if operation is not None:
+            operations.append(operation)
+    return tuple(operations)
+
+
+def _cleaning_program(value: object) -> CleaningProgram | None:
+    try:
+        return CleaningProgram(str(value))
+    except ValueError:
+        return None
+
+
+def _job_phase(value: object) -> JobPhase | None:
+    try:
+        return JobPhase(str(value))
+    except ValueError:
+        return None
+
+
+def _job_source(value: object) -> JobSource | None:
+    try:
+        return JobSource(str(value))
+    except ValueError:
+        return None
 
 
 def _profile_mapping(value: object) -> dict[str, str | None]:
@@ -178,7 +229,9 @@ def _profile_sources_mapping(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise StateSchemaError("cleaning profile sources must be an object")
     allowed = {"fan_speed", "mode", "mop_mode", "mop_intensity", "cleaning_depth"}
-    if set(value) - allowed or any(item not in {"room", "robot"} for item in value.values()):
+    if set(value) - allowed or any(
+        item not in {"room", "robot"} for item in value.values()
+    ):
         raise StateSchemaError("cleaning profile sources are invalid")
     return {str(key): str(item) for key, item in value.items()}
 
@@ -200,110 +253,6 @@ def _optional_pass_count(value: object) -> int | None:
     return parsed
 
 
-def migrate_runtime_robot_identity(
-    data: dict[str, Any],
-    current_entities: Mapping[str, str],
-    prior_entities: Mapping[str, str] | None = None,
-) -> bool:
-    """Migrate runtime robot keys to registry IDs and current entity IDs.
-
-    ``current_entities`` and ``prior_entities`` map registry ID to entity ID.
-    Settings and learned samples become registry-keyed, while active jobs and
-    holds remain current-entity-keyed in memory for authoritative observations.
-    """
-
-    changed = False
-    prior_entities = prior_entities or {}
-    aliases = data.setdefault("robot_entity_aliases", {})
-    key_to_registry = {
-        entity_id: registry_id
-        for registry_id, entity_id in current_entities.items()
-    }
-    key_to_registry.update(
-        {
-            entity_id: registry_id
-            for registry_id, entity_id in prior_entities.items()
-            if registry_id in current_entities
-        }
-    )
-    for registry_id, alias in tuple(aliases.items()):
-        if registry_id in current_entities and isinstance(alias, str):
-            key_to_registry[alias] = registry_id
-    for occurrence in data.get("occurrences", {}).values():
-        registry_id = occurrence.get("robot_registry_id")
-        legacy_entity_id = occurrence.get("robot_entity_id")
-        if registry_id in current_entities and isinstance(legacy_entity_id, str):
-            key_to_registry[legacy_entity_id] = registry_id
-
-    settings = data["settings"]["robots"]
-    unresolved_keys = [
-        key
-        for key in settings
-        if key not in current_entities and key not in key_to_registry
-    ]
-    unmatched_registries = [
-        registry_id
-        for registry_id, entity_id in current_entities.items()
-        if registry_id not in settings
-        and entity_id not in settings
-        and aliases.get(registry_id) not in settings
-    ]
-    if len(unresolved_keys) == len(unmatched_registries) == 1:
-        key_to_registry[unresolved_keys[0]] = unmatched_registries[0]
-
-    for registry_id, entity_id in current_entities.items():
-        if registry_id not in aliases:
-            legacy_keys = [
-                key
-                for key, mapped_registry in key_to_registry.items()
-                if mapped_registry == registry_id
-                and key != entity_id
-                and key in settings
-            ]
-            aliases[registry_id] = legacy_keys[0] if legacy_keys else entity_id
-            changed = True
-        key_to_registry[str(aliases[registry_id])] = registry_id
-
-    for key in tuple(settings):
-        registry_id = key_to_registry.get(key)
-        if registry_id is None or key == registry_id:
-            continue
-        if registry_id not in settings:
-            settings[registry_id] = settings[key]
-        settings.pop(key, None)
-        changed = True
-
-    for detail in data.get("rooms", {}).values():
-        for sample in detail.get("duration_samples", []):
-            old_key = sample.get("robot")
-            if (registry_id := key_to_registry.get(old_key)) is not None:
-                if old_key != registry_id:
-                    sample["robot"] = registry_id
-                    changed = True
-
-    for section in ("active", "robot_holds"):
-        current_values = data.get(section, {})
-        rebound: dict[str, Any] = {}
-        for key, value in current_values.items():
-            registry_id = (
-                key if key in current_entities else key_to_registry.get(key)
-            )
-            runtime_key = current_entities.get(registry_id, key)
-            if runtime_key not in rebound or rebound[runtime_key] is None:
-                rebound[runtime_key] = value
-            if runtime_key != key:
-                changed = True
-        data[section] = rebound
-
-    for occurrence in data.get("occurrences", {}).values():
-        registry_id = occurrence.get("robot_registry_id")
-        entity_id = current_entities.get(registry_id)
-        if entity_id and occurrence.get("robot_entity_id") != entity_id:
-            occurrence["robot_entity_id"] = entity_id
-            changed = True
-    return changed
-
-
 @dataclass(slots=True)
 class GlobalSettings:
     observe_only: bool = True
@@ -323,8 +272,12 @@ class GlobalSettings:
             ),
             hall_start=str(entry_data.get(CONF_HALL_START, DEFAULT_HALL_START)),
             hall_end=str(entry_data.get(CONF_HALL_END, DEFAULT_HALL_END)),
-            unresolved_start=str(entry_data.get(CONF_UNRESOLVED_START, DEFAULT_UNRESOLVED_START)),
-            unresolved_end=str(entry_data.get(CONF_UNRESOLVED_END, DEFAULT_UNRESOLVED_END)),
+            unresolved_start=str(
+                entry_data.get(CONF_UNRESOLVED_START, DEFAULT_UNRESOLVED_START)
+            ),
+            unresolved_end=str(
+                entry_data.get(CONF_UNRESOLVED_END, DEFAULT_UNRESOLVED_END)
+            ),
         )
 
     @classmethod
@@ -372,7 +325,7 @@ class RoomSettings:
     ignore_desired_window: bool = False
     desired_window_start: str | None = None
     desired_window_end: str | None = None
-    cleaning_program: str | None = None
+    cleaning_program: CleaningProgram | None = None
     vacuum_pass_count: int | None = None
     mop_pass_count: int | None = None
     fan_speed: str | None = None
@@ -416,11 +369,15 @@ class RoomSettings:
     def defaults(cls, is_bedroom: bool) -> RoomSettings:
         return cls(
             enabled=not is_bedroom,
-            cleaning_interval=DEFAULT_BEDROOM_INTERVAL if is_bedroom else DEFAULT_COMMON_INTERVAL,
+            cleaning_interval=DEFAULT_BEDROOM_INTERVAL
+            if is_bedroom
+            else DEFAULT_COMMON_INTERVAL,
         )
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, object], default: RoomSettings) -> RoomSettings:
+    def from_mapping(
+        cls, value: Mapping[str, object], default: RoomSettings
+    ) -> RoomSettings:
         raw_window = value.get("daily_window")
         if raw_window is not None:
             window = _mapping(raw_window, "room daily_window")
@@ -459,15 +416,8 @@ class RoomSettings:
             desired_window_start=_optional_daily_time(
                 raw_start, "room daily-window start"
             ),
-            desired_window_end=_optional_daily_time(
-                raw_end, "room daily-window end"
-            ),
-            cleaning_program=(
-                str(program)
-                if (program := value.get("cleaning_program"))
-                in {"vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"}
-                else None
-            ),
+            desired_window_end=_optional_daily_time(raw_end, "room daily-window end"),
+            cleaning_program=_cleaning_program(value.get("cleaning_program")),
             vacuum_pass_count=_optional_pass_count(
                 value.get("vacuum_pass_count", value.get("pass_count"))
             ),
@@ -506,19 +456,7 @@ class RoomSettings:
             "mop_mode": self.mop_mode,
             "mop_intensity": self.mop_intensity,
             "cleaning_depth": self.cleaning_depth,
-            "profile_custom": room_cleaning_profile_is_custom(
-                {
-                    "profile_custom": self.profile_custom,
-                    "cleaning_program": self.cleaning_program,
-                    "vacuum_pass_count": self.vacuum_pass_count,
-                    "mop_pass_count": self.mop_pass_count,
-                    "fan_speed": self.fan_speed,
-                    "mode": self.mode,
-                    "mop_mode": self.mop_mode,
-                    "mop_intensity": self.mop_intensity,
-                    "cleaning_depth": self.cleaning_depth,
-                }
-            ),
+            "profile_custom": room_cleaning_profile_is_custom(self),
         }
 
     def to_runtime(self) -> dict[str, object]:
@@ -543,19 +481,7 @@ class RoomSettings:
             "mop_mode": self.mop_mode,
             "mop_intensity": self.mop_intensity,
             "cleaning_depth": self.cleaning_depth,
-            "profile_custom": room_cleaning_profile_is_custom(
-                {
-                    "profile_custom": self.profile_custom,
-                    "cleaning_program": self.cleaning_program,
-                    "vacuum_pass_count": self.vacuum_pass_count,
-                    "mop_pass_count": self.mop_pass_count,
-                    "fan_speed": self.fan_speed,
-                    "mode": self.mode,
-                    "mop_mode": self.mop_mode,
-                    "mop_intensity": self.mop_intensity,
-                    "cleaning_depth": self.cleaning_depth,
-                }
-            ),
+            "profile_custom": room_cleaning_profile_is_custom(self),
         }
 
 
@@ -563,7 +489,7 @@ class RoomSettings:
 class RobotSettings:
     enabled: bool = True
     minimum_battery: float = DEFAULT_MINIMUM_BATTERY
-    cleaning_program: str = "vacuum_only"
+    cleaning_program: CleaningProgram = CleaningProgram.VACUUM_ONLY
     double_pass: bool = False
     mop_double_pass: bool = False
     mode: str | None = None
@@ -577,21 +503,27 @@ class RobotSettings:
     @classmethod
     def defaults(cls, supports_mopping: bool) -> RobotSettings:
         return cls(
-            cleaning_program=("vacuum_then_mop" if supports_mopping else "vacuum_only")
+            cleaning_program=(
+                CleaningProgram.VACUUM_THEN_MOP
+                if supports_mopping
+                else CleaningProgram.VACUUM_ONLY
+            )
         )
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, object], default: RobotSettings) -> RobotSettings:
+    def from_mapping(
+        cls, value: Mapping[str, object], default: RobotSettings
+    ) -> RobotSettings:
         raw_program = value.get("cleaning_program")
-        program = (
-            str(raw_program)
-            if raw_program
-            in {"vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"}
-            else (
-                "vacuum_then_mop"
-                if bool(value.get("mopping_enabled", default.cleaning_program != "vacuum_only"))
-                else "vacuum_only"
+        program = _cleaning_program(raw_program) or (
+            CleaningProgram.VACUUM_THEN_MOP
+            if bool(
+                value.get(
+                    "mopping_enabled",
+                    default.cleaning_program is not CleaningProgram.VACUUM_ONLY,
+                )
             )
+            else CleaningProgram.VACUUM_ONLY
         )
         return cls(
             enabled=bool(value.get("enabled", default.enabled)),
@@ -623,7 +555,9 @@ class RobotSettings:
 
     def to_runtime(self) -> dict[str, object]:
         value = asdict(self)
-        value["mopping_enabled"] = self.cleaning_program != "vacuum_only"
+        value["mopping_enabled"] = (
+            self.cleaning_program is not CleaningProgram.VACUUM_ONLY
+        )
         return value
 
 
@@ -637,7 +571,9 @@ class OccupancySample:
         started = _timestamp(value.get("start"))
         if started is None:
             return None
-        return cls(started_at=started, minutes=max(0, _integer(value.get("minutes"), 0)))
+        return cls(
+            started_at=started, minutes=max(0, _integer(value.get("minutes"), 0))
+        )
 
     def to_store(self) -> dict[str, object]:
         return {"start": _iso(self.started_at), "minutes": self.minutes}
@@ -646,19 +582,19 @@ class OccupancySample:
 @dataclass(slots=True)
 class DurationSample:
     minutes: float
-    operation: str
+    operation: CleaningOperation
     passes: int
-    robot_id: str
+    robot_registry_id: str
     source: str
     recorded_at: datetime | None = None
     measurement_version: int = 1
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> DurationSample | None:
-        operation = _string(value.get("operation"))
-        robot_id = _string(value.get("robot"))
+        operation = _cleaning_operation(value.get("operation"))
+        robot_registry_id = _string(value.get("robot_registry_id", value.get("robot")))
         source = _string(value.get("source"))
-        if not operation or not robot_id or not source:
+        if operation is None or not robot_registry_id or not source:
             return None
         minutes = _number(value.get("minutes"), 0)
         if minutes <= 0:
@@ -667,7 +603,7 @@ class DurationSample:
             minutes=minutes,
             operation=operation,
             passes=max(1, _integer(value.get("passes"), 1)),
-            robot_id=robot_id,
+            robot_registry_id=robot_registry_id,
             source=source,
             recorded_at=_timestamp(value.get("at")),
             measurement_version=max(1, _integer(value.get("measurement_version"), 1)),
@@ -678,7 +614,7 @@ class DurationSample:
             "minutes": self.minutes,
             "operation": self.operation,
             "passes": self.passes,
-            "robot": self.robot_id,
+            "robot_registry_id": self.robot_registry_id,
             "source": self.source,
             "at": _iso(self.recorded_at),
             "measurement_version": self.measurement_version,
@@ -745,8 +681,6 @@ class RoomHistory:
         raw_metadata = _mapping_or_empty(value.get("deferral_meta"))
         deferrals: dict[str, Deferral] = {}
         for key, raw in raw_deferrals.items():
-            if not isinstance(key, str):
-                continue
             record = Deferral.from_mapping(raw) if isinstance(raw, Mapping) else None
             metadata = raw_metadata.get(key)
             if record is None and isinstance(metadata, Mapping):
@@ -757,19 +691,21 @@ class RoomHistory:
                 record = Deferral(until=until)
             if record is not None:
                 deferrals[key] = record
-        samples = [
-            sample
-            for item in value.get("occupancy_samples", value.get("samples", []))
-            if isinstance(item, Mapping)
-            and (sample := OccupancySample.from_mapping(item)) is not None
-        ]
-        duration_samples = [
-            sample
-            for item in value.get("duration_samples", [])
-            if isinstance(item, Mapping)
-            and (sample := DurationSample.from_mapping(item)) is not None
-        ]
-        vacuum_completed = _timestamp(value.get("vacuum_completed_at", value.get("vacuum")))
+        samples: list[OccupancySample] = []
+        for item in _sequence(value.get("occupancy_samples", value.get("samples", []))):
+            if isinstance(item, Mapping):
+                occupancy_sample = OccupancySample.from_mapping(item)
+                if occupancy_sample is not None:
+                    samples.append(occupancy_sample)
+        duration_samples: list[DurationSample] = []
+        for item in _sequence(value.get("duration_samples", [])):
+            if isinstance(item, Mapping):
+                duration_sample = DurationSample.from_mapping(item)
+                if duration_sample is not None:
+                    duration_samples.append(duration_sample)
+        vacuum_completed = _timestamp(
+            value.get("vacuum_completed_at", value.get("vacuum"))
+        )
         mop_completed = _timestamp(value.get("mop_completed_at", value.get("mop")))
         cleaning_completed = _timestamp(
             value.get("cleaning_completed_at", value.get("cleaning"))
@@ -796,7 +732,9 @@ class RoomHistory:
             mop_completed_at=mop_completed,
             deferrals=deferrals,
             occupancy=str(value.get("occupancy", "unresolved")),
-            occupancy_source=str(value.get("occupancy_source", value.get("source", "unavailable"))),
+            occupancy_source=str(
+                value.get("occupancy_source", value.get("source", "unavailable"))
+            ),
             unavailable_radars=max(0, _integer(value.get("unavailable_radars"), 0)),
             unoccupied_since=_timestamp(value.get("unoccupied_since")),
             occupancy_samples=samples,
@@ -827,7 +765,39 @@ class RoomHistory:
             "occupancy_source": self.occupancy_source,
             "unavailable_radars": self.unavailable_radars,
             "unoccupied_since": _iso(self.unoccupied_since),
-            "occupancy_samples": [sample.to_store() for sample in self.occupancy_samples],
+            "occupancy_samples": [
+                sample.to_store() for sample in self.occupancy_samples
+            ],
+            "source_fingerprint": self.source_fingerprint,
+            "map_status": self.map_status,
+            "map_error": self.map_error,
+            "duration_samples": [sample.to_store() for sample in self.duration_samples],
+            "last_stage_outcome": self.last_stage_outcome,
+            "last_stage_reason": self.last_stage_reason,
+            "last_stage_at": _iso(self.last_stage_at),
+            "last_stage_summary": self.last_stage_summary,
+        }
+
+    def to_runtime(self) -> dict[str, object]:
+        """Encode the legacy method-facing shape from typed live state."""
+
+        return {
+            "cleaning": _iso(self.cleaning_completed_at),
+            "vacuum": _iso(self.vacuum_completed_at),
+            "mop": _iso(self.mop_completed_at),
+            "defer": {
+                operation: _iso(deferral.until)
+                for operation, deferral in self.deferrals.items()
+            },
+            "deferral_meta": {
+                operation: deferral.to_store()
+                for operation, deferral in self.deferrals.items()
+            },
+            "occupancy": self.occupancy,
+            "source": self.occupancy_source,
+            "unavailable_radars": self.unavailable_radars,
+            "unoccupied_since": _iso(self.unoccupied_since),
+            "samples": [sample.to_store() for sample in self.occupancy_samples],
             "source_fingerprint": self.source_fingerprint,
             "map_status": self.map_status,
             "map_error": self.map_error,
@@ -843,16 +813,16 @@ class RoomHistory:
 class ActiveJob:
     room_id: str
     room_ids: list[str]
-    operation: str
-    phase: str
-    source: str
+    operation: CleaningOperation
+    phase: JobPhase
+    source: JobSource
     started_at: datetime | None = None
     seen_cleaning: bool = False
     expected_minutes: float | None = None
     expected_end: datetime | None = None
     last_observed_at: datetime | None = None
     passes: int = 1
-    requested_operations: list[str] = field(default_factory=list)
+    requested_operations: list[CleaningOperation] = field(default_factory=list)
     manual_context_id: str | None = None
     accepted_at: datetime | None = None
     mop_washing_at: datetime | None = None
@@ -878,10 +848,11 @@ class ActiveJob:
     adapter_schema_version: int = 1
     occurrence_id: str | None = None
     stage_index: int | None = None
-    cleaning_profile: dict[str, str | None] = field(default_factory=dict)
-    requested_profile: dict[str, str | None] = field(default_factory=dict)
-    profile_sources: dict[str, str] = field(default_factory=dict)
+    cleaning_profile: ResolvedCleaningProfile | None = None
+    requested_profile: RequestedCleaningProfile | None = None
+    profile_sources: tuple[tuple[str, str], ...] = ()
     manual_mode: str | None = None
+    q10_max_plus_fallback: bool = False
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> ActiveJob | None:
@@ -891,10 +862,10 @@ class ActiveJob:
             room_ids.insert(0, room_id)
         if not room_id and room_ids:
             room_id = room_ids[0]
-        operation = _string(value.get("operation"))
-        phase = _string(value.get("phase"))
-        source = _string(value.get("source"), "scheduler")
-        if not room_id or not operation or not phase or not source:
+        operation = _cleaning_operation(value.get("operation"))
+        phase = _job_phase(value.get("phase"))
+        source = _job_source(value.get("source", JobSource.SCHEDULER))
+        if not room_id or operation is None or phase is None or source is None:
             return None
         return cls(
             room_id=room_id,
@@ -908,7 +879,11 @@ class ActiveJob:
             expected_end=_timestamp(value.get("expected_end")),
             last_observed_at=_timestamp(value.get("last_observed_at")),
             passes=max(1, _integer(value.get("passes"), 1)),
-            requested_operations=_string_list(value.get("requested_operations")),
+            requested_operations=[
+                requested_operation
+                for item in _string_list(value.get("requested_operations"))
+                if (requested_operation := _cleaning_operation(item)) is not None
+            ],
             manual_context_id=_string(value.get("manual_context_id")),
             accepted_at=_timestamp(value.get("accepted_at")),
             mop_washing_at=_timestamp(value.get("mop_washing_at")),
@@ -940,10 +915,24 @@ class ActiveJob:
                 if value.get("stage_index") is not None
                 else None
             ),
-            cleaning_profile=_profile_mapping(value.get("cleaning_profile")),
-            requested_profile=_profile_mapping(value.get("requested_profile")),
-            profile_sources=_profile_sources_mapping(value.get("profile_sources")),
+            cleaning_profile=(
+                ResolvedCleaningProfile.from_mapping(
+                    operation,
+                    profile,
+                )
+                if (profile := _profile_mapping(value.get("cleaning_profile")))
+                else None
+            ),
+            requested_profile=(
+                RequestedCleaningProfile.from_mapping(requested)
+                if (requested := _profile_mapping(value.get("requested_profile")))
+                else None
+            ),
+            profile_sources=tuple(
+                sorted(_profile_sources_mapping(value.get("profile_sources")).items())
+            ),
             manual_mode=_string(value.get("manual_mode")),
+            q10_max_plus_fallback=bool(value.get("q10_max_plus_fallback", False)),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -985,45 +974,58 @@ class ActiveJob:
             "adapter_schema_version": self.adapter_schema_version,
             "occurrence_id": self.occurrence_id,
             "stage_index": self.stage_index,
-            "cleaning_profile": dict(self.cleaning_profile),
-            "requested_profile": dict(self.requested_profile),
+            "cleaning_profile": (
+                self.cleaning_profile.to_mapping() if self.cleaning_profile else {}
+            ),
+            "requested_profile": (
+                self.requested_profile.to_mapping() if self.requested_profile else {}
+            ),
             "profile_sources": dict(self.profile_sources),
             "manual_mode": self.manual_mode,
+            "q10_max_plus_fallback": self.q10_max_plus_fallback,
         }
 
 
 @dataclass(slots=True)
 class CleaningStage:
-    operation: str
+    operation: CleaningOperation
     passes: int
-    status: str = "pending"
+    status: StageStatus = StageStatus.PENDING
     reason: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
-    cleaning_profile: dict[str, str | None] = field(default_factory=dict)
-    requested_profile: dict[str, str | None] = field(default_factory=dict)
-    profile_sources: dict[str, str] = field(default_factory=dict)
+    cleaning_profile: ResolvedCleaningProfile | None = None
+    requested_profile: RequestedCleaningProfile | None = None
+    profile_sources: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> CleaningStage | None:
-        operation = _string(value.get("operation"))
-        if operation not in {"vacuum", "mop"}:
+        operation = _cleaning_operation(value.get("operation"))
+        if operation is None:
             return None
-        status = str(value.get("status", "pending"))
-        if status not in {
-            "pending", "running", "completed", "skipped_no_water",
-            "skipped_unconfirmed_water", "skipped_no_mop",
-        }:
-            status = "pending"
+        try:
+            status = StageStatus(str(value.get("status", StageStatus.PENDING)))
+        except ValueError:
+            status = StageStatus.PENDING
         profile = _profile_mapping(value.get("cleaning_profile"))
         if profile.get("operation") not in {None, operation}:
             raise StateSchemaError("stage cleaning profile operation does not match")
-        return cls(operation, max(1, _integer(value.get("passes"), 1)), status,
-                   _string(value.get("reason")), _timestamp(value.get("started_at")),
-                   _timestamp(value.get("completed_at")),
-                   profile,
-                   _profile_mapping(value.get("requested_profile")),
-                   _profile_sources_mapping(value.get("profile_sources")))
+        requested = _profile_mapping(value.get("requested_profile"))
+        return cls(
+            operation,
+            max(1, _integer(value.get("passes"), 1)),
+            status,
+            _string(value.get("reason")),
+            _timestamp(value.get("started_at")),
+            _timestamp(value.get("completed_at")),
+            ResolvedCleaningProfile.from_mapping(operation, profile)
+            if profile
+            else None,
+            RequestedCleaningProfile.from_mapping(requested) if requested else None,
+            tuple(
+                sorted(_profile_sources_mapping(value.get("profile_sources")).items())
+            ),
+        )
 
     def to_store(self) -> dict[str, object]:
         return {
@@ -1033,8 +1035,12 @@ class CleaningStage:
             "reason": self.reason,
             "started_at": _iso(self.started_at),
             "completed_at": _iso(self.completed_at),
-            "cleaning_profile": dict(self.cleaning_profile),
-            "requested_profile": dict(self.requested_profile),
+            "cleaning_profile": (
+                self.cleaning_profile.to_mapping() if self.cleaning_profile else {}
+            ),
+            "requested_profile": (
+                self.requested_profile.to_mapping() if self.requested_profile else {}
+            ),
             "profile_sources": dict(self.profile_sources),
         }
 
@@ -1044,15 +1050,15 @@ class CleaningOccurrence:
     occurrence_id: str
     room_id: str
     robot_registry_id: str
-    robot_entity_id: str
-    program: str
+    robot_entity_id: str | None
+    program: CleaningProgram
     stages: list[CleaningStage]
     scheduled_at: datetime
     created_at: datetime
     adapter_id: str
     adapter_schema_version: int
     current_stage: int = 0
-    source: str = "scheduler"
+    source: OccurrenceSource = OccurrenceSource.SCHEDULER
     manual_mode: str | None = None
     manual_override: bool = False
     bypass_desired_window: bool = False
@@ -1061,61 +1067,99 @@ class CleaningOccurrence:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> CleaningOccurrence | None:
-        stages = [stage for item in value.get("stages", []) if isinstance(item, Mapping)
-                  and (stage := CleaningStage.from_mapping(item)) is not None]
-        required = [_string(value.get(key)) for key in
-                    ("occurrence_id", "room_id", "robot_registry_id", "robot_entity_id", "program")]
+        stages: list[CleaningStage] = []
+        for item in _sequence(value.get("stages", [])):
+            if isinstance(item, Mapping):
+                stage = CleaningStage.from_mapping(item)
+                if stage is not None:
+                    stages.append(stage)
+        occurrence_id = _string(value.get("occurrence_id"))
+        room_id = _string(value.get("room_id"))
+        robot_registry_id = _string(value.get("robot_registry_id"))
+        program = _cleaning_program(value.get("program"))
+        robot_entity_id = _string(value.get("robot_entity_id"))
         scheduled = _timestamp(value.get("scheduled_at"))
         created = _timestamp(value.get("created_at"))
-        if not all((*required, scheduled, created, stages)):
+        if (
+            not occurrence_id
+            or not room_id
+            or not robot_registry_id
+            or program is None
+            or scheduled is None
+            or created is None
+            or not stages
+        ):
             return None
         current = min(max(0, _integer(value.get("current_stage"), 0)), len(stages))
-        source = value.get("source", "scheduler")
-        if source not in {"scheduler", "manual_dashboard"}:
-            raise StateSchemaError("occurrence source is invalid")
+        try:
+            source = OccurrenceSource(
+                str(value.get("source", OccurrenceSource.SCHEDULER))
+            )
+        except ValueError as err:
+            raise StateSchemaError("occurrence source is invalid") from err
         manual_mode = _optional_string(
             value.get("manual_mode"), "occurrence manual_mode"
         )
         if manual_mode not in {None, "configured", "vacuum_only", "mop_only"}:
             raise StateSchemaError("occurrence manual_mode is invalid")
-        return cls(*required, stages, scheduled, created,
-                   str(value.get("adapter_id", "generic")),
-                   max(1, _integer(value.get("adapter_schema_version"), 1)), current,
-                   source,
-                   manual_mode,
-                   _boolean(
-                       value.get("manual_override"),
-                       False,
-                       "occurrence manual_override",
-                   ),
-                   _boolean(
-                       value.get("bypass_desired_window"),
-                       False,
-                       "occurrence bypass_desired_window",
-                   ),
-                   _optional_string(
-                       value.get("manual_context_id"),
-                       "occurrence manual_context_id",
-                   ),
-                   _optional_string(
-                       value.get("manual_user_id"), "occurrence manual_user_id"
-                   ))
+        return cls(
+            occurrence_id,
+            room_id,
+            robot_registry_id,
+            robot_entity_id,
+            program,
+            stages,
+            scheduled,
+            created,
+            str(value.get("adapter_id", "generic")),
+            max(1, _integer(value.get("adapter_schema_version"), 1)),
+            current,
+            source,
+            manual_mode,
+            _boolean(
+                value.get("manual_override"),
+                False,
+                "occurrence manual_override",
+            ),
+            _boolean(
+                value.get("bypass_desired_window"),
+                False,
+                "occurrence bypass_desired_window",
+            ),
+            _optional_string(
+                value.get("manual_context_id"),
+                "occurrence manual_context_id",
+            ),
+            _optional_string(value.get("manual_user_id"), "occurrence manual_user_id"),
+        )
 
     def to_store(self) -> dict[str, object]:
-        return {"occurrence_id": self.occurrence_id, "room_id": self.room_id,
-                "robot_registry_id": self.robot_registry_id,
-                "robot_entity_id": self.robot_entity_id, "program": self.program,
-                "stages": [stage.to_store() for stage in self.stages],
-                "scheduled_at": _iso(self.scheduled_at), "created_at": _iso(self.created_at),
-                "adapter_id": self.adapter_id,
-                "adapter_schema_version": self.adapter_schema_version,
-                "current_stage": self.current_stage,
-                "source": self.source,
-                "manual_mode": self.manual_mode,
-                "manual_override": self.manual_override,
-                "bypass_desired_window": self.bypass_desired_window,
-                "manual_context_id": self.manual_context_id,
-                "manual_user_id": self.manual_user_id}
+        return {
+            "occurrence_id": self.occurrence_id,
+            "room_id": self.room_id,
+            "robot_registry_id": self.robot_registry_id,
+            "program": self.program,
+            "stages": [stage.to_store() for stage in self.stages],
+            "scheduled_at": _iso(self.scheduled_at),
+            "created_at": _iso(self.created_at),
+            "adapter_id": self.adapter_id,
+            "adapter_schema_version": self.adapter_schema_version,
+            "current_stage": self.current_stage,
+            "source": self.source,
+            "manual_mode": self.manual_mode,
+            "manual_override": self.manual_override,
+            "bypass_desired_window": self.bypass_desired_window,
+            "manual_context_id": self.manual_context_id,
+            "manual_user_id": self.manual_user_id,
+        }
+
+    def to_runtime(self, robot_entity_id: str | None = None) -> dict[str, object]:
+        """Add the current transient entity ID to the durable occurrence."""
+
+        return {
+            **self.to_store(),
+            "robot_entity_id": robot_entity_id or self.robot_entity_id,
+        }
 
 
 @dataclass(slots=True)
@@ -1135,28 +1179,60 @@ class WaterConfirmation:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> WaterConfirmation | None:
-        required = [_string(value.get(key)) for key in
-                    ("request_id", "occurrence_id", "room_id", "robot_registry_id",
-                     "confirm_hash", "cancel_hash", "tag")]
+        request_id = _string(value.get("request_id"))
+        occurrence_id = _string(value.get("occurrence_id"))
+        room_id = _string(value.get("room_id"))
+        robot_registry_id = _string(value.get("robot_registry_id"))
+        confirm_hash = _string(value.get("confirm_hash"))
+        cancel_hash = _string(value.get("cancel_hash"))
+        tag = _string(value.get("tag"))
         sent = _timestamp(value.get("sent_at"))
         expires = _timestamp(value.get("expires_at"))
-        if not all((*required, sent, expires)):
+        if (
+            not request_id
+            or not occurrence_id
+            or not room_id
+            or not robot_registry_id
+            or not confirm_hash
+            or not cancel_hash
+            or not tag
+            or sent is None
+            or expires is None
+        ):
             return None
         status = str(value.get("status", "pending"))
         if status not in {"pending", "confirmed", "cancelled", "expired"}:
             status = "pending"
-        return cls(required[0], required[1], required[2], required[3],
-                   max(0, _integer(value.get("stage_index"), 0)), required[4],
-                   required[5], required[6], sent, expires, status,
-                   _timestamp(value.get("responded_at")))
+        return cls(
+            request_id,
+            occurrence_id,
+            room_id,
+            robot_registry_id,
+            max(0, _integer(value.get("stage_index"), 0)),
+            confirm_hash,
+            cancel_hash,
+            tag,
+            sent,
+            expires,
+            status,
+            _timestamp(value.get("responded_at")),
+        )
 
     def to_store(self) -> dict[str, object]:
-        return {"request_id": self.request_id, "occurrence_id": self.occurrence_id,
-                "room_id": self.room_id, "robot_registry_id": self.robot_registry_id,
-                "stage_index": self.stage_index, "confirm_hash": self.confirm_hash,
-                "cancel_hash": self.cancel_hash, "tag": self.tag,
-                "sent_at": _iso(self.sent_at), "expires_at": _iso(self.expires_at),
-                "status": self.status, "responded_at": _iso(self.responded_at)}
+        return {
+            "request_id": self.request_id,
+            "occurrence_id": self.occurrence_id,
+            "room_id": self.room_id,
+            "robot_registry_id": self.robot_registry_id,
+            "stage_index": self.stage_index,
+            "confirm_hash": self.confirm_hash,
+            "cancel_hash": self.cancel_hash,
+            "tag": self.tag,
+            "sent_at": _iso(self.sent_at),
+            "expires_at": _iso(self.expires_at),
+            "status": self.status,
+            "responded_at": _iso(self.responded_at),
+        }
 
 
 @dataclass(slots=True)
@@ -1167,21 +1243,32 @@ class WaterNotificationEpisode:
     last_sent_at: datetime
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> WaterNotificationEpisode | None:
+    def from_mapping(
+        cls, value: Mapping[str, object]
+    ) -> WaterNotificationEpisode | None:
         room_id, reason = _string(value.get("room_id")), _string(value.get("reason"))
-        first, last = _timestamp(value.get("first_sent_at")), _timestamp(value.get("last_sent_at"))
-        return cls(room_id, reason, first, last) if all((room_id, reason, first, last)) else None
+        first, last = (
+            _timestamp(value.get("first_sent_at")),
+            _timestamp(value.get("last_sent_at")),
+        )
+        if not room_id or not reason or first is None or last is None:
+            return None
+        return cls(room_id, reason, first, last)
 
     def to_store(self) -> dict[str, object]:
-        return {"room_id": self.room_id, "reason": self.reason,
-                "first_sent_at": _iso(self.first_sent_at), "last_sent_at": _iso(self.last_sent_at)}
+        return {
+            "room_id": self.room_id,
+            "reason": self.reason,
+            "first_sent_at": _iso(self.first_sent_at),
+            "last_sent_at": _iso(self.last_sent_at),
+        }
 
 
 @dataclass(slots=True)
 class SchedulerFault:
     """Durable scoped dispatch fault without raw vendor or exception data."""
 
-    reason_code: str
+    reason_code: FaultCode
     robot_registry_id: str
     room_area_id: str
     occurred_at: datetime
@@ -1196,23 +1283,32 @@ class SchedulerFault:
         room_area_id = _string(value.get("room_area_id"))
         occurred_at = _timestamp(value.get("occurred_at"))
         phase = _string(value.get("phase"))
-        if not all((reason_code, robot_registry_id, room_area_id, occurred_at, phase)):
+        if (
+            not reason_code
+            or not robot_registry_id
+            or not room_area_id
+            or occurred_at is None
+            or not phase
+        ):
             return None
-        return cls(
-            reason_code=reason_code,
-            robot_registry_id=robot_registry_id,
-            room_area_id=room_area_id,
-            occurred_at=occurred_at,
-            phase=phase,
-            native_command_may_have_started=bool(
-                value.get("native_command_may_have_started", False)
-            ),
-            outcome_uncertain=bool(value.get("outcome_uncertain", False)),
-        )
+        try:
+            return cls(
+                reason_code=FaultCode(reason_code),
+                robot_registry_id=robot_registry_id,
+                room_area_id=room_area_id,
+                occurred_at=occurred_at,
+                phase=phase,
+                native_command_may_have_started=bool(
+                    value.get("native_command_may_have_started", False)
+                ),
+                outcome_uncertain=bool(value.get("outcome_uncertain", False)),
+            )
+        except ValueError:
+            return None
 
     def to_store(self) -> dict[str, object]:
         return {
-            "reason_code": self.reason_code,
+            "reason_code": str(self.reason_code),
             "robot_registry_id": self.robot_registry_id,
             "room_area_id": self.room_area_id,
             "occurred_at": _iso(self.occurred_at),
@@ -1287,41 +1383,302 @@ class RobotCooldown:
 
 
 @dataclass(slots=True)
+class UnresolvedRobotReference:
+    """Durable robot-owned records that cannot yet bind to a registry ID."""
+
+    legacy_key: str
+    reason: str
+    first_seen_at: datetime
+    settings: RobotSettings | None = None
+    active_job: ActiveJob | None = None
+    hold: RobotHold | None = None
+    cooldown: RobotCooldown | None = None
+    occurrence_room_ids: tuple[str, ...] = ()
+
+    @classmethod
+    def from_mapping(
+        cls, value: Mapping[str, object]
+    ) -> UnresolvedRobotReference | None:
+        legacy_key = _string(value.get("legacy_key"))
+        reason = _string(value.get("reason"))
+        first_seen_at = _timestamp(value.get("first_seen_at"))
+        if not legacy_key or not reason or first_seen_at is None:
+            return None
+        raw_settings = value.get("settings")
+        raw_active = value.get("active_job")
+        raw_hold = value.get("hold")
+        raw_cooldown = value.get("cooldown")
+        return cls(
+            legacy_key=legacy_key,
+            reason=reason,
+            first_seen_at=first_seen_at,
+            settings=(
+                RobotSettings.from_mapping(
+                    raw_settings,
+                    RobotSettings.defaults(False),
+                )
+                if isinstance(raw_settings, Mapping)
+                else None
+            ),
+            active_job=(
+                ActiveJob.from_mapping(raw_active)
+                if isinstance(raw_active, Mapping)
+                else None
+            ),
+            hold=(
+                RobotHold.from_mapping(raw_hold)
+                if isinstance(raw_hold, Mapping)
+                else None
+            ),
+            cooldown=(
+                RobotCooldown.from_mapping(raw_cooldown)
+                if isinstance(raw_cooldown, Mapping)
+                else None
+            ),
+            occurrence_room_ids=tuple(_string_list(value.get("occurrence_room_ids"))),
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "legacy_key": self.legacy_key,
+            "reason": self.reason,
+            "first_seen_at": _iso(self.first_seen_at),
+            "settings": self.settings.to_runtime() if self.settings else None,
+            "active_job": self.active_job.to_store() if self.active_job else None,
+            "hold": self.hold.to_store() if self.hold else None,
+            "cooldown": self.cooldown.to_store() if self.cooldown else None,
+            "occurrence_room_ids": list(self.occurrence_room_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenJsonObject:
+    """Immutable JSON object retained only at a Store/presentation boundary."""
+
+    items: tuple[tuple[str, object], ...] = ()
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> FrozenJsonObject:
+        return cls(
+            tuple(
+                sorted(
+                    ((str(key), _freeze_json(item)) for key, item in value.items()),
+                    key=lambda pair: pair[0],
+                )
+            )
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {key: _thaw_json(value) for key, value in self.items}
+
+
+def _freeze_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return FrozenJsonObject.from_mapping(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise StateSchemaError(f"unsupported persisted JSON value: {type(value).__name__}")
+
+
+def _thaw_json(value: object) -> object:
+    if isinstance(value, FrozenJsonObject):
+        return value.to_mapping()
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ManualAuditRecord:
+    """One typed audit of an explicit or observed manual clean."""
+
+    at: datetime | None = None
+    robot_registry_id: str | None = None
+    room_ids: tuple[str, ...] = ()
+    operations: tuple[CleaningOperation, ...] = ()
+    context_id: str | None = None
+    user_id: str | None = None
+    mode: str | None = None
+    source: str | None = None
+    outcome: str | None = None
+    reason: str | None = None
+    confidence: str | None = None
+    changed: tuple[str, ...] = ()
+    deferred: tuple[str, ...] = ()
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> ManualAuditRecord:
+        return cls(
+            at=_timestamp(value.get("at")),
+            robot_registry_id=_string(
+                value.get("robot_registry_id", value.get("robot"))
+            ),
+            room_ids=tuple(_string_list(value.get("rooms"))),
+            operations=_cleaning_operations(value.get("operations")),
+            context_id=_string(value.get("context_id")),
+            user_id=_string(value.get("user_id")),
+            mode=_string(value.get("mode")),
+            source=_string(value.get("source")),
+            outcome=_string(value.get("outcome")),
+            reason=_string(value.get("reason")),
+            confidence=_string(value.get("confidence")),
+            changed=tuple(_string_list(value.get("changed"))),
+            deferred=tuple(_string_list(value.get("deferred"))),
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "at": _iso(self.at),
+            "robot_registry_id": self.robot_registry_id,
+            "rooms": list(self.room_ids),
+            "operations": list(self.operations),
+            "context_id": self.context_id,
+            "user_id": self.user_id,
+            "mode": self.mode,
+            "source": self.source,
+            "outcome": self.outcome,
+            "reason": self.reason,
+            "confidence": self.confidence,
+            "changed": list(self.changed),
+            "deferred": list(self.deferred),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryAuditRecord:
+    """One typed restart or job-recovery decision."""
+
+    robot_registry_id: str | None = None
+    room_ids: tuple[str, ...] = ()
+    at: datetime | None = None
+    reason: str | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> RecoveryAuditRecord:
+        return cls(
+            robot_registry_id=_string(
+                value.get("robot_registry_id", value.get("robot"))
+            ),
+            room_ids=tuple(_string_list(value.get("rooms"))),
+            at=_timestamp(value.get("at")),
+            reason=_string(value.get("reason")),
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "robot_registry_id": self.robot_registry_id,
+            "rooms": list(self.room_ids),
+            "at": _iso(self.at),
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RoomDecisionRecord:
+    """One bounded explanation of a room scheduling decision."""
+
+    at: datetime | None = None
+    room_area_id: str | None = None
+    reason: str | None = None
+    occupancy_source: str | None = None
+    required_clear_minutes: int = 0
+    clear_minutes: float | None = None
+    forecast_confidence: float = 0.0
+    comparable_sample_count: int = 0
+    forecast_reason: str | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> RoomDecisionRecord:
+        return cls(
+            at=_timestamp(value.get("at")),
+            room_area_id=_string(value.get("room_area_id")),
+            reason=_string(value.get("reason")),
+            occupancy_source=_string(value.get("occupancy_source")),
+            required_clear_minutes=max(
+                0,
+                _integer(value.get("required_clear_minutes"), 0),
+            ),
+            clear_minutes=_optional_number(value.get("clear_minutes")),
+            forecast_confidence=_number(value.get("forecast_confidence"), 0),
+            comparable_sample_count=max(
+                0,
+                _integer(value.get("comparable_sample_count"), 0),
+            ),
+            forecast_reason=_string(value.get("forecast_reason")),
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "at": _iso(self.at),
+            "room_area_id": self.room_area_id,
+            "reason": self.reason,
+            "occupancy_source": self.occupancy_source,
+            "required_clear_minutes": self.required_clear_minutes,
+            "clear_minutes": self.clear_minutes,
+            "forecast_confidence": self.forecast_confidence,
+            "comparable_sample_count": self.comparable_sample_count,
+            "forecast_reason": self.forecast_reason,
+        }
+
+
+@dataclass(slots=True)
 class EvaluationState:
     last_evaluation_at: datetime | None = None
-    last_preview: dict[str, Any] = field(default_factory=dict)
+    last_preview: FrozenJsonObject = field(default_factory=FrozenJsonObject)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> EvaluationState:
         preview = value.get("last_preview", {})
         return cls(
-            last_evaluation_at=_timestamp(value.get("last_evaluation_at", value.get("last_evaluation"))),
-            last_preview=dict(preview) if isinstance(preview, Mapping) else {},
+            last_evaluation_at=_timestamp(
+                value.get("last_evaluation_at", value.get("last_evaluation"))
+            ),
+            last_preview=FrozenJsonObject.from_mapping(preview)
+            if isinstance(preview, Mapping)
+            else FrozenJsonObject(),
         )
 
     def to_store(self) -> dict[str, object]:
         return {
             "last_evaluation_at": _iso(self.last_evaluation_at),
-            "last_preview": self.last_preview,
+            "last_preview": self.last_preview.to_mapping(),
         }
 
 
 @dataclass(slots=True)
 class AuditState:
-    manual_events: list[dict[str, Any]] = field(default_factory=list)
-    recovery_events: list[dict[str, Any]] = field(default_factory=list)
-    room_decisions: list[dict[str, Any]] = field(default_factory=list)
+    manual_events: list[ManualAuditRecord] = field(default_factory=list)
+    recovery_events: list[RecoveryAuditRecord] = field(default_factory=list)
+    room_decisions: list[RoomDecisionRecord] = field(default_factory=list)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> AuditState:
         return cls(
-            manual_events=_event_list(value.get("manual_events")),
-            recovery_events=_event_list(value.get("recovery_events")),
-            room_decisions=_event_list(value.get("room_decisions")),
+            manual_events=[
+                ManualAuditRecord.from_mapping(item)
+                for item in _sequence(value.get("manual_events", []))
+                if isinstance(item, Mapping)
+            ],
+            recovery_events=[
+                RecoveryAuditRecord.from_mapping(item)
+                for item in _sequence(value.get("recovery_events", []))
+                if isinstance(item, Mapping)
+            ],
+            room_decisions=[
+                RoomDecisionRecord.from_mapping(item)
+                for item in _sequence(value.get("room_decisions", []))
+                if isinstance(item, Mapping)
+            ],
         )
 
     def to_store(self) -> dict[str, object]:
-        return asdict(self)
+        return {
+            "manual_events": [item.to_store() for item in self.manual_events],
+            "recovery_events": [item.to_store() for item in self.recovery_events],
+            "room_decisions": [item.to_store() for item in self.room_decisions],
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1339,15 +1696,23 @@ class FloorPlanRectangle:
         data = _mapping(value, "floor-plan room rectangle")
         floor_id = data.get("floor_id")
         if not isinstance(floor_id, str) or not floor_id:
-            raise StateSchemaError("floor-plan rectangle floor_id must be a non-empty string")
+            raise StateSchemaError(
+                "floor-plan rectangle floor_id must be a non-empty string"
+            )
         try:
             return cls(
                 floor_id=floor_id,
                 x=floor_plan_integer(
-                    data.get("x"), "floor-plan rectangle x", 0, FLOOR_PLAN_MAX_GRID_COORDINATE
+                    data.get("x"),
+                    "floor-plan rectangle x",
+                    0,
+                    FLOOR_PLAN_MAX_GRID_COORDINATE,
                 ),
                 y=floor_plan_integer(
-                    data.get("y"), "floor-plan rectangle y", 0, FLOOR_PLAN_MAX_GRID_COORDINATE
+                    data.get("y"),
+                    "floor-plan rectangle y",
+                    0,
+                    FLOOR_PLAN_MAX_GRID_COORDINATE,
                 ),
                 width=floor_plan_integer(
                     data.get("width"),
@@ -1382,7 +1747,9 @@ class FloorPlanSensorMarker:
         data = _mapping(value, "floor-plan sensor marker")
         area_id = data.get("area_id")
         if not isinstance(area_id, str) or not area_id:
-            raise StateSchemaError("floor-plan sensor marker area_id must be a non-empty string")
+            raise StateSchemaError(
+                "floor-plan sensor marker area_id must be a non-empty string"
+            )
         try:
             return cls(
                 area_id=area_id,
@@ -1419,23 +1786,31 @@ class FloorPlanState:
         rooms: dict[str, FloorPlanRectangle] = {}
         for area_id, item in raw_rooms.items():
             if not isinstance(area_id, str) or not area_id:
-                raise StateSchemaError("floor-plan room keys must be non-empty area IDs")
+                raise StateSchemaError(
+                    "floor-plan room keys must be non-empty area IDs"
+                )
             rooms[area_id] = FloorPlanRectangle.from_mapping(item)
         sensors: dict[str, FloorPlanSensorMarker] = {}
         for registry_id, item in raw_sensors.items():
             if not isinstance(registry_id, str) or not registry_id:
-                raise StateSchemaError("floor-plan sensor keys must be non-empty registry IDs")
+                raise StateSchemaError(
+                    "floor-plan sensor keys must be non-empty registry IDs"
+                )
             sensors[registry_id] = FloorPlanSensorMarker.from_mapping(item)
         edges: set[tuple[str, str]] = set()
         for item in raw_edges:
             if not isinstance(item, list) or len(item) != 2:
-                raise StateSchemaError("each floor-plan edge must contain exactly two area IDs")
+                raise StateSchemaError(
+                    "each floor-plan edge must contain exactly two area IDs"
+                )
             try:
                 edge = normalize_floor_plan_edge(item[0], item[1])
             except ValueError as err:
                 raise StateSchemaError(str(err)) from err
             if edge in edges or item != [edge[0], edge[1]]:
-                raise StateSchemaError("floor-plan edges must be unique canonical area-ID pairs")
+                raise StateSchemaError(
+                    "floor-plan edges must be unique canonical area-ID pairs"
+                )
             edges.add(edge)
         return cls(revision=revision, rooms=rooms, edges=edges, sensors=sensors)
 
@@ -1468,7 +1843,12 @@ class SchedulerState:
     room_faults: dict[str, SchedulerFault] = field(default_factory=dict)
     occurrences: dict[str, CleaningOccurrence] = field(default_factory=dict)
     water_confirmations: dict[str, WaterConfirmation] = field(default_factory=dict)
-    water_notification_episodes: dict[str, WaterNotificationEpisode] = field(default_factory=dict)
+    water_notification_episodes: dict[str, WaterNotificationEpisode] = field(
+        default_factory=dict
+    )
+    unresolved_robot_references: dict[str, UnresolvedRobotReference] = field(
+        default_factory=dict
+    )
     first_scheduler_online_at: datetime | None = None
 
     @classmethod
@@ -1479,7 +1859,7 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v15 or convert older shapes, returning whether a save is required."""
+        """Load v16 or convert older shapes, returning whether a save is required."""
 
         if payload is None:
             return cls.create(entry_data), False
@@ -1487,16 +1867,300 @@ class SchedulerState:
         schema_version = data.get("schema_version")
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
-        if schema_version in {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}:
+        if schema_version in {
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+        }:
             return cls._from_versioned(data, entry_data), True
         if schema_version != SCHEMA_VERSION:
             raise StateSchemaError(
                 f"unsupported scheduler state schema: {schema_version!r}"
             )
+        cls._validate_current_schema(data)
         return cls._from_versioned(data, entry_data), False
 
     @classmethod
-    def _from_v1(cls, data: Mapping[str, object], entry_data: Mapping[str, object]) -> SchedulerState:
+    def _validate_current_schema(cls, data: Mapping[str, object]) -> None:
+        """Reject malformed schema-16 records instead of silently dropping them."""
+
+        if data.get("schema_version") != SCHEMA_VERSION:
+            raise StateSchemaError("schema_version must be 16")
+
+        room_settings = _mapping(data.get("room_settings"), "room_settings")
+        robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
+        room_history = _mapping(data.get("room_history"), "room_history")
+        active_jobs = _mapping(data.get("active_jobs"), "active_jobs")
+        robot_holds = _mapping(data.get("robot_holds"), "robot_holds")
+        robot_cooldowns = _mapping(data.get("robot_cooldowns"), "robot_cooldowns")
+        robot_faults = _mapping(data.get("robot_faults"), "robot_faults")
+        room_faults = _mapping(data.get("room_faults"), "room_faults")
+        occurrences = _mapping(data.get("occurrences"), "occurrences")
+        confirmations = _mapping(data.get("water_confirmations"), "water_confirmations")
+        episodes = _mapping(
+            data.get("water_notification_episodes"),
+            "water_notification_episodes",
+        )
+        aliases = _mapping(data.get("robot_entity_aliases"), "robot_entity_aliases")
+        unresolved = _mapping(
+            data.get("unresolved_robot_references"),
+            "unresolved_robot_references",
+        )
+        _mapping(data.get("global"), "global")
+        FloorPlanState.from_mapping(_mapping(data.get("floor_plan"), "floor_plan"))
+        audit = _mapping(data.get("audit"), "audit")
+        evaluation = _mapping(data.get("evaluation"), "evaluation")
+
+        for name, section in (
+            ("room_settings", room_settings),
+            ("robot_settings", robot_settings),
+            ("room_history", room_history),
+            ("active_jobs", active_jobs),
+            ("robot_holds", robot_holds),
+            ("robot_cooldowns", robot_cooldowns),
+            ("robot_faults", robot_faults),
+            ("room_faults", room_faults),
+            ("occurrences", occurrences),
+            ("water_confirmations", confirmations),
+            ("water_notification_episodes", episodes),
+            ("robot_entity_aliases", aliases),
+            ("unresolved_robot_references", unresolved),
+        ):
+            if any(not isinstance(key, str) or not key for key in section):
+                raise StateSchemaError(f"{name} keys must be non-empty strings")
+
+        def require_records(
+            name: str,
+            section: Mapping[str, object],
+            parser: Callable[[Mapping[str, object]], object | None],
+            *,
+            allow_none: bool = False,
+        ) -> None:
+            for key, value in section.items():
+                if value is None and allow_none:
+                    continue
+                if not isinstance(value, Mapping):
+                    raise StateSchemaError(f"{name}.{key} must be an object")
+                if parser(value) is None:
+                    raise StateSchemaError(f"{name}.{key} is invalid")
+
+        require_records(
+            "room_settings",
+            room_settings,
+            lambda value: RoomSettings.from_mapping(
+                value, RoomSettings.defaults(False)
+            ),
+        )
+        require_records(
+            "robot_settings",
+            robot_settings,
+            lambda value: RobotSettings.from_mapping(
+                value, RobotSettings.defaults(False)
+            ),
+        )
+        require_records("room_history", room_history, RoomHistory.from_mapping)
+        require_records(
+            "active_jobs",
+            active_jobs,
+            ActiveJob.from_mapping,
+            allow_none=True,
+        )
+        require_records("robot_holds", robot_holds, RobotHold.from_mapping)
+        require_records("robot_cooldowns", robot_cooldowns, RobotCooldown.from_mapping)
+        require_records("robot_faults", robot_faults, SchedulerFault.from_mapping)
+        require_records("room_faults", room_faults, SchedulerFault.from_mapping)
+        require_records("occurrences", occurrences, CleaningOccurrence.from_mapping)
+        require_records(
+            "water_confirmations", confirmations, WaterConfirmation.from_mapping
+        )
+        require_records(
+            "water_notification_episodes",
+            episodes,
+            WaterNotificationEpisode.from_mapping,
+        )
+        require_records(
+            "unresolved_robot_references",
+            unresolved,
+            UnresolvedRobotReference.from_mapping,
+        )
+
+        def require_enum(
+            path: str,
+            value: object,
+            enum_type: type[CleaningOperation]
+            | type[CleaningProgram]
+            | type[JobPhase]
+            | type[JobSource]
+            | type[OccurrenceSource]
+            | type[StageStatus],
+            *,
+            optional: bool = False,
+        ) -> None:
+            if value is None and optional:
+                return
+            if not isinstance(value, str):
+                raise StateSchemaError(f"{path} is invalid")
+            try:
+                enum_type(value)
+            except (TypeError, ValueError) as err:
+                raise StateSchemaError(f"{path} is invalid") from err
+
+        for key, value in room_settings.items():
+            record = _mapping(value, f"room_settings.{key}")
+            require_enum(
+                f"room_settings.{key}.cleaning_program",
+                record.get("cleaning_program"),
+                CleaningProgram,
+                optional=True,
+            )
+        for key, value in robot_settings.items():
+            record = _mapping(value, f"robot_settings.{key}")
+            require_enum(
+                f"robot_settings.{key}.cleaning_program",
+                record.get("cleaning_program"),
+                CleaningProgram,
+                optional=True,
+            )
+        for key, value in active_jobs.items():
+            if value is None:
+                continue
+            record = _mapping(value, f"active_jobs.{key}")
+            require_enum(
+                f"active_jobs.{key}.operation",
+                record.get("operation"),
+                CleaningOperation,
+            )
+            require_enum(
+                f"active_jobs.{key}.phase",
+                record.get("phase"),
+                JobPhase,
+            )
+            require_enum(
+                f"active_jobs.{key}.source",
+                record.get("source"),
+                JobSource,
+            )
+            requested = record.get("requested_operations", [])
+            if not isinstance(requested, list):
+                raise StateSchemaError(
+                    f"active_jobs.{key}.requested_operations must be an array"
+                )
+            for index, operation in enumerate(requested):
+                require_enum(
+                    f"active_jobs.{key}.requested_operations.{index}",
+                    operation,
+                    CleaningOperation,
+                )
+        for key, value in occurrences.items():
+            record = _mapping(value, f"occurrences.{key}")
+            require_enum(
+                f"occurrences.{key}.program",
+                record.get("program"),
+                CleaningProgram,
+            )
+            require_enum(
+                f"occurrences.{key}.source",
+                record.get("source"),
+                OccurrenceSource,
+            )
+            stages = record.get("stages")
+            if not isinstance(stages, list) or not stages:
+                raise StateSchemaError(f"occurrences.{key}.stages is invalid")
+            for index, raw_stage in enumerate(stages):
+                stage = _mapping(
+                    raw_stage,
+                    f"occurrences.{key}.stages.{index}",
+                )
+                require_enum(
+                    f"occurrences.{key}.stages.{index}.operation",
+                    stage.get("operation"),
+                    CleaningOperation,
+                )
+                require_enum(
+                    f"occurrences.{key}.stages.{index}.status",
+                    stage.get("status"),
+                    StageStatus,
+                )
+        if any(not isinstance(alias, str) for alias in aliases.values()):
+            raise StateSchemaError("robot_entity_aliases values must be strings")
+        audit_sections: dict[str, list[object]] = {}
+        for name in ("manual_events", "recovery_events", "room_decisions"):
+            values = audit.get(name)
+            if not isinstance(values, list) or any(
+                not isinstance(value, Mapping) for value in values
+            ):
+                raise StateSchemaError(f"audit.{name} must contain objects")
+            audit_sections[name] = values
+        for index, value in enumerate(audit_sections["manual_events"]):
+            record = _mapping(value, f"audit.manual_events.{index}")
+            if "robot" in record:
+                raise StateSchemaError(
+                    f"audit.manual_events.{index}.robot is a legacy entity ID"
+                )
+            robot_registry_id = record.get("robot_registry_id")
+            if robot_registry_id is not None and (
+                not isinstance(robot_registry_id, str) or not robot_registry_id
+            ):
+                raise StateSchemaError(
+                    f"audit.manual_events.{index}.robot_registry_id is invalid"
+                )
+            operations = record.get("operations")
+            if not isinstance(operations, list):
+                raise StateSchemaError(
+                    f"audit.manual_events.{index}.operations must be an array"
+                )
+            for operation_index, operation in enumerate(operations):
+                require_enum(
+                    f"audit.manual_events.{index}.operations.{operation_index}",
+                    operation,
+                    CleaningOperation,
+                )
+            ManualAuditRecord.from_mapping(record)
+        for index, value in enumerate(audit_sections["recovery_events"]):
+            record = _mapping(value, f"audit.recovery_events.{index}")
+            if "robot" in record:
+                raise StateSchemaError(
+                    f"audit.recovery_events.{index}.robot is a legacy entity ID"
+                )
+            robot_registry_id = record.get("robot_registry_id")
+            if robot_registry_id is not None and (
+                not isinstance(robot_registry_id, str) or not robot_registry_id
+            ):
+                raise StateSchemaError(
+                    f"audit.recovery_events.{index}.robot_registry_id is invalid"
+                )
+            RecoveryAuditRecord.from_mapping(record)
+        for index, value in enumerate(audit_sections["room_decisions"]):
+            RoomDecisionRecord.from_mapping(
+                _mapping(value, f"audit.room_decisions.{index}")
+            )
+        for key, value in confirmations.items():
+            record = _mapping(value, f"water_confirmations.{key}")
+            if record.get("status") not in {
+                "pending",
+                "confirmed",
+                "cancelled",
+                "expired",
+            }:
+                raise StateSchemaError(f"water_confirmations.{key}.status is invalid")
+        if not isinstance(evaluation.get("last_preview"), Mapping):
+            raise StateSchemaError("evaluation.last_preview must be an object")
+
+    @classmethod
+    def _from_v1(
+        cls, data: Mapping[str, object], entry_data: Mapping[str, object]
+    ) -> SchedulerState:
         defaults = GlobalSettings.from_entry(entry_data)
         global_settings = GlobalSettings.from_mapping(data, defaults)
         settings = _mapping_or_empty(data.get("settings"))
@@ -1531,19 +2195,25 @@ class SchedulerState:
                 if isinstance(area_id, str) and isinstance(value, Mapping)
             },
             robot_settings={
-                entity_id: RobotSettings.from_mapping(value, RobotSettings.defaults(False))
+                entity_id: RobotSettings.from_mapping(
+                    value, RobotSettings.defaults(False)
+                )
                 for entity_id, value in raw_robot_settings.items()
                 if isinstance(entity_id, str) and isinstance(value, Mapping)
             },
             room_history=rooms,
             active_jobs={
-                entity_id: ActiveJob.from_mapping(value) if isinstance(value, Mapping) else None
+                entity_id: ActiveJob.from_mapping(value)
+                if isinstance(value, Mapping)
+                else None
                 for entity_id, value in _mapping_or_empty(data.get("active")).items()
                 if isinstance(entity_id, str)
             },
             robot_holds={
                 entity_id: hold
-                for entity_id, value in _mapping_or_empty(data.get("robot_holds")).items()
+                for entity_id, value in _mapping_or_empty(
+                    data.get("robot_holds")
+                ).items()
                 if isinstance(entity_id, str)
                 and isinstance(value, Mapping)
                 and (hold := RobotHold.from_mapping(value)) is not None
@@ -1557,11 +2227,7 @@ class SchedulerState:
                 and isinstance(value, Mapping)
                 and (cooldown := RobotCooldown.from_mapping(value)) is not None
             },
-            audit=AuditState(
-                manual_events=_event_list(data.get("manual_events")),
-                recovery_events=_event_list(data.get("recovery_events")),
-                room_decisions=_event_list(data.get("room_decisions")),
-            ),
+            audit=AuditState.from_mapping(data),
             evaluation=EvaluationState.from_mapping(data),
             robot_faults={
                 registry_id: fault
@@ -1570,7 +2236,8 @@ class SchedulerState:
                 and isinstance(value, Mapping)
                 and (fault := SchedulerFault.from_mapping(value)) is not None
                 and fault.robot_registry_id == registry_id
-            } or (
+            }
+            or (
                 {legacy_fault.robot_registry_id: legacy_fault}
                 if legacy_fault is not None
                 else {}
@@ -1586,7 +2253,8 @@ class SchedulerState:
             occurrences={
                 area_id: occurrence
                 for area_id, value in raw_occurrences.items()
-                if isinstance(area_id, str) and isinstance(value, Mapping)
+                if isinstance(area_id, str)
+                and isinstance(value, Mapping)
                 and (occurrence := CleaningOccurrence.from_mapping(value)) is not None
             },
             robot_entity_aliases={
@@ -1599,14 +2267,17 @@ class SchedulerState:
             water_confirmations={
                 occurrence_id: confirmation
                 for occurrence_id, value in raw_confirmations.items()
-                if isinstance(occurrence_id, str) and isinstance(value, Mapping)
+                if isinstance(occurrence_id, str)
+                and isinstance(value, Mapping)
                 and (confirmation := WaterConfirmation.from_mapping(value)) is not None
             },
             water_notification_episodes={
                 area_id: episode
                 for area_id, value in raw_episodes.items()
-                if isinstance(area_id, str) and isinstance(value, Mapping)
-                and (episode := WaterNotificationEpisode.from_mapping(value)) is not None
+                if isinstance(area_id, str)
+                and isinstance(value, Mapping)
+                and (episode := WaterNotificationEpisode.from_mapping(value))
+                is not None
             },
             first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
         )
@@ -1619,14 +2290,23 @@ class SchedulerState:
         raw_global = _mapping(data.get("global"), "global")
         raw_floor_plan = (
             _mapping(data.get("floor_plan"), "floor_plan")
-            if data.get("schema_version") == SCHEMA_VERSION
+            if data.get("schema_version") in {15, SCHEMA_VERSION}
             else None
         )
         raw_room_settings = _mapping(data.get("room_settings"), "room_settings")
         raw_robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
         raw_robot_aliases = (
             _mapping(data.get("robot_entity_aliases"), "robot_entity_aliases")
-            if data.get("schema_version") in {10, 11, 12, 13, SCHEMA_VERSION}
+            if data.get("schema_version")
+            in {
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                SCHEMA_VERSION,
+            }
             else _mapping_or_empty(data.get("robot_entity_aliases"))
         )
         raw_history = _mapping(data.get("room_history"), "room_history")
@@ -1638,7 +2318,15 @@ class SchedulerState:
         raw_occurrences = _mapping_or_empty(data.get("occurrences"))
         raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
-        if data.get("schema_version") in {10, 11, 12, 13, SCHEMA_VERSION}:
+        if data.get("schema_version") in {
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            SCHEMA_VERSION,
+        }:
             raw_robot_faults = _mapping(data.get("robot_faults"), "robot_faults")
             raw_room_faults = _mapping(data.get("room_faults"), "room_faults")
         else:
@@ -1653,6 +2341,14 @@ class SchedulerState:
                 else {}
             )
             raw_room_faults = {}
+        raw_unresolved_references = (
+            _mapping(
+                data.get("unresolved_robot_references"),
+                "unresolved_robot_references",
+            )
+            if data.get("schema_version") == SCHEMA_VERSION
+            else {}
+        )
         return cls(
             global_settings=GlobalSettings.from_mapping(raw_global, defaults),
             floor_plan=(
@@ -1666,7 +2362,9 @@ class SchedulerState:
                 if isinstance(area_id, str) and isinstance(value, Mapping)
             },
             robot_settings={
-                entity_id: RobotSettings.from_mapping(value, RobotSettings.defaults(False))
+                entity_id: RobotSettings.from_mapping(
+                    value, RobotSettings.defaults(False)
+                )
                 for entity_id, value in raw_robot_settings.items()
                 if isinstance(entity_id, str) and isinstance(value, Mapping)
             },
@@ -1676,7 +2374,9 @@ class SchedulerState:
                 if isinstance(area_id, str) and isinstance(value, Mapping)
             },
             active_jobs={
-                entity_id: ActiveJob.from_mapping(value) if isinstance(value, Mapping) else None
+                entity_id: ActiveJob.from_mapping(value)
+                if isinstance(value, Mapping)
+                else None
                 for entity_id, value in raw_active.items()
                 if isinstance(entity_id, str)
             },
@@ -1715,7 +2415,8 @@ class SchedulerState:
             occurrences={
                 area_id: occurrence
                 for area_id, value in raw_occurrences.items()
-                if isinstance(area_id, str) and isinstance(value, Mapping)
+                if isinstance(area_id, str)
+                and isinstance(value, Mapping)
                 and (occurrence := CleaningOccurrence.from_mapping(value)) is not None
             },
             robot_entity_aliases={
@@ -1726,26 +2427,47 @@ class SchedulerState:
             water_confirmations={
                 occurrence_id: confirmation
                 for occurrence_id, value in raw_confirmations.items()
-                if isinstance(occurrence_id, str) and isinstance(value, Mapping)
+                if isinstance(occurrence_id, str)
+                and isinstance(value, Mapping)
                 and (confirmation := WaterConfirmation.from_mapping(value)) is not None
             },
             water_notification_episodes={
                 area_id: episode
                 for area_id, value in raw_episodes.items()
-                if isinstance(area_id, str) and isinstance(value, Mapping)
-                and (episode := WaterNotificationEpisode.from_mapping(value)) is not None
+                if isinstance(area_id, str)
+                and isinstance(value, Mapping)
+                and (episode := WaterNotificationEpisode.from_mapping(value))
+                is not None
+            },
+            unresolved_robot_references={
+                legacy_key: reference
+                for legacy_key, value in raw_unresolved_references.items()
+                if isinstance(legacy_key, str)
+                and isinstance(value, Mapping)
+                and (reference := UnresolvedRobotReference.from_mapping(value))
+                is not None
+                and reference.legacy_key == legacy_key
             },
             first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
         )
 
-    def ensure_room(self, area_id: str, is_bedroom: bool) -> tuple[RoomSettings, RoomHistory]:
-        settings = self.room_settings.setdefault(area_id, RoomSettings.defaults(is_bedroom))
+    def ensure_room(
+        self, area_id: str, is_bedroom: bool
+    ) -> tuple[RoomSettings, RoomHistory]:
+        settings = self.room_settings.setdefault(
+            area_id, RoomSettings.defaults(is_bedroom)
+        )
         history = self.room_history.setdefault(area_id, RoomHistory())
         return settings, history
 
-    def ensure_robot(self, entity_id: str, supports_mopping: bool) -> RobotSettings:
-        self.active_jobs.setdefault(entity_id, None)
-        return self.robot_settings.setdefault(entity_id, RobotSettings.defaults(supports_mopping))
+    def ensure_robot(self, registry_id: str, supports_mopping: bool) -> RobotSettings:
+        """Ensure state exists under a durable entity-registry identity."""
+
+        self.active_jobs.setdefault(registry_id, None)
+        return self.robot_settings.setdefault(
+            registry_id,
+            RobotSettings.defaults(supports_mopping),
+        )
 
     def to_store(self) -> dict[str, object]:
         return {
@@ -1761,14 +2483,16 @@ class SchedulerState:
                 for entity_id, settings in self.robot_settings.items()
             },
             "room_history": {
-                area_id: history.to_store() for area_id, history in self.room_history.items()
+                area_id: history.to_store()
+                for area_id, history in self.room_history.items()
             },
             "active_jobs": {
                 entity_id: job.to_store() if job else None
                 for entity_id, job in self.active_jobs.items()
             },
             "robot_holds": {
-                entity_id: hold.to_store() for entity_id, hold in self.robot_holds.items()
+                entity_id: hold.to_store()
+                for entity_id, hold in self.robot_holds.items()
             },
             "robot_cooldowns": {
                 entity_id: cooldown.to_store()
@@ -1781,8 +2505,7 @@ class SchedulerState:
                 for registry_id, fault in self.robot_faults.items()
             },
             "room_faults": {
-                area_id: fault.to_store()
-                for area_id, fault in self.room_faults.items()
+                area_id: fault.to_store() for area_id, fault in self.room_faults.items()
             },
             "occurrences": {
                 area_id: occurrence.to_store()
@@ -1797,113 +2520,152 @@ class SchedulerState:
                 area_id: episode.to_store()
                 for area_id, episode in self.water_notification_episodes.items()
             },
+            "unresolved_robot_references": {
+                legacy_key: reference.to_store()
+                for legacy_key, reference in self.unresolved_robot_references.items()
+            },
             "first_scheduler_online_at": _iso(self.first_scheduler_online_at),
         }
 
-    def to_runtime_data(self) -> dict[str, Any]:
-        """Expose a temporary runtime view while scheduler logic is extracted.
+    def encode(self) -> dict[str, object]:
+        """Serialize and validate a complete schema-16 payload atomically."""
 
-        The view is intentionally confined to the coordinator internals.  All
-        persistent I/O stays on the typed v15 codec, and platform entities use
-        coordinator accessors instead of this compatibility representation.
-        """
+        payload = self.to_store()
+        self._validate_current_schema(payload)
+        return payload
 
-        return {
-            "version": SCHEMA_VERSION,
-            "floor_plan": self.floor_plan.to_store(),
-            "observe_only": self.global_settings.observe_only,
-            "party_mode": self.global_settings.party_mode,
-            "forecast_confidence": self.global_settings.forecast_confidence,
-            "hall_start": self.global_settings.hall_start,
-            "hall_end": self.global_settings.hall_end,
-            "unresolved_start": self.global_settings.unresolved_start,
-            "unresolved_end": self.global_settings.unresolved_end,
-            "settings": {
-                "rooms": {
-                    area_id: settings.to_runtime()
-                    for area_id, settings in self.room_settings.items()
-                },
-                "robots": {
-                    entity_id: settings.to_runtime()
-                    for entity_id, settings in self.robot_settings.items()
-                },
-            },
-            "rooms": {
-                area_id: {
-                    "cleaning": _iso(history.cleaning_completed_at),
-                    "vacuum": _iso(history.vacuum_completed_at),
-                    "mop": _iso(history.mop_completed_at),
-                    "defer": {
-                        operation: _iso(
-                            deferred.until
-                            if isinstance(deferred, Deferral)
-                            else deferred
-                        )
-                        for operation, deferred in history.deferrals.items()
-                    },
-                    "deferral_meta": {
-                        operation: (
-                            deferred.to_store()
-                            if isinstance(deferred, Deferral)
-                            else Deferral(until=deferred).to_store()
-                        )
-                        for operation, deferred in history.deferrals.items()
-                    },
-                    "occupancy": history.occupancy,
-                    "source": history.occupancy_source,
-                    "unavailable_radars": history.unavailable_radars,
-                    "unoccupied_since": _iso(history.unoccupied_since),
-                    "samples": [sample.to_store() for sample in history.occupancy_samples],
-                    "source_fingerprint": history.source_fingerprint,
-                    "map_status": history.map_status,
-                    "map_error": history.map_error,
-                    "duration_samples": [sample.to_store() for sample in history.duration_samples],
-                    "last_stage_outcome": history.last_stage_outcome,
-                    "last_stage_reason": history.last_stage_reason,
-                    "last_stage_at": _iso(history.last_stage_at),
-                    "last_stage_summary": history.last_stage_summary,
-                }
-                for area_id, history in self.room_history.items()
-            },
-            "active": {
-                entity_id: job.to_store() if job else None
-                for entity_id, job in self.active_jobs.items()
-            },
-            "robot_holds": {
-                entity_id: hold.to_store() for entity_id, hold in self.robot_holds.items()
-            },
-            "robot_cooldowns": {
-                entity_id: cooldown.to_store()
-                for entity_id, cooldown in self.robot_cooldowns.items()
-            },
-            "manual_events": self.audit.manual_events,
-            "recovery_events": self.audit.recovery_events,
-            "last_evaluation": _iso(self.evaluation.last_evaluation_at),
-            "last_preview": self.evaluation.last_preview,
-            "robot_faults": {
-                registry_id: fault.to_store()
-                for registry_id, fault in self.robot_faults.items()
-            },
-            "room_faults": {
-                area_id: fault.to_store()
-                for area_id, fault in self.room_faults.items()
-            },
-            "occurrences": {
-                area_id: occurrence.to_store()
-                for area_id, occurrence in self.occurrences.items()
-            },
-            "robot_entity_aliases": dict(self.robot_entity_aliases),
-            "water_confirmations": {
-                occurrence_id: confirmation.to_store()
-                for occurrence_id, confirmation in self.water_confirmations.items()
-            },
-            "water_notification_episodes": {
-                area_id: episode.to_store()
-                for area_id, episode in self.water_notification_episodes.items()
-            },
-            "first_scheduler_online_at": _iso(self.first_scheduler_online_at),
-            "room_decisions": self.audit.room_decisions,
+
+def migrate_robot_identity(
+    state: SchedulerState,
+    current_entities: Mapping[str, str],
+    prior_entities: Mapping[str, str] | None = None,
+) -> bool:
+    """Bind every durable robot-owned record to an entity-registry ID.
+
+    Entity IDs are accepted only as legacy aliases or live lookup values. The
+    returned aggregate always keeps settings, jobs, holds, cooldowns, samples,
+    and occurrences keyed by stable registry identity.
+    """
+
+    changed = False
+    prior_entities = prior_entities or {}
+    key_to_registry = {
+        entity_id: registry_id for registry_id, entity_id in current_entities.items()
+    }
+    key_to_registry.update(
+        {
+            entity_id: registry_id
+            for registry_id, entity_id in prior_entities.items()
+            if registry_id in current_entities
         }
+    )
+    for registry_id, alias in state.robot_entity_aliases.items():
+        if registry_id in current_entities:
+            key_to_registry[alias] = registry_id
+    for occurrence in state.occurrences.values():
+        if (
+            occurrence.robot_registry_id in current_entities
+            and occurrence.robot_entity_id
+        ):
+            key_to_registry[occurrence.robot_entity_id] = occurrence.robot_registry_id
+
+    for registry_id, entity_id in current_entities.items():
+        if registry_id not in state.robot_entity_aliases:
+            legacy_keys = [
+                key
+                for key, mapped_registry in key_to_registry.items()
+                if mapped_registry == registry_id
+                and key != entity_id
+                and key in state.robot_settings
+            ]
+            state.robot_entity_aliases[registry_id] = (
+                legacy_keys[0] if legacy_keys else entity_id
+            )
+            changed = True
+        key_to_registry[state.robot_entity_aliases[registry_id]] = registry_id
+
+    def rekey(section: dict[str, Any]) -> None:
+        nonlocal changed
+        rebound: dict[str, Any] = {}
+        for key, value in section.items():
+            registry_id = (
+                key if key in current_entities else key_to_registry.get(key, key)
+            )
+            if registry_id not in rebound or rebound[registry_id] is None:
+                rebound[registry_id] = value
+            if registry_id != key:
+                changed = True
+        section.clear()
+        section.update(rebound)
+
+    rekey(state.robot_settings)
+    rekey(state.active_jobs)
+    rekey(state.robot_holds)
+    rekey(state.robot_cooldowns)
+
+    for history in state.room_history.values():
+        for sample in history.duration_samples:
+            sample_registry_id = key_to_registry.get(sample.robot_registry_id)
+            if (
+                sample_registry_id is not None
+                and sample.robot_registry_id != sample_registry_id
+            ):
+                sample.robot_registry_id = sample_registry_id
+                changed = True
+
+    for occurrence in state.occurrences.values():
+        occurrence_registry_id = (
+            occurrence.robot_registry_id
+            if occurrence.robot_registry_id in current_entities
+            else key_to_registry.get(occurrence.robot_registry_id)
+            or (
+                key_to_registry.get(occurrence.robot_entity_id)
+                if occurrence.robot_entity_id
+                else None
+            )
+        )
+        if occurrence_registry_id is None:
+            continue
+        if occurrence.robot_registry_id != occurrence_registry_id:
+            occurrence.robot_registry_id = occurrence_registry_id
+            changed = True
+        current_entity_id = current_entities[occurrence_registry_id]
+        if occurrence.robot_entity_id != current_entity_id:
+            occurrence.robot_entity_id = current_entity_id
+            changed = True
+
+    audit_identity_changed = any(
+        record.robot_registry_id in key_to_registry
+        and key_to_registry[record.robot_registry_id] != record.robot_registry_id
+        for record in state.audit.manual_events
+        if record.robot_registry_id
+    ) or any(
+        record.robot_registry_id in key_to_registry
+        and key_to_registry[record.robot_registry_id] != record.robot_registry_id
+        for record in state.audit.recovery_events
+        if record.robot_registry_id
+    )
+
+    def migrate_audit_record[T: (ManualAuditRecord, RecoveryAuditRecord)](
+        record: T,
+    ) -> T:
+        legacy_key = record.robot_registry_id
+        if not legacy_key:
+            return record
+        audit_registry_id = key_to_registry.get(legacy_key)
+        if audit_registry_id is None or audit_registry_id == legacy_key:
+            return record
+        return replace(record, robot_registry_id=audit_registry_id)
+
+    state.audit.manual_events = [
+        migrate_audit_record(record) for record in state.audit.manual_events
+    ]
+    state.audit.recovery_events = [
+        migrate_audit_record(record) for record in state.audit.recovery_events
+    ]
+    if audit_identity_changed:
+        changed = True
+    return changed
 
 
 def _mapping_or_empty(value: object) -> Mapping[str, object]:
@@ -1913,7 +2675,9 @@ def _mapping_or_empty(value: object) -> Mapping[str, object]:
 def _optional_number(value: object) -> float | None:
     if value is None:
         return None
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return None
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None

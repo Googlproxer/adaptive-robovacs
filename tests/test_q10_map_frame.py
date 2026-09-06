@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import sys
 import unittest
+from pathlib import Path
 
-
-MODULE_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "q10_map_frame.py"
-SPEC = importlib.util.spec_from_file_location("adaptive_robovacs_q10_map_frame", MODULE_PATH)
+MODULE_PATH = (
+    Path(__file__).parents[1]
+    / "custom_components"
+    / "adaptive_robovacs"
+    / "q10_map_frame.py"
+)
+SPEC = importlib.util.spec_from_file_location(
+    "adaptive_robovacs_q10_map_frame", MODULE_PATH
+)
 assert SPEC and SPEC.loader
 frame = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = frame
@@ -48,7 +54,9 @@ def _packet(
     header[2:6] = (1234).to_bytes(4, "big")
     header[7:9] = width.to_bytes(2, "big")
     header[9:11] = (2).to_bytes(2, "big")
-    header[25:27] = (len(layout) if opaque_header is None else opaque_header).to_bytes(2, "big")
+    header[25:27] = (len(layout) if opaque_header is None else opaque_header).to_bytes(
+        2, "big"
+    )
     header[27:29] = len(compressed).to_bytes(2, "big")
     return bytes(header) + compressed
 
@@ -80,14 +88,78 @@ class Q10MapFrameTests(unittest.TestCase):
             frame._read_lz4_block(b"\x00\x01\x00", 4)
 
     def test_lz4_decoder_accepts_a_overlapping_match(self) -> None:
-        self.assertEqual(
-            frame._read_lz4_block(b"\x10A\x01\x00", 5), b"AAAAA"
-        )
+        self.assertEqual(frame._read_lz4_block(b"\x10A\x01\x00", 5), b"AAAAA")
 
     def test_packet_limit_is_enforced_before_decoding(self) -> None:
         oversized = _packet() + b"\x00" * frame.MAX_PACKET_BYTES
         with self.assertRaises(frame.Q10MapFrameError):
             frame.parse_q10_map_frame(oversized)
+
+    def test_integer_and_lz4_bounds_reject_every_truncated_shape(self) -> None:
+        for function in (frame._u16be, frame._u16le):
+            with (
+                self.subTest(function=function.__name__),
+                self.assertRaises(frame.Q10MapFrameError),
+            ):
+                function(b"\x01", 0)
+
+        cases = (
+            (b"", -1),
+            (b"", frame.MAX_GRID_CELLS + 64 * 1024 + 1),
+            (b"\xf0", None),
+            (b"\x20A", None),
+            (b"\x20AB", 1),
+            (b"\x00\x01", None),
+            (b"\x1fA\x01\x00", None),
+            (b"\x10A\x01\x00", 4),
+            (b"\x10A", 2),
+        )
+        for payload, expected in cases:
+            with (
+                self.subTest(payload=payload, expected=expected),
+                self.assertRaises(frame.Q10MapFrameError),
+            ):
+                frame._read_lz4_block(payload, expected)
+        self.assertEqual(frame._read_lz4_block(b"\x1fA\x01\x00\x00", 20), b"A" * 20)
+
+    def test_room_metadata_is_optional_bounded_and_has_stable_fallback_names(
+        self,
+    ) -> None:
+        self.assertEqual(frame._parse_rooms(b"", b""), ())
+        self.assertEqual(frame._parse_rooms(b"\x00\x01", b""), ())
+        with self.assertRaisesRegex(frame.Q10MapFrameError, "truncated"):
+            frame._parse_rooms(b"\x01\x01", b"")
+        record = bytearray(47)
+        record[0:2] = (2).to_bytes(2, "big")
+        rooms = frame._parse_rooms(b"\x01\x01" + bytes(record), b"\x08")
+        self.assertEqual(rooms[0].name, "Room 2")
+        self.assertEqual(rooms[0].pixel_count, 1)
+
+    def test_packet_validation_rejects_types_dimensions_and_truncated_layout(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(frame.Q10MapFrameError, "not bytes"):
+            frame.parse_q10_map_frame(bytearray(_packet()))
+        with self.assertRaisesRegex(frame.Q10MapFrameError, "dimensions"):
+            frame.parse_q10_map_frame(_packet(width=0))
+        packet = bytearray(_packet())
+        packet[27:29] = (65535).to_bytes(2, "big")
+        with self.assertRaisesRegex(frame.Q10MapFrameError, "compressed layout"):
+            frame.parse_q10_map_frame(bytes(packet))
+
+    def test_preview_palette_covers_walls_rooms_and_unknown_pixels(self) -> None:
+        value = frame.Q10MapFrame(
+            map_id="1",
+            width=5,
+            height=1,
+            grid=bytes((0, 4, 1, 243, 249)),
+            rooms=(),
+            packet=b"packet",
+            sha256="digest",
+        )
+        preview = frame.render_q10_map_preview(value)
+        self.assertTrue(preview.startswith(b"\x89PNG"))
+        self.assertIn(b"IHDR", preview)
 
 
 if __name__ == "__main__":

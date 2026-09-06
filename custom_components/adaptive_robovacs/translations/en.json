@@ -105,6 +105,14 @@
           "recheck_failed": "No compatible vacuum can currently execute this room's complete cleaning profile."
         }
       }
+    },
+    "storage_unsafe": {
+      "title": "Adaptive RoboVacs storage needs attention",
+      "description": "Adaptive RoboVacs could not safely validate its saved scheduler state ({reason}). Dispatch is disabled and the original Store has not been overwritten. Back up the Store, repair or remove only this integration's damaged data, then reload the integration."
+    },
+    "unresolved_robot_reference": {
+      "title": "Adaptive RoboVacs cannot identify a saved vacuum",
+      "description": "Saved scheduler records for {legacy_key} cannot be matched safely to a current vacuum registry entry. They have been retained but cannot dispatch. Restore the original entity/registry association or re-add that vacuum, then reload the integration."
     }
   }
 }

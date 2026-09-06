@@ -137,7 +137,8 @@ These actions are explicit user overrides. They bypass the room cadence,
 desired window, occupancy and vacancy forecast, bedroom-transit rules,
 configured room/robot enablement, battery threshold, scheduler holds, and the
 global scheduler halt. A discovered compatible robot on the room's floor must
-be physically docked. Party Mode and observe-only mode remain non-bypassable;
+be physically docked. Party Mode, observe-only mode, storage-safe mode, startup
+settling, and shutdown remain non-bypassable;
 the selected adapter must still be able to address the room and apply its
 profile. A blocked press is rejected immediately and is not retained as work
 that can start later.

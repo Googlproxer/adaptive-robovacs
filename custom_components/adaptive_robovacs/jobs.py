@@ -1,259 +1,372 @@
-"""Durable active-job mutations for the Adaptive RoboVacs scheduler."""
+"""Pure active-job lifecycle and recovery reducers.
+
+The reducers in this module do not import Home Assistant and never mutate an
+application or a supplied state object.  The application applies the returned
+effects inside its serialized transaction.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
 
-from .models import manual_deferral
-
-if TYPE_CHECKING:
-    from .coordinator import AdaptiveRoboVacCoordinator
+from .models import CleaningOperation, StageStatus, manual_deferral
+from .state import (
+    ActiveJob,
+    CleaningOccurrence,
+    CleaningStage,
+    DurationSample,
+    RobotCooldown,
+    SchedulerFault,
+)
 
 CANCELLATION_COOLDOWN = timedelta(minutes=15)
 
-def _iso(value: datetime) -> str:
-    return value.isoformat()
+
+def can_refresh_pending_occurrence_profile(
+    occurrence: CleaningOccurrence | None,
+    stage: CleaningStage | None,
+    robot_state: str | None,
+    has_active_job: bool,
+) -> bool:
+    """Allow profile refresh only for an unstarted scheduled docked stage."""
+
+    return bool(
+        occurrence
+        and occurrence.source == "scheduler"
+        and stage
+        and stage.status == "pending"
+        and stage.started_at is None
+        and robot_state == "docked"
+        and not has_active_job
+    )
 
 
-class JobLifecycle:
-    """Apply durable job and audit changes through a coordinator-owned state view."""
+def should_assume_native_app_clean(
+    robot_state: str | None,
+    scheduler_fault: SchedulerFault | None,
+    robot_registry_id: str,
+    active: ActiveJob | None,
+) -> bool:
+    """Keep an uncertain physical clean outside scheduler room accounting."""
 
-    def __init__(self, coordinator: AdaptiveRoboVacCoordinator) -> None:
-        self._coordinator = coordinator
+    return bool(
+        robot_state == "cleaning"
+        and scheduler_fault
+        and scheduler_fault.robot_registry_id == robot_registry_id
+        and active
+        and active.source in {"scheduler", "manual_dashboard"}
+        and not active.seen_cleaning
+    )
 
-    @staticmethod
-    def active_rooms(active: dict[str, Any]) -> list[str]:
-        """Return a job's tracked rooms, retaining compatibility with v1.0.x."""
 
-        values = active.get("rooms") or [active.get("room")]
-        if not isinstance(values, list):
-            values = [values]
-        return list(dict.fromkeys(value for value in values if isinstance(value, str)))
+@dataclass(frozen=True, slots=True)
+class ManualAuditEffect:
+    """One typed manual-clean audit entry emitted by a reducer."""
 
-    def record_manual_event(self, event: dict[str, Any]) -> None:
-        """Retain a bounded audit trail without changing normal cadence."""
+    at: datetime
+    robot_registry_id: str
+    room_ids: tuple[str, ...]
+    operations: tuple[CleaningOperation, ...]
+    outcome: str
+    context_id: str | None = None
+    mode: str | None = None
+    reason: str | None = None
+    confidence: str | None = None
+    deferred: tuple[str, ...] = ()
+    source: str | None = None
 
-        data = self._coordinator.data
-        data["manual_events"].append(event)
-        data["manual_events"] = data["manual_events"][-50:]
 
-    def apply_manual_deferral(
-        self,
-        robot_entity_id: str,
-        area_ids: list[str],
-        operations: list[str],
-        completed_at: datetime,
-    ) -> list[str]:
-        """Apply the narrow, one-day manual-clean deferral policy."""
+@dataclass(frozen=True, slots=True)
+class RecoveryAuditEffect:
+    """One typed recovery record emitted by a reducer."""
 
-        coordinator = self._coordinator
-        changed: list[str] = []
-        if robot_entity_id not in coordinator.discovery.robots:
-            return changed
-        for area_id in area_ids:
-            room = coordinator.discovery.rooms.get(area_id)
-            if not room:
-                continue
-            detail = coordinator._room_data(area_id)
-            for operation in operations:
-                if operation not in {"vacuum", "mop"}:
-                    continue
-                next_due = coordinator._room_due(room, operation, completed_at)
-                deferred = manual_deferral(completed_at, next_due)
-                if deferred:
-                    coordinator._set_room_deferral(
-                        room, operation, deferred, "manual_clean", completed_at
-                    )
-                    coordinator._set_room_deferral(
-                        room, "cleaning", deferred, "manual_clean", completed_at
-                    )
-                    changed.append(f"{area_id}:{operation}")
-        return changed
+    robot_registry_id: str
+    room_ids: tuple[str, ...]
+    at: datetime
+    reason: str
 
-    def cancel(
-        self, robot_id: str, active: dict[str, Any], cancelled_at: datetime, reason: str
-    ) -> None:
-        """Close a user-cancelled job without recording an incomplete room clean."""
 
-        coordinator = self._coordinator
-        area_ids = self.active_rooms(active)
-        if active.get("source") == "manual_home_assistant":
-            self.record_manual_event(
-                {
-                    "at": _iso(cancelled_at),
-                    "robot": robot_id,
-                    "rooms": area_ids,
-                    "operations": list(active.get("requested_operations", ["vacuum"])),
-                    "context_id": active.get("manual_context_id"),
-                    "outcome": "cancelled",
-                }
-            )
-        elif active.get("source") == "manual_dashboard":
-            self.record_manual_event(
-                {
-                    "at": _iso(cancelled_at),
-                    "robot": robot_id,
-                    "rooms": area_ids,
-                    "operations": [active.get("operation")],
-                    "context_id": active.get("manual_context_id"),
-                    "mode": active.get("manual_mode"),
-                    "outcome": "cancelled",
-                    "reason": reason,
-                    "source": "manual_dashboard",
-                }
-            )
-            coordinator.data.get("occurrences", {}).pop(active.get("room"), None)
-            coordinator.data.get("water_confirmations", {}).pop(
-                str(active.get("occurrence_id")), None
-            )
-        coordinator.data["recovery_events"].append(
-            {"robot": robot_id, "rooms": area_ids, "at": _iso(cancelled_at), "reason": reason}
-        )
-        coordinator.data["recovery_events"] = coordinator.data["recovery_events"][-20:]
-        if active.get("source") == "scheduler" and active.get("occurrence_id"):
-            occurrence = coordinator.data.get("occurrences", {}).get(active.get("room"))
-            stage_index = active.get("stage_index")
-            if occurrence and isinstance(stage_index, int) and stage_index < len(occurrence.get("stages", [])):
-                stage = occurrence["stages"][stage_index]
-                stage["status"] = "pending"
-                stage["started_at"] = None
-        coordinator.data["active"][robot_id] = None
-        coordinator._cancel_recovery_timer(robot_id)
-        cancel_confirmation = getattr(
-            coordinator, "_cancel_start_confirmation", None
-        )
-        if cancel_confirmation:
-            cancel_confirmation(robot_id)
+@dataclass(frozen=True, slots=True)
+class DeferralCandidate:
+    """Inputs required for the pure manual-deferral decision."""
 
-    def complete(
-        self, robot_id: str, active: dict[str, Any], completion: datetime, confidence: str
-    ) -> None:
-        """Persist a confirmed completion and only learn direct observations."""
+    room_id: str
+    operation: CleaningOperation
+    next_due: datetime
 
-        coordinator = self._coordinator
-        area_ids = self.active_rooms(active)
-        operation = active["operation"]
-        if active.get("source") == "manual_home_assistant":
-            changed = self.apply_manual_deferral(
-                robot_id,
-                area_ids,
-                list(active.get("requested_operations", ["vacuum"])),
-                completion,
-            )
-            self.record_manual_event(
-                {
-                    "at": _iso(completion),
-                    "robot": robot_id,
-                    "rooms": area_ids,
-                    "operations": list(active.get("requested_operations", ["vacuum"])),
-                    "context_id": active.get("manual_context_id"),
-                    "outcome": "completed",
-                    "confidence": confidence,
-                    "deferred": changed,
-                }
-            )
-        else:
-            detail = coordinator._room_data(active["room"])
-            if operation == "vacuum":
-                detail["vacuum"] = _iso(completion)
-            if operation == "mop":
-                detail["mop"] = _iso(completion)
-            occurrence = coordinator.data.get("occurrences", {}).get(active["room"])
-            occurrence_id = active.get("occurrence_id")
-            stage_index = active.get("stage_index")
-            if (
-                occurrence
-                and occurrence.get("occurrence_id") == occurrence_id
-                and isinstance(stage_index, int)
-                and stage_index < len(occurrence.get("stages", []))
-            ):
-                stage = occurrence["stages"][stage_index]
-                stage["status"] = "completed"
-                stage["reason"] = confidence
-                stage["completed_at"] = _iso(completion)
-                occurrence["current_stage"] = stage_index + 1
-                detail["last_stage_outcome"] = "completed"
-                detail["last_stage_reason"] = confidence
-                detail["last_stage_at"] = _iso(completion)
-                detail["last_stage_summary"] = f"{operation} completed"
-                occurrence_complete = occurrence["current_stage"] >= len(
-                    occurrence["stages"]
+
+@dataclass(frozen=True, slots=True)
+class DeferralEffect:
+    """One room operation whose due date should be deferred."""
+
+    room_id: str
+    operation: str
+    until: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class JobTransition:
+    """Typed state changes resulting from cancelling or completing one job."""
+
+    robot_entity_id: str
+    robot_registry_id: str
+    room_ids: tuple[str, ...]
+    room_id: str
+    occurrence_id: str | None
+    operation: str
+    completed_at: datetime | None
+    set_room_operation_completion: bool
+    set_room_cleaning_completion: bool
+    stage_completed: bool
+    updated_occurrence: CleaningOccurrence | None
+    remove_occurrence: bool
+    remove_water_confirmation: bool
+    clear_water_notification_episode: bool
+    duration_sample: DurationSample | None
+    manual_audit: ManualAuditEffect | None
+    recovery_audit: RecoveryAuditEffect
+
+
+def active_rooms(active: ActiveJob) -> tuple[str, ...]:
+    """Return unique tracked rooms, retaining schema-one compatibility."""
+
+    values = (*active.room_ids, active.room_id)
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def reduce_manual_deferrals(
+    completed_at: datetime,
+    candidates: tuple[DeferralCandidate, ...],
+) -> tuple[DeferralEffect, ...]:
+    """Return the narrow one-day manual-clean deferrals that apply."""
+
+    effects: list[DeferralEffect] = []
+    for candidate in candidates:
+        if candidate.operation not in {"vacuum", "mop"}:
+            continue
+        until = manual_deferral(completed_at, candidate.next_due)
+        if until is not None:
+            effects.append(
+                DeferralEffect(
+                    candidate.room_id,
+                    candidate.operation,
+                    until,
                 )
-                if occurrence_complete:
-                    detail["cleaning"] = _iso(completion)
-                    coordinator.data["occurrences"].pop(active["room"], None)
-                    coordinator.data.get("water_confirmations", {}).pop(
-                        str(occurrence_id), None
-                    )
-                    if operation == "mop":
-                        coordinator.data.get("water_notification_episodes", {}).pop(
-                            active["room"], None
-                        )
-                if active.get("source") == "manual_dashboard":
-                    self.record_manual_event(
-                        {
-                            "at": _iso(completion),
-                            "robot": robot_id,
-                            "rooms": [active["room"]],
-                            "operations": [operation],
-                            "context_id": active.get("manual_context_id"),
-                            "mode": active.get("manual_mode"),
-                            "outcome": (
-                                "completed" if occurrence_complete else "stage_completed"
-                            ),
-                            "confidence": confidence,
-                            "source": "manual_dashboard",
-                        }
-                    )
-            else:
-                # A schema-one scheduler checkpoint completes one whole occurrence.
-                detail["cleaning"] = _iso(completion)
-        measured = active.get("measured_minutes")
-        if (
-            active.get("source") in {"scheduler", "manual_dashboard"}
-            and confidence == "observed"
-            and active.get("forecast_sample_eligible")
-            and not active.get("recovery_crossed")
-            and active.get("duration_source") == "elapsed_total_v2"
-            and isinstance(measured, (float, int))
-            and measured > 0
-        ):
-            detail = coordinator._room_data(active["room"])
-            durable_robot_id = coordinator.robot_registry_id(robot_id)
-            detail.setdefault("duration_samples", []).append(
-                {
-                    "minutes": float(measured),
-                    "operation": operation,
-                    "passes": int(active.get("passes", 1)),
-                    "robot": durable_robot_id,
-                    "source": active.get("duration_source", "state_transition"),
-                    "at": _iso(completion),
-                    "measurement_version": 2,
-                }
             )
-            detail["duration_samples"] = detail["duration_samples"][-50:]
-        coordinator.data["recovery_events"].append(
-            {"robot": robot_id, "rooms": area_ids, "at": _iso(completion), "reason": confidence}
-        )
-        coordinator.data["recovery_events"] = coordinator.data["recovery_events"][-20:]
-        coordinator.data["active"][robot_id] = None
-        coordinator._cancel_recovery_timer(robot_id)
-        cancel_confirmation = getattr(
-            coordinator, "_cancel_start_confirmation", None
-        )
-        if cancel_confirmation:
-            cancel_confirmation(robot_id)
+    return tuple(effects)
 
-    def rebase_cancelled_floor(self, robot_id: str, cancelled_at: datetime) -> list[str]:
-        """Cool down only the cancelled robot; never rewrite floor-room cadence."""
 
-        coordinator = self._coordinator
-        if robot_id not in coordinator.discovery.robots:
-            return []
-        coordinator.data.setdefault("robot_cooldowns", {})[robot_id] = {
-            "until": _iso(cancelled_at + CANCELLATION_COOLDOWN),
-            "cancelled_at": _iso(cancelled_at),
-            "reason": "physical_cancelled",
-        }
-        return []
+def reduce_job_cancellation(
+    robot_entity_id: str,
+    robot_registry_id: str,
+    active: ActiveJob,
+    cancelled_at: datetime,
+    reason: str,
+    occurrence: CleaningOccurrence | None,
+) -> JobTransition:
+    """Return effects for a physically cancelled tracked job."""
+
+    room_ids = active_rooms(active)
+    manual_audit: ManualAuditEffect | None = None
+    remove_occurrence = False
+    remove_confirmation = False
+    updated_occurrence = occurrence
+    if active.source == "manual_home_assistant":
+        manual_audit = ManualAuditEffect(
+            at=cancelled_at,
+            robot_registry_id=robot_registry_id,
+            room_ids=room_ids,
+            operations=tuple(active.requested_operations or [CleaningOperation.VACUUM]),
+            context_id=active.manual_context_id,
+            outcome="cancelled",
+        )
+    elif active.source == "manual_dashboard":
+        manual_audit = ManualAuditEffect(
+            at=cancelled_at,
+            robot_registry_id=robot_registry_id,
+            room_ids=room_ids,
+            operations=(active.operation,),
+            context_id=active.manual_context_id,
+            mode=active.manual_mode,
+            outcome="cancelled",
+            reason=reason,
+            source="manual_dashboard",
+        )
+        remove_occurrence = True
+        remove_confirmation = True
+        updated_occurrence = None
+    elif (
+        active.source == "scheduler"
+        and active.occurrence_id
+        and occurrence is not None
+        and occurrence.occurrence_id == active.occurrence_id
+        and active.stage_index is not None
+        and active.stage_index < len(occurrence.stages)
+    ):
+        stages = list(occurrence.stages)
+        stages[active.stage_index] = replace(
+            stages[active.stage_index],
+            status=StageStatus.PENDING,
+            started_at=None,
+        )
+        updated_occurrence = replace(occurrence, stages=stages)
+
+    return JobTransition(
+        robot_entity_id=robot_entity_id,
+        robot_registry_id=robot_registry_id,
+        room_ids=room_ids,
+        room_id=active.room_id,
+        occurrence_id=active.occurrence_id,
+        operation=active.operation,
+        completed_at=None,
+        set_room_operation_completion=False,
+        set_room_cleaning_completion=False,
+        stage_completed=False,
+        updated_occurrence=updated_occurrence,
+        remove_occurrence=remove_occurrence,
+        remove_water_confirmation=remove_confirmation,
+        clear_water_notification_episode=False,
+        duration_sample=None,
+        manual_audit=manual_audit,
+        recovery_audit=RecoveryAuditEffect(
+            robot_registry_id,
+            room_ids,
+            cancelled_at,
+            reason,
+        ),
+    )
+
+
+def reduce_job_completion(
+    robot_entity_id: str,
+    robot_registry_id: str,
+    active: ActiveJob,
+    completion: datetime,
+    confidence: str,
+    occurrence: CleaningOccurrence | None,
+    manual_deferred: tuple[str, ...] = (),
+) -> JobTransition:
+    """Return effects for one authoritative tracked-job completion."""
+
+    room_ids = active_rooms(active)
+    set_operation = active.source != "manual_home_assistant"
+    set_cleaning = False
+    stage_completed = False
+    remove_occurrence = False
+    remove_confirmation = False
+    clear_water_episode = False
+    updated_occurrence = occurrence
+    manual_audit: ManualAuditEffect | None = None
+
+    if active.source == "manual_home_assistant":
+        manual_audit = ManualAuditEffect(
+            at=completion,
+            robot_registry_id=robot_registry_id,
+            room_ids=room_ids,
+            operations=tuple(active.requested_operations or [CleaningOperation.VACUUM]),
+            context_id=active.manual_context_id,
+            outcome="completed",
+            confidence=confidence,
+            deferred=manual_deferred,
+        )
+    elif (
+        occurrence is not None
+        and occurrence.occurrence_id == active.occurrence_id
+        and active.stage_index is not None
+        and active.stage_index < len(occurrence.stages)
+    ):
+        stages = list(occurrence.stages)
+        stages[active.stage_index] = replace(
+            stages[active.stage_index],
+            status=StageStatus.COMPLETED,
+            reason=confidence,
+            completed_at=completion,
+        )
+        next_stage = active.stage_index + 1
+        occurrence_complete = next_stage >= len(stages)
+        updated_occurrence = replace(
+            occurrence,
+            stages=stages,
+            current_stage=next_stage,
+        )
+        stage_completed = True
+        set_cleaning = occurrence_complete
+        remove_occurrence = occurrence_complete
+        remove_confirmation = occurrence_complete
+        clear_water_episode = occurrence_complete and active.operation == "mop"
+        if active.source == "manual_dashboard":
+            manual_audit = ManualAuditEffect(
+                at=completion,
+                robot_registry_id=robot_registry_id,
+                room_ids=(active.room_id,),
+                operations=(active.operation,),
+                context_id=active.manual_context_id,
+                mode=active.manual_mode,
+                outcome=("completed" if occurrence_complete else "stage_completed"),
+                confidence=confidence,
+                source="manual_dashboard",
+            )
+    else:
+        set_cleaning = True
+
+    measured = active.measured_minutes
+    duration_sample = (
+        DurationSample(
+            minutes=float(measured),
+            operation=active.operation,
+            passes=active.passes,
+            robot_registry_id=robot_registry_id,
+            source=active.duration_source or "state_transition",
+            recorded_at=completion,
+            measurement_version=2,
+        )
+        if active.source in {"scheduler", "manual_dashboard"}
+        and confidence == "observed"
+        and active.forecast_sample_eligible
+        and not active.recovery_crossed
+        and active.duration_source == "elapsed_total_v2"
+        and isinstance(measured, (float, int))
+        and measured > 0
+        else None
+    )
+
+    return JobTransition(
+        robot_entity_id=robot_entity_id,
+        robot_registry_id=robot_registry_id,
+        room_ids=room_ids,
+        room_id=active.room_id,
+        occurrence_id=active.occurrence_id,
+        operation=active.operation,
+        completed_at=completion,
+        set_room_operation_completion=set_operation,
+        set_room_cleaning_completion=set_cleaning,
+        stage_completed=stage_completed,
+        updated_occurrence=updated_occurrence,
+        remove_occurrence=remove_occurrence,
+        remove_water_confirmation=remove_confirmation,
+        clear_water_notification_episode=clear_water_episode,
+        duration_sample=duration_sample,
+        manual_audit=manual_audit,
+        recovery_audit=RecoveryAuditEffect(
+            robot_registry_id,
+            room_ids,
+            completion,
+            confidence,
+        ),
+    )
+
+
+def cancellation_cooldown(
+    robot_known: bool,
+    cancelled_at: datetime,
+) -> RobotCooldown | None:
+    """Return the cancelled robot's cooldown without changing room cadence."""
+
+    if not robot_known:
+        return None
+    return RobotCooldown(
+        until=cancelled_at + CANCELLATION_COOLDOWN,
+        cancelled_at=cancelled_at,
+        reason="physical_cancelled",
+    )

@@ -1,199 +1,483 @@
-"""Entity and dashboard projections derived from scheduler state."""
+"""Build immutable presentation snapshots from settled scheduler state."""
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Protocol
 
+from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
+from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
+from .map_recovery_models import MapRecoverySummary, RecoveryCapability
 from .models import (
+    CleaningOperation,
+    DurationEstimate,
+    OccurrenceSource,
+    ResolvedDailyWindow,
+    cleaning_profile_sources,
     effective_cleaning_program,
     expand_cleaning_program,
+    format_last_cleaned_age,
     next_usable_window_start,
     next_window_start,
-    cleaning_profile_sources,
-    format_last_cleaned_age,
     requested_cleaning_profile,
     resolve_cleaning_profile,
     stage_pass_count,
 )
+from .planner import CandidateRobotDecision, ScheduleCandidate, VacancyDiagnostic
+from .repairs_manager import fault_summary
+from .snapshots import (
+    ActiveJobView,
+    CandidateView,
+    CleaningOccurrenceView,
+    CleaningStageView,
+    DurationEstimateView,
+    EffectiveRobotProfileView,
+    EffectiveStageProfileView,
+    FaultView,
+    FloorPlanRoomView,
+    FloorPlanSensorView,
+    FloorPlanView,
+    FloorView,
+    FrozenJsonObject,
+    IntegrationSnapshot,
+    ManualAuditView,
+    MapView,
+    ObservedProfileView,
+    RobotEligibilityView,
+    RobotHoldView,
+    RobotSettingsView,
+    RobotView,
+    RoomDecisionView,
+    RoomView,
+    SchedulerView,
+    WaterConfirmationView,
+    WaterNotificationEpisodeView,
+)
+from .state import (
+    ActiveJob,
+    CleaningOccurrence,
+    CleaningStage,
+    ManualAuditRecord,
+    RobotHold,
+    RobotSettings,
+    RoomDecisionRecord,
+    RoomHistory,
+    RoomSettings,
+    SchedulerFault,
+    SchedulerState,
+)
 
-if TYPE_CHECKING:
-    from .coordinator import AdaptiveRoboVacCoordinator
+
+class MapRecoveryProjectionSource(Protocol):
+    """Map-recovery reads needed for a presentation snapshot."""
+
+    def capability(self, robot_entity_id: str) -> RecoveryCapability: ...
+
+    def summary(self, robot_entity_id: str) -> MapRecoverySummary: ...
+
+    def preview_options(self, robot_entity_id: str) -> tuple[str, ...]: ...
+
+    def selected_preview_option(self, robot_entity_id: str) -> str | None: ...
+
+    def selected_preview(self, robot_entity_id: str) -> bytes | None: ...
+
+
+class ProjectionSource(Protocol):
+    """Narrow read interface used by the presentation projection."""
+
+    hass: HomeAssistant
+    discovery: DiscoverySnapshot
+    state: SchedulerState
+
+    @property
+    def map_recovery_projection(self) -> MapRecoveryProjectionSource: ...
+
+    @property
+    def observe_only(self) -> bool: ...
+
+    @property
+    def party_mode(self) -> bool: ...
+
+    @property
+    def scheduler_halted(self) -> bool: ...
+
+    @property
+    def scheduler_limited(self) -> bool: ...
+
+    @property
+    def storage_safe_mode(self) -> bool: ...
+
+    def get_global_setting(self, key: str) -> object: ...
+
+    def _room_data(self, area_id: str) -> RoomHistory: ...
+
+    def _room_settings(self, room: DiscoveredRoom) -> RoomSettings: ...
+
+    def _robot_settings(self, robot: DiscoveredRobot) -> RobotSettings: ...
+
+    def _desired_window(self, room: DiscoveredRoom) -> ResolvedDailyWindow: ...
+
+    def _room_due(
+        self,
+        room: DiscoveredRoom,
+        operation: str,
+        now: datetime,
+    ) -> datetime: ...
+
+    def _room_candidate(
+        self,
+        room: DiscoveredRoom,
+        now: datetime,
+    ) -> tuple[ScheduleCandidate | None, str]: ...
+
+    def _candidate_robot_diagnostics(
+        self,
+        candidate: ScheduleCandidate,
+        readiness: Mapping[str, tuple[bool, str]] | None = None,
+    ) -> tuple[CandidateRobotDecision, ...]: ...
+
+    def _active_rooms(self, active: ActiveJob) -> list[str]: ...
+
+    def _duration_estimate(
+        self,
+        room: DiscoveredRoom,
+        operation: str,
+        passes: int,
+        robot_id: str | None = None,
+    ) -> DurationEstimate: ...
+
+    def _vacancy_diagnostic(
+        self,
+        room: DiscoveredRoom,
+        now: datetime,
+        duration_minutes: float,
+    ) -> VacancyDiagnostic: ...
+
+    def robot_for_registry_id(self, registry_id: str) -> DiscoveredRobot | None: ...
+
+    def robot_unique_fragment(self, entity_id: str) -> str: ...
+
+    def room_cleaning_period(self, area_id: str) -> str: ...
+
+    def room_cleaning_profile(self, area_id: str) -> str: ...
+
+    def _robot_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]: ...
+
+    def _robot_battery(self, robot: DiscoveredRobot) -> float | None: ...
 
 
 def _now() -> datetime:
-    return dt_util.utcnow()
+    return datetime.now(UTC)
 
 
-def _as_datetime(value: object) -> datetime | None:
-    if not value:
+def _active_job_view(active: ActiveJob | None) -> ActiveJobView | None:
+    if active is None:
         return None
-    if isinstance(value, datetime):
-        return value
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
+    return ActiveJobView(
+        room_id=active.room_id,
+        room_ids=tuple(active.room_ids),
+        operation=active.operation,
+        phase=active.phase,
+        source=active.source,
+        started_at=active.started_at,
+        seen_cleaning=active.seen_cleaning,
+        expected_minutes=active.expected_minutes,
+        expected_end=active.expected_end,
+        last_observed_at=active.last_observed_at,
+        passes=active.passes,
+        requested_operations=tuple(active.requested_operations),
+        manual_context_id=active.manual_context_id,
+        accepted_at=active.accepted_at,
+        mop_washing_at=active.mop_washing_at,
+        observed_started_at=active.observed_started_at,
+        recovered_at=active.recovered_at,
+        cleaning_finished_at=active.cleaning_finished_at,
+        completion_confidence=active.completion_confidence,
+        timer_start=active.timer_start,
+        native_timer_elapsed=active.native_timer_elapsed,
+        duration_source=active.duration_source,
+        measured_minutes=active.measured_minutes,
+        docked_at=active.docked_at,
+        interruption_started_at=active.interruption_started_at,
+        interruption_minutes=active.interruption_minutes,
+        forecast_sample_eligible=active.forecast_sample_eligible,
+        recovery_crossed=active.recovery_crossed,
+        interrupted=active.interrupted,
+        hold_reason=active.hold_reason,
+        held_at=active.held_at,
+        completion_before_hold=active.completion_before_hold,
+        cancelling_at=active.cancelling_at,
+        adapter_id=active.adapter_id,
+        adapter_schema_version=active.adapter_schema_version,
+        occurrence_id=active.occurrence_id,
+        stage_index=active.stage_index,
+        cleaning_profile=active.cleaning_profile,
+        requested_profile=active.requested_profile,
+        profile_sources=active.profile_sources,
+        manual_mode=active.manual_mode,
+        q10_max_plus_fallback=active.q10_max_plus_fallback,
+    )
+
+
+def _hold_view(hold: RobotHold | None) -> RobotHoldView | None:
+    if hold is None:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt_util.UTC)
+    return RobotHoldView(
+        reason=hold.reason,
+        phase=hold.phase,
+        held_at=hold.held_at,
+        last_observed_at=hold.last_observed_at,
+        returning_at=hold.returning_at,
+        requested_map_id=hold.requested_map_id,
+    )
 
 
-def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[str, Any]:
-    """Return the established card-friendly state for a discovered area."""
+def _stage_view(stage: CleaningStage) -> CleaningStageView:
+    return CleaningStageView(
+        operation=stage.operation,
+        passes=stage.passes,
+        status=stage.status,
+        reason=stage.reason,
+        started_at=stage.started_at,
+        completed_at=stage.completed_at,
+        cleaning_profile=stage.cleaning_profile,
+        requested_profile=stage.requested_profile,
+        profile_sources=stage.profile_sources,
+    )
 
-    room = coordinator.discovery.rooms[area_id]
-    detail = coordinator._room_data(area_id)
-    settings = coordinator._room_settings(room)
+
+def _occurrence_view(
+    source: ProjectionSource,
+    occurrence: CleaningOccurrence | None,
+) -> CleaningOccurrenceView | None:
+    if occurrence is None:
+        return None
+    robot = source.robot_for_registry_id(occurrence.robot_registry_id)
+    return CleaningOccurrenceView(
+        occurrence_id=occurrence.occurrence_id,
+        room_id=occurrence.room_id,
+        robot_registry_id=occurrence.robot_registry_id,
+        robot_entity_id=robot.entity_id if robot else None,
+        program=occurrence.program,
+        stages=tuple(_stage_view(stage) for stage in occurrence.stages),
+        scheduled_at=occurrence.scheduled_at,
+        created_at=occurrence.created_at,
+        adapter_id=occurrence.adapter_id,
+        adapter_schema_version=occurrence.adapter_schema_version,
+        current_stage=occurrence.current_stage,
+        source=occurrence.source,
+        manual_mode=occurrence.manual_mode,
+        manual_override=occurrence.manual_override,
+        bypass_desired_window=occurrence.bypass_desired_window,
+        manual_context_id=occurrence.manual_context_id,
+        manual_user_id=occurrence.manual_user_id,
+    )
+
+
+def _manual_audit_view(
+    source: ProjectionSource,
+    record: ManualAuditRecord | None,
+) -> ManualAuditView | None:
+    if record is None:
+        return None
+    robot = (
+        source.robot_for_registry_id(record.robot_registry_id)
+        if record.robot_registry_id
+        else None
+    )
+    return ManualAuditView(
+        at=record.at,
+        robot_entity_id=robot.entity_id if robot else None,
+        room_ids=record.room_ids,
+        operations=record.operations,
+        context_id=record.context_id,
+        user_id=record.user_id,
+        mode=record.mode,
+        source=record.source,
+        outcome=record.outcome,
+        reason=record.reason,
+        confidence=record.confidence,
+        changed=record.changed,
+        deferred=record.deferred,
+    )
+
+
+def _room_decision_view(record: RoomDecisionRecord | None) -> RoomDecisionView | None:
+    if record is None:
+        return None
+    return RoomDecisionView(
+        at=record.at,
+        room_area_id=record.room_area_id,
+        reason=record.reason,
+        occupancy_source=record.occupancy_source,
+        required_clear_minutes=record.required_clear_minutes,
+        clear_minutes=record.clear_minutes,
+        forecast_confidence=record.forecast_confidence,
+        comparable_sample_count=record.comparable_sample_count,
+        forecast_reason=record.forecast_reason,
+    )
+
+
+def _candidate_view(candidate: ScheduleCandidate) -> CandidateView:
+    return CandidateView(
+        room_id=candidate.room_id,
+        operation=CleaningOperation(candidate.operation),
+        due_at=candidate.due_at,
+        confidence=candidate.confidence,
+        reason=candidate.reason,
+        duration_minutes=candidate.duration_minutes,
+        passes=candidate.passes,
+        manual_override=candidate.manual_override,
+        source=OccurrenceSource(candidate.source),
+    )
+
+
+def _fault_view(source: ProjectionSource, fault: SchedulerFault) -> FaultView:
+    robot = source.robot_for_registry_id(fault.robot_registry_id)
+    room = source.discovery.rooms.get(fault.room_area_id)
+    return FaultView(
+        failure_code=fault.reason_code,
+        failure_summary=fault_summary(fault.reason_code),
+        failure_since=fault.occurred_at,
+        failure_phase=fault.phase,
+        robot_name=robot.name if robot else None,
+        room_name=room.name if room else None,
+    )
+
+
+def room_view(source: ProjectionSource, area_id: str) -> RoomView:
+    """Build typed, immutable state for one discovered area."""
+
+    room = source.discovery.rooms[area_id]
+    detail = source._room_data(area_id)
+    settings = source._room_settings(room)
     now = _now()
-    desired_window = coordinator._desired_window(room)
+    desired_window = source._desired_window(room)
     local_now = dt_util.as_local(now)
     desired_window_start = (
         next_usable_window_start(local_now, desired_window.start, desired_window.end)
         if desired_window.valid
         else next_window_start(local_now, desired_window.start)
     )
-    next_due = coordinator._room_due(room, "cleaning", now)
-    candidate, reason = coordinator._room_candidate(room, now)
-    raw_robot_eligibility = (
-        coordinator._candidate_robot_diagnostics(candidate) if candidate else []
+    next_due = source._room_due(room, "cleaning", now)
+    candidate, reason = source._room_candidate(room, now)
+    diagnostics = source._candidate_robot_diagnostics(candidate) if candidate else ()
+    eligibility = tuple(
+        RobotEligibilityView(
+            robot_entity_id=item.eligibility.robot_id,
+            robot_name=item.eligibility.robot_name,
+            eligible=item.eligibility.eligible,
+            reason=item.eligibility.reason,
+        )
+        for item in diagnostics
     )
-    robot_eligibility = [
-        {
-            key: value
-            for key, value in diagnostic.items()
-            if key != "candidate"
-        }
-        for diagnostic in raw_robot_eligibility
-    ]
     assignment_available = any(
-        diagnostic["eligible"] for diagnostic in raw_robot_eligibility
+        item.eligibility.eligible and item.candidate is not None for item in diagnostics
     )
     if candidate and not assignment_available:
         reason = next(
             (
-                str(diagnostic["reason"])
-                for diagnostic in raw_robot_eligibility
-                if diagnostic.get("reason")
+                item.eligibility.reason
+                for item in diagnostics
+                if item.eligibility.reason
             ),
             "no ready compatible robot",
         )
-    active_robot_id, active = next(
+
+    active_registry_id, active = next(
         (
-            (robot_id, job)
-            for robot_id, job in coordinator.data["active"].items()
-            if job and area_id in coordinator._active_rooms(job)
+            (registry_id, job)
+            for registry_id, job in source.state.active_jobs.items()
+            if job and area_id in source._active_rooms(job)
         ),
         (None, None),
     )
-    active_robot_state = (
-        coordinator.hass.states.get(active_robot_id).state
-        if active_robot_id and coordinator.hass.states.get(active_robot_id)
-        else None
+    active_robot = (
+        source.robot_for_registry_id(active_registry_id) if active_registry_id else None
     )
-    duration_operation = active["operation"] if active else candidate["operation"] if candidate else "vacuum"
-    duration_passes = int(active.get("passes", 1)) if active else candidate["passes"] if candidate else 1
-    duration_estimate = coordinator._duration_estimate(
+    active_robot_id = active_robot.entity_id if active_robot else None
+    active_robot_state_object = (
+        source.hass.states.get(active_robot_id) if active_robot_id else None
+    )
+    duration_operation = (
+        active.operation if active else candidate.operation if candidate else "vacuum"
+    )
+    duration_passes = active.passes if active else candidate.passes if candidate else 1
+    duration_estimate = source._duration_estimate(
         room,
         duration_operation,
         duration_passes,
-        coordinator.robot_registry_id(active_robot_id) if active_robot_id else None,
+        active_registry_id,
     )
-    duration_minutes = duration_estimate.safe_minutes
-    duration_sample_count = duration_estimate.sample_count
-    duration_estimates_by_robot = []
-    for robot in coordinator.discovery.robots.values():
-        if (
-            robot.floor_id != room.floor_id
-            or not robot.adapter_capabilities.supports(
-                duration_operation, duration_passes
-            )
+    duration_estimates = []
+    for robot in source.discovery.robots.values():
+        if robot.floor_id != room.floor_id or not robot.adapter_capabilities.supports(
+            duration_operation,
+            duration_passes,
         ):
             continue
-        estimate = coordinator._duration_estimate(
+        estimate = source._duration_estimate(
             room,
             duration_operation,
             duration_passes,
             robot.registry_id,
         )
-        duration_estimates_by_robot.append(
-            {
-                "robot_entity_id": robot.entity_id,
-                "robot_name": robot.name,
-                "typical_minutes": estimate.typical_minutes,
-                "safe_minutes": estimate.safe_minutes,
-                "sample_count": estimate.sample_count,
-                "learned": estimate.learned,
-            }
+        duration_estimates.append(
+            DurationEstimateView(
+                robot_entity_id=robot.entity_id,
+                robot_name=robot.name,
+                typical_minutes=estimate.typical_minutes,
+                safe_minutes=estimate.safe_minutes,
+                sample_count=estimate.sample_count,
+                learned=estimate.learned,
+            )
         )
-    last_cleaned = _as_datetime(detail.get("cleaning"))
+
     latest_decision = next(
         (
-            dict(item)
-            for item in reversed(coordinator.data.get("room_decisions", []))
-            if item.get("room_area_id") == area_id
+            item
+            for item in reversed(source.state.audit.room_decisions)
+            if item.room_area_id == area_id
         ),
         None,
     )
-    vacancy_diagnostic = coordinator._vacancy_diagnostic(
-        room, now, duration_minutes
+    latest_manual = next(
+        (
+            item
+            for item in reversed(source.state.audit.manual_events)
+            if item.source == "manual_dashboard" and area_id in item.room_ids
+        ),
+        None,
     )
-    deferral_metadata = detail.get("deferral_meta", {}).get("cleaning")
-    occurrence = coordinator.data.get("occurrences", {}).get(area_id)
+    occurrence = source.state.occurrences.get(area_id)
     confirmation = (
-        coordinator.data.get("water_confirmations", {}).get(str(occurrence.get("occurrence_id")))
-        if occurrence else None
+        source.state.water_confirmations.get(occurrence.occurrence_id)
+        if occurrence
+        else None
     )
-    occurrence_view = (
-        {
-            "program": occurrence.get("program"),
-            "source": occurrence.get("source", "scheduler"),
-            "manual_mode": occurrence.get("manual_mode"),
-            "bypass_desired_window": occurrence.get("bypass_desired_window", False),
-            "current_stage": occurrence.get("current_stage"),
-            "scheduled_at": occurrence.get("scheduled_at"),
-            "created_at": occurrence.get("created_at"),
-            "stages": [
-                {
-                    key: stage.get(key)
-                    for key in (
-                        "operation", "passes", "status", "reason",
-                        "started_at", "completed_at", "cleaning_profile",
-                        "requested_profile", "profile_sources",
-                    )
-                }
-                for stage in occurrence.get("stages", [])
-            ],
-        }
-        if occurrence else None
-    )
-    confirmation_view = (
-        {
-            key: confirmation.get(key)
-            for key in ("status", "sent_at", "expires_at", "responded_at")
-        }
-        if confirmation else None
-    )
-    episode = coordinator.data.get("water_notification_episodes", {}).get(area_id)
-    effective_profiles: list[dict[str, Any]] = []
-    for robot in coordinator.discovery.robots.values():
+    episode = source.state.water_notification_episodes.get(area_id)
+
+    effective_profiles = []
+    for robot in source.discovery.robots.values():
         if robot.floor_id != room.floor_id:
             continue
-        robot_settings = coordinator._robot_settings(robot)
+        robot_settings = source._robot_settings(robot)
         program = effective_cleaning_program(
-            settings.get("cleaning_program"),
-            str(robot_settings.get("cleaning_program", "vacuum_only")),
+            settings.cleaning_program,
+            robot_settings.cleaning_program,
         )
-        operations = expand_cleaning_program(program or "")
-        stages: list[dict[str, Any]] = []
-        compatible = bool(operations)
-        for operation in operations:
+        stages = []
+        compatible = bool(expand_cleaning_program(program or ""))
+        for operation in expand_cleaning_program(program or ""):
             passes = stage_pass_count(
                 operation,
-                settings.get("vacuum_pass_count"),
-                settings.get("mop_pass_count"),
-                bool(robot_settings.get("double_pass")),
-                bool(robot_settings.get("mop_double_pass")),
+                settings.vacuum_pass_count,
+                settings.mop_pass_count,
+                robot_settings.double_pass,
+                robot_settings.mop_double_pass,
                 robot.adapter_capabilities,
             )
             profile = resolve_cleaning_profile(
@@ -206,218 +490,373 @@ def room_state(coordinator: AdaptiveRoboVacCoordinator, area_id: str) -> dict[st
                 compatible = False
                 break
             stages.append(
-                {
-                    "operation": operation,
-                    "passes": passes,
-                    "cleaning_profile": profile.to_mapping(),
-                    "requested_profile": requested_cleaning_profile(
-                        settings, robot_settings
-                    ).to_mapping(),
-                    "profile_sources": cleaning_profile_sources(settings),
-                }
+                EffectiveStageProfileView(
+                    operation=CleaningOperation(operation),
+                    passes=passes,
+                    cleaning_profile=profile,
+                    requested_profile=requested_cleaning_profile(
+                        settings,
+                        robot_settings,
+                    ),
+                    profile_sources=cleaning_profile_sources(settings),
+                )
             )
         effective_profiles.append(
-            {
-                "robot_entity_id": robot.entity_id,
-                "robot_name": robot.name,
-                "program": program,
-                "compatible": compatible,
-                "stages": stages,
-            }
+            EffectiveRobotProfileView(
+                robot_entity_id=robot.entity_id,
+                robot_name=robot.name,
+                program=program,
+                compatible=compatible,
+                stages=tuple(stages),
+            )
         )
-    latest_manual = next(
-        (
-            dict(item)
-            for item in reversed(coordinator.data.get("manual_events", []))
-            if item.get("source") == "manual_dashboard"
-            and area_id in item.get("rooms", [])
-        ),
-        None,
+
+    cleaning_deferral = detail.deferrals.get("cleaning")
+    vacancy = source._vacancy_diagnostic(
+        room,
+        now,
+        duration_estimate.safe_minutes,
     )
-    return {
-        "name": room.name,
-        "area_id": room.area_id,
-        "floor_id": room.floor_id,
-        "bedroom": room.is_bedroom,
-        "bedroom_transit": room.is_bedroom_transit,
-        "radars": room.radar_entity_ids,
-        "fallbacks": room.fallback_entity_ids,
-        "enabled": settings["enabled"],
-        "vacuum_interval": settings["vacuum_interval"],
-        "cleaning_interval": settings["cleaning_interval"],
-        "expected_minutes": settings["expected_minutes"],
-        "ignore_desired_window": settings["ignore_desired_window"],
-        "desired_window_configured_start": desired_window.configured_start,
-        "desired_window_configured_end": desired_window.configured_end,
-        "desired_window_effective_start": desired_window.start,
-        "desired_window_effective_end": desired_window.end,
-        "desired_window_start_inherited": desired_window.start_inherited,
-        "desired_window_end_inherited": desired_window.end_inherited,
-        "desired_window_valid": desired_window.valid,
-        "pass_count": settings.get("pass_count"),
-        "vacuum_pass_count": settings.get("vacuum_pass_count"),
-        "mop_pass_count": settings.get("mop_pass_count"),
-        "cleaning_program": settings.get("cleaning_program"),
-        "fan_speed": settings.get("fan_speed"),
-        "mode": settings.get("mode"),
-        "mop_mode": settings.get("mop_mode"),
-        "mop_intensity": settings.get("mop_intensity"),
-        "cleaning_depth": settings.get("cleaning_depth"),
-        "effective_profiles": effective_profiles,
-        "latest_manual_request": latest_manual,
-        "occupancy": detail["occupancy"],
-        "occupancy_source": detail["source"],
-        "unavailable_radars": detail["unavailable_radars"],
-        "last_cleaned": last_cleaned,
-        "last_cleaned_display": format_last_cleaned_age(last_cleaned, now),
-        "using_initial_cadence_baseline": bool(
-            last_cleaned is None
-            and coordinator.data.get("first_scheduler_online_at")
+    room_fault = source.state.room_faults.get(room.area_id)
+    return RoomView(
+        area_id=room.area_id,
+        name=room.name,
+        floor_id=room.floor_id,
+        bedroom=room.is_bedroom,
+        bedroom_transit=room.is_bedroom_transit,
+        radar_entity_ids=room.radar_entity_ids,
+        fallback_entity_ids=room.fallback_entity_ids,
+        cleaning_period=source.room_cleaning_period(room.area_id),
+        cleaning_profile=source.room_cleaning_profile(room.area_id),
+        enabled=settings.enabled,
+        cleaning_interval=settings.cleaning_interval,
+        expected_minutes=settings.expected_minutes,
+        ignore_desired_window=settings.ignore_desired_window,
+        desired_window_configured_start=desired_window.configured_start,
+        desired_window_configured_end=desired_window.configured_end,
+        desired_window_effective_start=desired_window.start,
+        desired_window_effective_end=desired_window.end,
+        desired_window_start_inherited=desired_window.start_inherited,
+        desired_window_end_inherited=desired_window.end_inherited,
+        desired_window_valid=desired_window.valid,
+        vacuum_pass_count=settings.vacuum_pass_count,
+        mop_pass_count=settings.mop_pass_count,
+        cleaning_program=settings.cleaning_program,
+        fan_speed=settings.fan_speed,
+        mode=settings.mode,
+        mop_mode=settings.mop_mode,
+        mop_intensity=settings.mop_intensity,
+        cleaning_depth=settings.cleaning_depth,
+        effective_profiles=tuple(effective_profiles),
+        latest_manual_request=_manual_audit_view(source, latest_manual),
+        occupancy=detail.occupancy,
+        occupancy_source=detail.occupancy_source,
+        unavailable_radars=detail.unavailable_radars,
+        last_cleaned=detail.cleaning_completed_at,
+        last_cleaned_display=format_last_cleaned_age(detail.cleaning_completed_at, now),
+        using_initial_cadence_baseline=bool(
+            detail.cleaning_completed_at is None
+            and source.state.first_scheduler_online_at
         ),
-        "last_vacuum": _as_datetime(detail.get("vacuum")),
-        "last_mop": _as_datetime(detail.get("mop")),
-        "vacuum_due": next_due,
-        "mop_due": None,
-        "next_due": next_due,
-        "desired_window_start": desired_window_start,
-        "desired_window_next_start": desired_window_start,
-        "unresolved_window_start": desired_window_start,
-        "next_candidate": candidate if assignment_available else None,
-        "assignment_available": assignment_available,
-        "robot_eligibility": robot_eligibility,
-        "active": active,
-        "active_robot": active_robot_id,
-        "active_robot_state": active_robot_state,
-        "effective_duration_minutes": duration_minutes,
-        "duration_sample_count": duration_sample_count,
-        "predicted_total_minutes": duration_estimate.typical_minutes,
-        "required_vacancy_minutes": duration_estimate.safe_minutes,
-        "duration_model_version": 2,
-        "duration_model_learned": duration_estimate.learned,
-        "duration_estimates_by_robot": duration_estimates_by_robot,
-        "block_reason": reason,
-        "vacancy_diagnostic": vacancy_diagnostic,
-        "latest_scheduler_decision": latest_decision,
-        "legacy_deferral_review_needed": bool(
-            isinstance(deferral_metadata, dict)
-            and deferral_metadata.get("source") == "legacy_unknown"
+        last_vacuum=detail.vacuum_completed_at,
+        last_mop=detail.mop_completed_at,
+        next_due=next_due,
+        desired_window_start=desired_window_start,
+        next_candidate=(
+            _candidate_view(candidate) if candidate and assignment_available else None
         ),
-        "map_status": detail.get("map_status", "unknown"),
-        "map_error": detail.get("map_error"),
-        "occurrence": occurrence_view,
-        "water_confirmation": confirmation_view,
-        "last_stage_outcome": detail.get("last_stage_outcome"),
-        "last_stage_reason": detail.get("last_stage_reason"),
-        "last_completion_confidence": (
-            detail.get("last_stage_reason")
-            if detail.get("last_stage_outcome") == "completed"
+        assignment_available=assignment_available,
+        robot_eligibility=eligibility,
+        active=_active_job_view(active),
+        active_robot=active_robot_id,
+        active_robot_state=(
+            active_robot_state_object.state if active_robot_state_object else None
+        ),
+        effective_duration_minutes=duration_estimate.safe_minutes,
+        duration_sample_count=duration_estimate.sample_count,
+        predicted_total_minutes=duration_estimate.typical_minutes,
+        required_vacancy_minutes=duration_estimate.safe_minutes,
+        duration_model_version=2,
+        duration_model_learned=duration_estimate.learned,
+        duration_estimates_by_robot=tuple(duration_estimates),
+        block_reason=reason,
+        vacancy_diagnostic=vacancy,
+        latest_scheduler_decision=_room_decision_view(latest_decision),
+        legacy_deferral_review_needed=bool(
+            cleaning_deferral and cleaning_deferral.source == "legacy_unknown"
+        ),
+        map_status=detail.map_status,
+        map_error=detail.map_error,
+        occurrence=_occurrence_view(source, occurrence),
+        water_confirmation=(
+            WaterConfirmationView(
+                status=confirmation.status,
+                sent_at=confirmation.sent_at,
+                expires_at=confirmation.expires_at,
+                responded_at=confirmation.responded_at,
+            )
+            if confirmation
             else None
         ),
-        "last_stage_at": _as_datetime(detail.get("last_stage_at")),
-        "last_stage_summary": detail.get("last_stage_summary"),
-        "water_notification_episode": (
-            {
-                key: episode.get(key)
-                for key in ("reason", "first_sent_at", "last_sent_at")
-            }
-            if episode else None
-        ),
-        "failure": (
-            coordinator.room_fault_view(room)
-            if coordinator.fault_affects_room(room)
+        last_stage_outcome=detail.last_stage_outcome,
+        last_stage_reason=detail.last_stage_reason,
+        last_stage_at=detail.last_stage_at,
+        last_stage_summary=detail.last_stage_summary,
+        water_notification_episode=(
+            WaterNotificationEpisodeView(
+                room_id=episode.room_id,
+                reason=episode.reason,
+                first_sent_at=episode.first_sent_at,
+                last_sent_at=episode.last_sent_at,
+            )
+            if episode
             else None
         ),
-    }
+        failure=_fault_view(source, room_fault) if room_fault else None,
+    )
 
 
-def robot_state(coordinator: AdaptiveRoboVacCoordinator, entity_id: str) -> dict[str, Any]:
-    """Return the established card-friendly state for a discovered vacuum."""
+def robot_view(source: ProjectionSource, entity_id: str) -> RobotView:
+    """Build typed, immutable state for one discovered vacuum."""
 
-    robot = coordinator.discovery.robots[entity_id]
-    state = coordinator.hass.states.get(entity_id)
-    ready, reason = coordinator._robot_ready(robot)
-    active = coordinator.data["active"].get(entity_id)
-    hold = coordinator.data["robot_holds"].get(entity_id)
-    active_rooms = [
-        coordinator.discovery.rooms[area_id].name
-        for area_id in coordinator._active_rooms(active)
-        if area_id in coordinator.discovery.rooms
-    ] if active else []
-    native_mop_profile = robot.adapter_capabilities.native_mop_profile
+    robot = source.discovery.robots[entity_id]
+    state = source.hass.states.get(entity_id)
+    ready, reason = source._robot_ready(robot)
+    active = source.state.active_jobs.get(robot.registry_id)
+    hold = source.state.robot_holds.get(robot.registry_id)
+    active_rooms = (
+        tuple(
+            source.discovery.rooms[area_id].name
+            for area_id in source._active_rooms(active)
+            if area_id in source.discovery.rooms
+        )
+        if active
+        else ()
+    )
+    settings = source._robot_settings(robot)
     active_mop_profile = (
-        active.get("cleaning_profile", {})
-        if active and active.get("operation") == "mop"
-        else {}
+        active.cleaning_profile if active and active.operation == "mop" else None
     )
-    settings = coordinator._robot_settings(robot)
-    direct_route = active_mop_profile.get("mop_mode") or settings.get("mop_mode")
-    direct_intensity = active_mop_profile.get("mop_intensity") or settings.get(
-        "mop_intensity"
-    )
+    direct_route = (
+        active_mop_profile.mop_mode if active_mop_profile else None
+    ) or settings.mop_mode
+    direct_intensity = (
+        active_mop_profile.mop_intensity if active_mop_profile else None
+    ) or settings.mop_intensity
     mop_profile_summary = (
         "Mop mode with suction off"
         f"; route: {str(direct_route or 'standard').replace('_', ' ')}"
         f"; water: {str(direct_intensity or 'medium').replace('_', ' ')}"
-        if native_mop_profile
+        if robot.adapter_capabilities.native_mop_profile
         else None
     )
-    def observed(entity: str | None) -> str | None:
-        observed_state = coordinator.hass.states.get(entity) if entity else None
+
+    def observed(control_entity_id: str | None) -> str | None:
+        observed_state = (
+            source.hass.states.get(control_entity_id) if control_entity_id else None
+        )
         return observed_state.state if observed_state else None
 
-    observed_profile = {
-        "fan_speed": state.attributes.get("fan_speed") if state else None,
-        "mode": observed(robot.profile.mode_select_entity_id),
-        "mop_mode": observed(robot.profile.mop_mode_select_entity_id),
-        "mop_intensity": observed(robot.profile.mop_intensity_select_entity_id),
-        "passes": observed(robot.profile.passes_select_entity_id),
-    }
-    return {
-        "name": robot.name,
-        "entity_id": entity_id,
-        "floor_id": robot.floor_id,
-        "state": state.state if state else "unavailable",
-        "battery": coordinator._robot_battery(robot),
-        "ready": ready,
-        "reason": reason,
-        "active": active,
-        "scheduler_hold": hold,
-        "active_room": ", ".join(active_rooms) if active_rooms else None,
-        "active_rooms": active_rooms,
-        "profile": robot.profile,
-        "adapter_id": robot.adapter_id,
-        "adapter_schema_version": robot.adapter_schema_version,
-        "adapter_capabilities": {
-            "portable_area_clean": robot.adapter_capabilities.portable_area_clean,
-            "supported_pass_counts": sorted(
-                robot.adapter_capabilities.supported_pass_counts
-            ),
-            "native_area_pass_counts": sorted(
-                robot.adapter_capabilities.native_area_pass_counts
-            ),
-            "vacuum_pass_counts": sorted(robot.adapter_capabilities.vacuum_pass_counts),
-            "mop_pass_counts": sorted(robot.adapter_capabilities.mop_pass_counts),
-            "cleaning_depth_options": list(
-                robot.adapter_capabilities.cleaning_depth_options
-            ),
-            "native_mop_profile": native_mop_profile,
-            "supported_operations": sorted(
-                robot.adapter_capabilities.supported_operations
-            ),
-            "water_readiness": {
-                "status": robot.adapter_capabilities.water_readiness.status,
-                "reason": robot.adapter_capabilities.water_readiness.reason,
-                "ready": robot.adapter_capabilities.water_readiness.ready,
-                "authoritative": robot.adapter_capabilities.water_readiness.authoritative,
-            },
-        },
-        "adapter_diagnostic": robot.adapter_diagnostic,
-        "failure": (
-            coordinator.robot_fault_view(robot)
-            if coordinator.fault_affects_robot(robot)
-            else None
+    robot_fault = source.state.robot_faults.get(robot.registry_id)
+    return RobotView(
+        registry_id=robot.registry_id,
+        entity_id=robot.entity_id,
+        unique_fragment=source.robot_unique_fragment(robot.entity_id),
+        name=robot.name,
+        floor_id=robot.floor_id,
+        state=state.state if state else "unavailable",
+        battery=source._robot_battery(robot),
+        ready=ready,
+        reason=reason,
+        active=_active_job_view(active),
+        scheduler_hold=_hold_view(hold),
+        active_room=", ".join(active_rooms) if active_rooms else None,
+        active_rooms=active_rooms,
+        profile=robot.profile,
+        adapter_id=robot.adapter_id,
+        adapter_schema_version=robot.adapter_schema_version,
+        adapter_capabilities=robot.adapter_capabilities,
+        adapter_diagnostic=robot.adapter_diagnostic,
+        failure=_fault_view(source, robot_fault) if robot_fault else None,
+        settings=RobotSettingsView(
+            enabled=settings.enabled,
+            minimum_battery=settings.minimum_battery,
+            cleaning_program=settings.cleaning_program,
+            double_pass=settings.double_pass,
+            mop_double_pass=settings.mop_double_pass,
+            mode=settings.mode,
+            mop_mode=settings.mop_mode,
+            mop_intensity=settings.mop_intensity,
+            fan_speed=settings.fan_speed,
+            cleaning_depth=settings.cleaning_depth,
+            cleaning_depth_configured=settings.cleaning_depth_configured,
+            direct_custom_mop_migrated=settings.direct_custom_mop_migrated,
         ),
-        "settings": settings,
-        "observed_profile": observed_profile,
-        "mop_profile_summary": mop_profile_summary,
+        observed_profile=ObservedProfileView(
+            fan_speed=(
+                str(state.attributes.get("fan_speed"))
+                if state and state.attributes.get("fan_speed") is not None
+                else None
+            ),
+            mode=observed(robot.profile.mode_select_entity_id),
+            mop_mode=observed(robot.profile.mop_mode_select_entity_id),
+            mop_intensity=observed(robot.profile.mop_intensity_select_entity_id),
+            passes=observed(robot.profile.passes_select_entity_id),
+        ),
+        mop_profile_summary=mop_profile_summary,
+    )
+
+
+def floor_plan_view(source: ProjectionSource) -> FloorPlanView:
+    """Build a typed floor-plan projection from live registry discovery."""
+
+    plan = source.state.floor_plan
+    live_room_ids = set(source.discovery.rooms)
+    source_registry_ids = {
+        occupancy_source.registry_id
+        for room in source.discovery.rooms.values()
+        for occupancy_source in room.occupancy_sources
     }
+    floors: dict[str, list[FloorPlanRoomView]] = {}
+    for room in source.discovery.rooms.values():
+        rectangle = plan.rooms.get(room.area_id)
+        sensors = []
+        for occupancy_source in room.occupancy_sources:
+            observed = source.hass.states.get(occupancy_source.entity_id)
+            state = (
+                "active"
+                if observed and observed.state == "on"
+                else "inactive"
+                if observed and observed.state == "off"
+                else "unavailable"
+            )
+            marker = plan.sensors.get(occupancy_source.registry_id)
+            sensors.append(
+                FloorPlanSensorView(
+                    registry_id=occupancy_source.registry_id,
+                    entity_id=occupancy_source.entity_id,
+                    kind=occupancy_source.kind,
+                    state=state,
+                    marker=(
+                        marker if marker and marker.area_id == room.area_id else None
+                    ),
+                )
+            )
+        floors.setdefault(room.floor_id, []).append(
+            FloorPlanRoomView(
+                area_id=room.area_id,
+                name=room.name,
+                floor_id=room.floor_id,
+                rectangle=(
+                    rectangle
+                    if rectangle and rectangle.floor_id == room.floor_id
+                    else None
+                ),
+                sensors=tuple(sensors),
+            )
+        )
+    return FloorPlanView(
+        revision=plan.revision,
+        floors=tuple(
+            FloorView(
+                floor_id=floor_id,
+                rooms=tuple(
+                    sorted(rooms, key=lambda room: (room.name.lower(), room.area_id))
+                ),
+            )
+            for floor_id, rooms in sorted(floors.items())
+        ),
+        edges=tuple(sorted(plan.edges)),
+        orphaned_rooms=tuple(
+            sorted(area_id for area_id in plan.rooms if area_id not in live_room_ids)
+        ),
+        orphaned_sensors=tuple(
+            sorted(
+                registry_id
+                for registry_id in plan.sensors
+                if registry_id not in source_registry_ids
+            )
+        ),
+    )
+
+
+def build_snapshot(source: ProjectionSource) -> IntegrationSnapshot:
+    """Build one immutable snapshot after an application transaction settles."""
+
+    plan = floor_plan_view(source)
+    robot_faults = tuple(
+        _fault_view(source, fault)
+        for _key, fault in sorted(source.state.robot_faults.items())
+    )
+    room_faults = tuple(
+        _fault_view(source, fault)
+        for _key, fault in sorted(source.state.room_faults.items())
+    )
+    all_faults = (*robot_faults, *room_faults)
+    singular_fault = all_faults[0] if len(all_faults) == 1 else None
+    robots = tuple(
+        robot_view(source, robot.entity_id)
+        for robot in sorted(
+            source.discovery.robots.values(),
+            key=lambda item: item.registry_id,
+        )
+    )
+    rooms = tuple(
+        room_view(source, room.area_id)
+        for room in sorted(
+            source.discovery.rooms.values(),
+            key=lambda item: item.area_id,
+        )
+    )
+    maps = tuple(
+        MapView(
+            robot_registry_id=robot.registry_id,
+            available=(
+                source.map_recovery_projection.capability(robot.entity_id).available
+            ),
+            summary=source.map_recovery_projection.summary(robot.entity_id),
+            preview_options=source.map_recovery_projection.preview_options(
+                robot.entity_id
+            ),
+            selected_preview_option=(
+                source.map_recovery_projection.selected_preview_option(robot.entity_id)
+            ),
+            selected_preview=source.map_recovery_projection.selected_preview(
+                robot.entity_id
+            ),
+        )
+        for robot in sorted(
+            source.discovery.robots.values(),
+            key=lambda item: item.registry_id,
+        )
+    )
+    confidence = source.get_global_setting("forecast_confidence")
+    if not isinstance(confidence, (int, float)):
+        raise TypeError("forecast_confidence must be numeric")
+    scheduler = SchedulerView(
+        observe_only=source.observe_only,
+        party_mode=source.party_mode,
+        scheduler_halted=source.scheduler_halted,
+        scheduler_limited=source.scheduler_limited,
+        storage_safe_mode=source.storage_safe_mode,
+        forecast_confidence=float(confidence),
+        hall_start=str(source.get_global_setting("hall_start")),
+        hall_end=str(source.get_global_setting("hall_end")),
+        unresolved_start=str(source.get_global_setting("unresolved_start")),
+        unresolved_end=str(source.get_global_setting("unresolved_end")),
+        last_evaluation_at=source.state.evaluation.last_evaluation_at,
+        preview=FrozenJsonObject.from_mapping(
+            source.state.evaluation.last_preview.to_mapping()
+        ),
+        robot_faults=robot_faults,
+        room_faults=room_faults,
+        floor_plan=plan,
+        failure=singular_fault,
+    )
+    return IntegrationSnapshot(
+        scheduler=scheduler,
+        rooms=rooms,
+        robots=robots,
+        maps=maps,
+        floor_plan=plan,
+    )

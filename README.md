@@ -53,7 +53,8 @@ automatically on supported versions.
    and per-room cards using the example sections dashboard. Review schedule
    previews before turning off observe-only mode.
 
-See [setup](docs/setup.md) and [dashboard setup](docs/dashboard.md). Home
+See [setup](docs/setup.md), [architecture](docs/architecture.md), and
+[dashboard setup](docs/dashboard.md). Home
 Assistant user-initiated room cleans are tracked automatically; native
 vacuum-app starts are intentionally left untracked.
 
@@ -112,10 +113,12 @@ mop stage; they never fall back to vacuum-and-mop cleaning.
 
 The three manual room actions bypass cadence, desired windows, occupancy,
 forecasting, configured enablement, battery thresholds, holds, and scheduler
-halts. A compatible same-floor robot must be physically docked; Party Mode and
-observe-only mode remain non-bypassable. A rejected press is audited but never
-queued to start later. A manual occurrence that physically completes becomes
-the room's normal cadence anchor.
+halts. A compatible same-floor robot must be physically docked; Party Mode,
+observe-only mode, storage-safe mode, startup settling, and shutdown remain
+non-bypassable. Mapping, profile, preflight, water approval, and confirmed-start
+requirements still apply. A rejected press is audited but never queued to start
+later. A manual occurrence that physically completes becomes the room's normal
+cadence anchor.
 
 Each robot card also has a **Stop and return to dock** button. It sends the
 native return-to-base command and marks any tracked scheduler or manual clean
@@ -196,6 +199,11 @@ Version 1.8.1 treats a same-device Roborock `washing_the_mop` transition as
 start evidence for an accepted Mop stage. The stage remains in progress while
 the robot prepares at the dock and is only credited after the usual observed
 room-cleaning lifecycle.
+
+Version 1.13.0 advances the internal scheduler Store to schema 16 and replaces
+the monolithic runtime with typed commands, pure planning/recovery reducers,
+independent infrastructure services, immutable snapshots, and a push-only
+coordinator. See the [v1.13 migration guide](docs/migration-v1.13.0.md).
 
 ## Releases and upgrades
 

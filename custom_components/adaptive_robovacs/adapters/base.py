@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 import asyncio
-from dataclasses import dataclass
 import logging
 import re
-from typing import Any, Callable
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
-from ..models import AdapterCapabilities, AdapterDispatchRequest, AdapterDispatchResult
-
+from ..models import (
+    AdapterCapabilities,
+    AdapterDispatchRequest,
+    AdapterDispatchResult,
+    DispatchOutcome,
+)
 
 _LOGGER = logging.getLogger(__name__)
 MOP_MODE_RETRY_INTERVAL_SECONDS = 5
@@ -118,7 +123,7 @@ class VacuumAdapter(ABC):
                 continue
             if not isinstance(option, str) or option not in options or not entity_id:
                 return AdapterDispatchResult(
-                    "unsupported",
+                    DispatchOutcome.UNSUPPORTED,
                     "profile_option_unsupported",
                     "A saved cleaning profile option is no longer supported.",
                 )
@@ -129,14 +134,14 @@ class VacuumAdapter(ABC):
                 or option not in state.attributes.get("options", [])
             ):
                 return AdapterDispatchResult(
-                    "blocked",
+                    DispatchOutcome.BLOCKED,
                     "profile_control_unavailable",
                     "A cleaning profile control is unavailable.",
                 )
         fan_speed = values.get("fan_speed")
         if fan_speed is not None and fan_speed not in capabilities.fan_speed_options:
             return AdapterDispatchResult(
-                "unsupported",
+                DispatchOutcome.UNSUPPORTED,
                 "profile_option_unsupported",
                 "A saved fan speed is no longer supported.",
             )
@@ -146,7 +151,7 @@ class VacuumAdapter(ABC):
             and cleaning_depth not in capabilities.cleaning_depth_options
         ):
             return AdapterDispatchResult(
-                "unsupported",
+                DispatchOutcome.UNSUPPORTED,
                 "profile_option_unsupported",
                 "A saved cleaning depth is no longer supported.",
             )
@@ -170,11 +175,11 @@ class VacuumAdapter(ABC):
                 )
             ):
                 return AdapterDispatchResult(
-                    "blocked",
+                    DispatchOutcome.BLOCKED,
                     "profile_control_unavailable",
                     "The pass-count control is unavailable.",
                 )
-        return AdapterDispatchResult("ready", "ready", "Ready")
+        return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
 
     async def async_apply_profile(
         self,
@@ -197,7 +202,9 @@ class VacuumAdapter(ABC):
             option = values.get(key)
             if entity_id and isinstance(option, str):
                 if context.can_mutate and not context.can_mutate():
-                    return AdapterDispatchResult("ready", "ready", "Ready")
+                    return AdapterDispatchResult(
+                        DispatchOutcome.READY, "ready", "Ready"
+                    )
                 await hass.services.async_call(
                     "select",
                     "select_option",
@@ -207,7 +214,7 @@ class VacuumAdapter(ABC):
         fan_speed = values.get("fan_speed")
         if isinstance(fan_speed, str):
             if context.can_mutate and not context.can_mutate():
-                return AdapterDispatchResult("ready", "ready", "Ready")
+                return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
             await hass.services.async_call(
                 "vacuum",
                 "set_fan_speed",
@@ -235,7 +242,9 @@ class VacuumAdapter(ABC):
             )
             if wanted:
                 if context.can_mutate and not context.can_mutate():
-                    return AdapterDispatchResult("ready", "ready", "Ready")
+                    return AdapterDispatchResult(
+                        DispatchOutcome.READY, "ready", "Ready"
+                    )
                 await hass.services.async_call(
                     "select",
                     "select_option",
@@ -250,7 +259,7 @@ class VacuumAdapter(ABC):
         mode = values.get("mode")
         if operation_mode_entity_id and isinstance(mode, str):
             if context.can_mutate and not context.can_mutate():
-                return AdapterDispatchResult("ready", "ready", "Ready")
+                return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
             await hass.services.async_call(
                 "select",
                 "select_option",
@@ -268,7 +277,7 @@ class VacuumAdapter(ABC):
         """Require a confirmed mop-only operation before starting a mop stage."""
 
         if request.operation != "mop":
-            return AdapterDispatchResult("ready", "ready", "Ready")
+            return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
         entity_id = context.profile.mode_select_entity_id
         wanted = request.cleaning_profile.get("mode")
         if not (
@@ -277,7 +286,7 @@ class VacuumAdapter(ABC):
             and _slugify(wanted) in {"mop", "mop_only"}
         ):
             return AdapterDispatchResult(
-                "blocked",
+                DispatchOutcome.BLOCKED,
                 "mop_only_mode_unconfirmed",
                 "Mop-only mode could not be confirmed.",
             )
@@ -288,12 +297,12 @@ class VacuumAdapter(ABC):
 
         observed = observed_mode()
         if observed == wanted:
-            return AdapterDispatchResult("ready", "ready", "Ready")
+            return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
 
         for _attempt in range(MOP_MODE_RETRY_ATTEMPTS):
             await asyncio.sleep(MOP_MODE_RETRY_INTERVAL_SECONDS)
             if context.can_mutate and not context.can_mutate():
-                return AdapterDispatchResult("ready", "ready", "Ready")
+                return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
             await hass.services.async_call(
                 "select",
                 "select_option",
@@ -302,10 +311,11 @@ class VacuumAdapter(ABC):
             )
             observed = observed_mode()
             if observed == wanted:
-                return AdapterDispatchResult("ready", "ready", "Ready")
+                return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
 
         _LOGGER.warning(
-            "Adaptive RoboVacs could not confirm mop-only mode: robot=%s selector=%s requested=%s observed=%s retries=%s",
+            "Adaptive RoboVacs could not confirm mop-only mode: robot=%s "
+            "selector=%s requested=%s observed=%s retries=%s",
             request.robot_entity_id,
             entity_id,
             wanted,
@@ -313,7 +323,7 @@ class VacuumAdapter(ABC):
             MOP_MODE_RETRY_ATTEMPTS,
         )
         return AdapterDispatchResult(
-            "blocked",
+            DispatchOutcome.BLOCKED,
             "mop_only_mode_unconfirmed",
             "Mop-only mode could not be confirmed.",
         )

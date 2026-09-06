@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
-from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from typing import Any
 
-from .const import DOMAIN
-from .entity import AdaptiveEntity, async_setup_dynamic_entities
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .commands import SetGlobalCommand, SetRobotSettingCommand, SetRoomSettingCommand
+from .coordinator import AdaptiveRoboVacsCoordinator
+from .entity import (
+    AdaptiveEntity,
+    async_setup_dynamic_entities,
+    robot_unique_fragment,
+)
+from .runtime_data import AdaptiveRoboVacsConfigEntry
+
+PARALLEL_UPDATES = 0
 
 
 class _AdaptiveSwitch(AdaptiveEntity, SwitchEntity):
@@ -21,26 +31,34 @@ class _AdaptiveSwitch(AdaptiveEntity, SwitchEntity):
 
 
 class _GlobalSwitch(_AdaptiveSwitch):
-    def __init__(self, coordinator, key: str, name: str) -> None:
+    def __init__(
+        self, coordinator: AdaptiveRoboVacsCoordinator, key: str, name: str
+    ) -> None:
         super().__init__(coordinator, f"global_{key}", name, "global_control")
         self.setting_key = key
 
     @property
     def is_on(self) -> bool:
-        return bool(self.coordinator.get_global_setting(self.setting_key))
+        return bool(self.coordinator.data.scheduler.global_setting(self.setting_key))
 
-    async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.async_set_global(self.setting_key, True)
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_execute(SetGlobalCommand(self.setting_key, True))
 
-    async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.async_set_global(self.setting_key, False)
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_execute(SetGlobalCommand(self.setting_key, False))
 
 
 class _RobotSwitch(_AdaptiveSwitch):
-    def __init__(self, coordinator, robot_entity_id: str, key: str, label: str) -> None:
+    def __init__(
+        self,
+        coordinator: AdaptiveRoboVacsCoordinator,
+        robot_entity_id: str,
+        key: str,
+        label: str,
+    ) -> None:
         super().__init__(
             coordinator,
-            f"robot_{coordinator.robot_unique_fragment(robot_entity_id)}_{key}",
+            f"robot_{robot_unique_fragment(coordinator, robot_entity_id)}_{key}",
             label,
             "robot_control",
             robot_entity_id=robot_entity_id,
@@ -51,55 +69,91 @@ class _RobotSwitch(_AdaptiveSwitch):
 
     @property
     def is_on(self) -> bool:
-        return bool(self.coordinator.robot_state(self.robot_entity_id)["settings"].get(self.setting_key, False))
+        settings = self.robot_view(self.robot_entity_id).settings
+        if self.setting_key == "enabled":
+            return settings.enabled
+        if self.setting_key == "double_pass":
+            return settings.double_pass
+        if self.setting_key == "mop_double_pass":
+            return settings.mop_double_pass
+        return False
 
-    async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.async_set_robot_setting(self.robot_entity_id, self.setting_key, True)
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_execute(
+            SetRobotSettingCommand(self.robot_entity_id, self.setting_key, True)
+        )
 
-    async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.async_set_robot_setting(self.robot_entity_id, self.setting_key, False)
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_execute(
+            SetRobotSettingCommand(self.robot_entity_id, self.setting_key, False)
+        )
 
 
 class _RoomSwitch(_AdaptiveSwitch):
-    def __init__(self, coordinator, area_id: str, key: str, name: str) -> None:
+    def __init__(
+        self,
+        coordinator: AdaptiveRoboVacsCoordinator,
+        area_id: str,
+        key: str,
+        name: str,
+    ) -> None:
         role = {
             "enabled": "room_enabled_control",
             "ignore_desired_window": "room_ignore_desired_window_control",
         }.get(key, "room_control")
-        super().__init__(coordinator, f"room_{area_id}_{key}", name, role, area_id=area_id)
+        super().__init__(
+            coordinator, f"room_{area_id}_{key}", name, role, area_id=area_id
+        )
         self.area_id = area_id
         self.setting_key = key
 
     @property
     def is_on(self) -> bool:
-        return bool(self.coordinator.room_state(self.area_id)[self.setting_key])
+        room = self.room_view(self.area_id)
+        return (
+            room.enabled
+            if self.setting_key == "enabled"
+            else room.ignore_desired_window
+        )
 
-    async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.async_set_room_setting(self.area_id, self.setting_key, True)
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_execute(
+            SetRoomSettingCommand(self.area_id, self.setting_key, True)
+        )
 
-    async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.async_set_room_setting(self.area_id, self.setting_key, False)
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_execute(
+            SetRoomSettingCommand(self.area_id, self.setting_key, False)
+        )
 
 
-def _entities(coordinator) -> list[AdaptiveEntity]:
+def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
     entities: list[AdaptiveEntity] = [
         _GlobalSwitch(coordinator, "party_mode", "Party mode"),
         _GlobalSwitch(coordinator, "observe_only", "Observe-only mode"),
     ]
-    for robot in coordinator.discovery.robots.values():
-        entities.append(_RobotSwitch(coordinator, robot.entity_id, "enabled", "enabled"))
+    for robot in coordinator.data.robots:
+        entities.append(
+            _RobotSwitch(coordinator, robot.entity_id, "enabled", "enabled")
+        )
         if 2 in robot.adapter_capabilities.vacuum_pass_counts:
             entities.append(
-                _RobotSwitch(coordinator, robot.entity_id, "double_pass", "double vacuum pass")
+                _RobotSwitch(
+                    coordinator, robot.entity_id, "double_pass", "double vacuum pass"
+                )
             )
         if 2 in robot.adapter_capabilities.mop_pass_counts:
             entities.append(
-                _RobotSwitch(coordinator, robot.entity_id, "mop_double_pass", "double mop pass")
+                _RobotSwitch(
+                    coordinator, robot.entity_id, "mop_double_pass", "double mop pass"
+                )
             )
-    for room in coordinator.discovery.rooms.values():
+    for room in coordinator.data.rooms:
         entities.extend(
             [
-                _RoomSwitch(coordinator, room.area_id, "enabled", f"{room.name} enabled"),
+                _RoomSwitch(
+                    coordinator, room.area_id, "enabled", f"{room.name} enabled"
+                ),
                 _RoomSwitch(
                     coordinator,
                     room.area_id,
@@ -111,8 +165,14 @@ def _entities(coordinator) -> list[AdaptiveEntity]:
     return entities
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: AdaptiveRoboVacsConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up registry-driven switches."""
 
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_setup_dynamic_entities(entry, async_add_entities, coordinator, lambda: _entities(coordinator))
+    coordinator = entry.runtime_data.coordinator
+    async_setup_dynamic_entities(
+        entry, async_add_entities, coordinator, lambda: _entities(coordinator)
+    )

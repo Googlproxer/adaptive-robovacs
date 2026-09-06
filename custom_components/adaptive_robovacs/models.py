@@ -6,11 +6,153 @@ occupancy and due-date behaviour can be tested without a running instance.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
 import math
 import re
-from typing import Iterable, Literal, Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import StrEnum
+from typing import Literal, NewType, Protocol
+
+AreaId = NewType("AreaId", str)
+FloorId = NewType("FloorId", str)
+RobotEntityId = NewType("RobotEntityId", str)
+RobotRegistryId = NewType("RobotRegistryId", str)
+
+
+class CleaningOperation(StrEnum):
+    """Physical operation performed by a vacuum."""
+
+    VACUUM = "vacuum"
+    MOP = "mop"
+
+
+class CleaningProgram(StrEnum):
+    """Ordered room-cleaning program."""
+
+    VACUUM_ONLY = "vacuum_only"
+    MOP_ONLY = "mop_only"
+    VACUUM_THEN_MOP = "vacuum_then_mop"
+    MOP_THEN_VACUUM = "mop_then_vacuum"
+
+
+class JobPhase(StrEnum):
+    """Durable physical lifecycle phase for a tracked job."""
+
+    MANUAL_REQUESTED = "manual_requested"
+    DISPATCHING = "dispatching"
+    ACCEPTED = "accepted"
+    MOP_WASHING = "mop_washing"
+    CLEANING = "cleaning"
+    RETURNING = "returning"
+    DOCK_COMPLETION_PENDING = "dock_completion_pending"
+    RECOVERY_WAITING = "recovery_waiting"
+    PAUSED = "paused"
+    ERROR_WAITING = "error_waiting"
+    COMPLETION_HELD = "completion_held"
+    COMPLETION_PENDING = "completion_pending"
+    CANCELLING = "cancelling"
+    START_OUTCOME_UNCERTAIN = "start_outcome_uncertain"
+
+
+class JobSource(StrEnum):
+    """Origin of an integration-tracked clean."""
+
+    SCHEDULER = "scheduler"
+    MANUAL_DASHBOARD = "manual_dashboard"
+    MANUAL_HOME_ASSISTANT = "manual_home_assistant"
+
+
+class OccurrenceSource(StrEnum):
+    """Origin of a multi-stage room occurrence."""
+
+    SCHEDULER = "scheduler"
+    MANUAL_DASHBOARD = "manual_dashboard"
+
+
+class StageStatus(StrEnum):
+    """Durable outcome of one physical occurrence stage."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    SKIPPED_NO_WATER = "skipped_no_water"
+    SKIPPED_UNCONFIRMED_WATER = "skipped_unconfirmed_water"
+    SKIPPED_NO_MOP = "skipped_no_mop"
+
+
+class DispatchOutcome(StrEnum):
+    """Normalized adapter transaction outcome."""
+
+    READY = "ready"
+    ACCEPTED = "accepted"
+    BLOCKED = "blocked"
+    UNSUPPORTED = "unsupported"
+    MAPPING_ERROR = "mapping_error"
+    FAILED = "failed"
+
+
+class FaultCode(StrEnum):
+    """Stable scheduler fault identifiers safe to expose to users."""
+
+    AREA_MAPPING_MISSING = "area_mapping_missing"
+    AREA_MAPPING_STALE = "area_mapping_stale"
+    AREA_MAPPING_AMBIGUOUS = "area_mapping_ambiguous"
+    AREA_MAPPING_RECHECK_REQUIRED = "area_mapping_recheck_required"
+    TWO_PASS_NO_LONGER_SUPPORTED = "two_pass_no_longer_supported"
+    ADAPTER_REQUEST_UNSUPPORTED = "adapter_request_unsupported"
+    ADAPTER_PREFLIGHT_FAILED = "adapter_preflight_failed"
+    PROFILE_APPLY_FAILED = "profile_apply_failed"
+    PROFILE_VALIDATION_FAILED = "profile_validation_failed"
+    PROFILE_OPTION_UNSUPPORTED = "profile_option_unsupported"
+    PROFILE_CONTROL_UNAVAILABLE = "profile_control_unavailable"
+    GENERIC_DISPATCH_FAILED = "generic_dispatch_failed"
+    NATIVE_DISPATCH_FAILED = "native_dispatch_failed"
+    START_CONFIRMATION_FAILED = "start_confirmation_failed"
+    START_OUTCOME_UNCERTAIN = "start_outcome_uncertain"
+    NATIVE_CLEANING_ZERO_DURATION = "native_cleaning_zero_duration"
+    Q10_MAX_PLUS_PROFILE_WRITE_FAILED = "q10_max_plus_profile_write_failed"
+    Q10_MAX_PLUS_START_FAILED = "q10_max_plus_start_failed"
+    COORDINATOR_SHUTTING_DOWN = "coordinator_shutting_down"
+    MOP_ONLY_MODE_UNCONFIRMED = "mop_only_mode_unconfirmed"
+    NATIVE_MOP_PROFILE_INVALID = "native_mop_profile_invalid"
+    NATIVE_MOP_PROFILE_CONTROL_UNAVAILABLE = "native_mop_profile_control_unavailable"
+    NATIVE_MOP_PROFILE_UNCONFIRMED = "native_mop_profile_unconfirmed"
+    NATIVE_MOP_PROFILE_APPLY_FAILED = "native_mop_profile_apply_failed"
+    DIRECT_CUSTOM_MOP_PROFILE_INVALID = "direct_custom_mop_profile_invalid"
+    DIRECT_CUSTOM_MOP_CONTROL_UNAVAILABLE = "direct_custom_mop_control_unavailable"
+    DIRECT_CUSTOM_MOP_UNCONFIRMED = "direct_custom_mop_unconfirmed"
+    WATER_CONFIRMATION_REQUIRED = "water_confirmation_required"
+    UNRECOGNIZED_ADAPTER_FAILURE = "unrecognized_adapter_failure"
+
+
+class EvaluationMode(StrEnum):
+    """Whether an evaluation may dispatch physical work."""
+
+    PREVIEW = "preview"
+    DISPATCH = "dispatch"
+
+
+class EvaluationCause(StrEnum):
+    """Stable categories for scheduler evaluation triggers."""
+
+    STARTUP = "startup"
+    STARTUP_SETTLED = "startup-state-settled"
+    HOME_ASSISTANT_STARTED = "ha_started"
+    INTERVAL = "interval"
+    STATE_CHANGE = "state_change"
+    SETTINGS_CHANGE = "settings_change"
+    SERVICE = "service"
+    MANUAL_REQUEST = "manual_request"
+    START_CONFIRMATION = "start_confirmation"
+    READY_CONFIRMATION = "ready_confirmation"
+    RECOVERY = "recovery"
+    WATER_CONFIRMATION = "water_confirmation"
+    MAP_RECOVERY = "map_recovery"
+    CAPABILITY_REFRESH = "capability_refresh"
+    REPAIR = "repair"
+    USER_PREVIEW = "dashboard_preview"
+    STAGE_TRANSITION = "stage_transition"
 
 
 VALID_OCCUPANCY_STATES = {"on", "off"}
@@ -33,7 +175,7 @@ def normalize_floor_plan_edge(left: object, right: object) -> tuple[str, str]:
         raise ValueError("floor-plan edge target must be a non-empty area ID")
     if left == right:
         raise ValueError("floor-plan edges cannot link a room to itself")
-    return tuple(sorted((left, right)))
+    return (left, right) if left < right else (right, left)
 
 
 def floor_plan_integer(value: object, name: str, minimum: int, maximum: int) -> int:
@@ -84,7 +226,7 @@ class Candidate:
 
     room_id: str
     robot_entity_id: str
-    operation: str
+    operation: CleaningOperation
     due_at: datetime
     confidence: float
     reason: str
@@ -140,7 +282,7 @@ class RoomCandidate:
     """A pure room candidate before it is assigned to a robot."""
 
     room_id: str
-    operation: str
+    operation: CleaningOperation
     due_at: datetime
     confidence: float
     reason: str
@@ -178,11 +320,11 @@ class WaterReadiness:
     revalidation_eligible: bool = False
 
     @classmethod
-    def unsupported(cls) -> "WaterReadiness":
+    def unsupported(cls) -> WaterReadiness:
         return cls("unsupported", "mopping_unsupported")
 
     @classmethod
-    def confirmation_required(cls) -> "WaterReadiness":
+    def confirmation_required(cls) -> WaterReadiness:
         return cls("confirmation_required", "water_confirmation_required")
 
 
@@ -191,11 +333,7 @@ def scheduled_mop_revalidation_allowed(
 ) -> bool:
     """Return whether one scheduler mop may revalidate stale water telemetry."""
 
-    return (
-        source == "scheduler"
-        and operation == "mop"
-        and water.revalidation_eligible
-    )
+    return source == "scheduler" and operation == "mop" and water.revalidation_eligible
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +351,7 @@ class AdapterCapabilities:
     mop_mode_options: tuple[str, ...] = ()
     mop_intensity_options: tuple[str, ...] = ()
     cleaning_depth_options: tuple[str, ...] = ()
-    water_readiness: WaterReadiness | str = WaterReadiness.unsupported()
+    water_readiness: WaterReadiness = field(default_factory=WaterReadiness.unsupported)
     vacuum_pass_counts: frozenset[int] = frozenset()
     mop_pass_counts: frozenset[int] = frozenset()
     native_vacuum_pass_counts: frozenset[int] = frozenset()
@@ -229,14 +367,6 @@ class AdapterCapabilities:
     def __post_init__(self) -> None:
         """Normalize schema-one adapter snapshots during a rolling upgrade."""
 
-        water = self.water_readiness
-        if isinstance(water, str):
-            normalized = (
-                WaterReadiness.confirmation_required()
-                if water in {"unknown", "confirmation_required"}
-                else WaterReadiness.unsupported()
-            )
-            object.__setattr__(self, "water_readiness", normalized)
         if not self.vacuum_pass_counts:
             object.__setattr__(self, "vacuum_pass_counts", self.supported_pass_counts)
         if not self.mop_pass_counts and "mop" in self.supported_operations:
@@ -272,21 +402,69 @@ class AdapterCapabilities:
 
 
 @dataclass(frozen=True, slots=True)
+class AdapterCleaningProfile:
+    """Exact typed settings and approvals carried to a vacuum adapter."""
+
+    fan_speed: str | None = None
+    mode: str | None = None
+    mop_mode: str | None = None
+    mop_intensity: str | None = None
+    cleaning_depth: str | None = None
+    water_confirmed: bool = False
+    ignore_water_readiness: bool = False
+
+    @classmethod
+    def from_resolved(
+        cls,
+        profile: ResolvedCleaningProfile | None,
+        *,
+        water_confirmed: bool = False,
+        ignore_water_readiness: bool = False,
+    ) -> AdapterCleaningProfile:
+        """Create an adapter profile from a domain profile without a mapping."""
+
+        return cls(
+            fan_speed=profile.fan_speed if profile else None,
+            mode=profile.mode if profile else None,
+            mop_mode=profile.mop_mode if profile else None,
+            mop_intensity=profile.mop_intensity if profile else None,
+            cleaning_depth=profile.cleaning_depth if profile else None,
+            water_confirmed=water_confirmed,
+            ignore_water_readiness=ignore_water_readiness,
+        )
+
+    def get(self, key: str, default: object = None) -> object:
+        """Support bounded adapter lookups without exposing a raw mapping."""
+
+        if key not in {
+            "fan_speed",
+            "mode",
+            "mop_mode",
+            "mop_intensity",
+            "cleaning_depth",
+            "water_confirmed",
+            "ignore_water_readiness",
+        }:
+            return default
+        return getattr(self, key)
+
+
+@dataclass(frozen=True, slots=True)
 class AdapterDispatchRequest:
     """A vendor-neutral room-clean request passed to an adapter."""
 
     robot_entity_id: str
     area_ids: tuple[str, ...]
-    operation: str
+    operation: CleaningOperation
     passes: int
-    cleaning_profile: Mapping[str, object]
+    cleaning_profile: AdapterCleaningProfile
 
 
 @dataclass(frozen=True, slots=True)
 class AdapterDispatchResult:
     """Normalized adapter preflight or dispatch result."""
 
-    status: str
+    status: DispatchOutcome
     code: str
     summary: str
     native_attempted: bool = False
@@ -294,15 +472,15 @@ class AdapterDispatchResult:
 
     @property
     def accepted(self) -> bool:
-        return self.status == "accepted"
+        return self.status is DispatchOutcome.ACCEPTED
 
     @property
     def ready(self) -> bool:
-        return self.status in {"ready", "accepted"}
+        return self.status in {DispatchOutcome.READY, DispatchOutcome.ACCEPTED}
 
     @property
     def blocked(self) -> bool:
-        return self.status == "blocked"
+        return self.status is DispatchOutcome.BLOCKED
 
 
 PROFILE_SETTING_KEYS = (
@@ -335,9 +513,6 @@ ROOM_CLEANING_PERIOD_WINDOWS = {
 }
 CUSTOM_ROOM_CLEANING_WINDOW = ("09:00", "20:00")
 ROOM_CLEANING_PROFILE_OPTIONS = ("Robot default", "Custom")
-type CleaningProgram = Literal[
-    "vacuum_only", "mop_only", "vacuum_then_mop", "mop_then_vacuum"
-]
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,12 +534,28 @@ class RequestedCleaningProfile:
             "cleaning_depth": self.cleaning_depth,
         }
 
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Mapping[str, object] | None,
+    ) -> RequestedCleaningProfile:
+        """Decode a validated requested-profile snapshot."""
+
+        source = value or {}
+        return cls(
+            fan_speed=_optional_profile_value(source.get("fan_speed")),
+            mode=_optional_profile_value(source.get("mode")),
+            mop_mode=_optional_profile_value(source.get("mop_mode")),
+            mop_intensity=_optional_profile_value(source.get("mop_intensity")),
+            cleaning_depth=_optional_profile_value(source.get("cleaning_depth")),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedCleaningProfile:
     """Exact adapter-facing settings resolved for one physical stage."""
 
-    operation: str
+    operation: CleaningOperation
     fan_speed: str | None = None
     mode: str | None = None
     mop_mode: str | None = None
@@ -383,20 +574,61 @@ class ResolvedCleaningProfile:
             "cleaning_depth": self.cleaning_depth,
         }
 
+    @classmethod
+    def from_mapping(
+        cls,
+        operation: CleaningOperation | str,
+        value: Mapping[str, object] | None,
+    ) -> ResolvedCleaningProfile:
+        """Decode a validated operation-specific profile snapshot."""
+
+        source = value or {}
+        return cls(
+            operation=CleaningOperation(operation),
+            fan_speed=_optional_profile_value(source.get("fan_speed")),
+            mode=_optional_profile_value(source.get("mode")),
+            mop_mode=_optional_profile_value(source.get("mop_mode")),
+            mop_intensity=_optional_profile_value(source.get("mop_intensity")),
+            cleaning_depth=_optional_profile_value(source.get("cleaning_depth")),
+        )
+
+
+def _optional_profile_value(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+class ProfilePolicy(Protocol):
+    """Typed settings needed to resolve an adapter-facing profile."""
+
+    fan_speed: str | None
+    mode: str | None
+    mop_mode: str | None
+    mop_intensity: str | None
+    cleaning_depth: str | None
+
+
+class RoomProfilePolicy(ProfilePolicy, Protocol):
+    """Room profile settings and their explicit-override marker."""
+
+    profile_custom: bool
+    enabled: bool
+    desired_window_start: str | None
+    desired_window_end: str | None
+
 
 def _profile_value(
-    room_settings: Mapping[str, object],
-    robot_settings: Mapping[str, object],
+    room_settings: RoomProfilePolicy,
+    robot_settings: ProfilePolicy,
     key: str,
 ) -> str | None:
-    value = room_settings.get(key)
+    value = getattr(room_settings, key)
     if value is None:
-        value = robot_settings.get(key)
+        value = getattr(robot_settings, key)
     return value if isinstance(value, str) and value else None
 
 
 def requested_cleaning_profile(
-    room_settings: Mapping[str, object], robot_settings: Mapping[str, object]
+    room_settings: RoomProfilePolicy, robot_settings: ProfilePolicy
 ) -> RequestedCleaningProfile:
     """Resolve raw requested values without applying operation semantics."""
 
@@ -409,7 +641,7 @@ def requested_cleaning_profile(
 
 
 def native_mop_profile_default_migration(
-    robot_settings: Mapping[str, object],
+    robot_settings: ProfilePolicy,
 ) -> dict[str, str | bool] | None:
     """Return the one-time native mop-profile defaults for one robot's settings.
 
@@ -419,13 +651,13 @@ def native_mop_profile_default_migration(
     never rewritten.
     """
 
-    if bool(robot_settings.get("direct_custom_mop_migrated", False)):
+    if bool(getattr(robot_settings, "direct_custom_mop_migrated", False)):
         return None
     migration: dict[str, str | bool] = {"direct_custom_mop_migrated": True}
-    route = robot_settings.get("mop_mode")
+    route = robot_settings.mop_mode
     if not is_native_mop_profile_value("mop_mode", route):
         migration["mop_mode"] = "standard"
-    intensity = robot_settings.get("mop_intensity")
+    intensity = robot_settings.mop_intensity
     if not is_native_mop_profile_value("mop_intensity", intensity):
         migration["mop_intensity"] = "medium"
     return migration
@@ -445,24 +677,24 @@ def is_native_mop_profile_value(key: str, value: object) -> bool:
 
 
 def cleaning_profile_sources(
-    room_settings: Mapping[str, object],
-) -> dict[str, str]:
+    room_settings: RoomProfilePolicy,
+) -> tuple[tuple[str, str], ...]:
     """Describe whether each effective value is room-owned or inherited."""
 
-    return {
-        key: "room" if room_settings.get(key) is not None else "robot"
+    return tuple(
+        (key, "room" if getattr(room_settings, key) is not None else "robot")
         for key in PROFILE_SETTING_KEYS
-    }
+    )
 
 
-def room_cleaning_period(room_settings: Mapping[str, object]) -> str:
+def room_cleaning_period(room_settings: RoomProfilePolicy) -> str:
     """Return the simple period currently represented by room settings."""
 
-    if not bool(room_settings.get("enabled", False)):
+    if not bool(room_settings.enabled):
         return "Off"
     bounds = (
-        room_settings.get("desired_window_start"),
-        room_settings.get("desired_window_end"),
+        room_settings.desired_window_start,
+        room_settings.desired_window_end,
     )
     if bounds == (None, None):
         return "Default"
@@ -497,18 +729,20 @@ def room_cleaning_period_update(option: str) -> dict[str, object]:
     }
 
 
-def room_cleaning_profile_is_custom(room_settings: Mapping[str, object]) -> bool:
+def room_cleaning_profile_is_custom(room_settings: RoomProfilePolicy) -> bool:
     """Return whether a room keeps its detailed profile controls expanded."""
 
-    return bool(room_settings.get("profile_custom", False)) or any(
-        room_settings.get(key) is not None for key in ROOM_PROFILE_OVERRIDE_KEYS
+    return room_settings.profile_custom or any(
+        getattr(room_settings, key) is not None for key in ROOM_PROFILE_OVERRIDE_KEYS
     )
 
 
-def room_cleaning_profile(room_settings: Mapping[str, object]) -> str:
+def room_cleaning_profile(room_settings: RoomProfilePolicy) -> str:
     """Return the simple profile choice represented by one room."""
 
-    return "Custom" if room_cleaning_profile_is_custom(room_settings) else "Robot default"
+    return (
+        "Custom" if room_cleaning_profile_is_custom(room_settings) else "Robot default"
+    )
 
 
 def room_cleaning_profile_update(option: str) -> dict[str, object]:
@@ -530,24 +764,17 @@ def _normalized_profile_option(value: str) -> str:
 
 
 def _operation_mode_option(
-    options: Iterable[str], operation: str
+    options: Iterable[str], operation: CleaningOperation
 ) -> str | None:
-    wanted = (
-        ("vacuum_only", "vacuum")
-        if operation == "vacuum"
-        else ("mop_only", "mop")
-    )
-    normalized = {
-        _normalized_profile_option(option): option
-        for option in options
-    }
+    wanted = ("vacuum_only", "vacuum") if operation == "vacuum" else ("mop_only", "mop")
+    normalized = {_normalized_profile_option(option): option for option in options}
     return next((normalized[option] for option in wanted if option in normalized), None)
 
 
 def resolve_cleaning_profile(
-    operation: str,
-    room_settings: Mapping[str, object],
-    robot_settings: Mapping[str, object],
+    operation: CleaningOperation | str,
+    room_settings: RoomProfilePolicy,
+    robot_settings: ProfilePolicy,
     capabilities: AdapterCapabilities,
 ) -> ResolvedCleaningProfile | None:
     """Resolve one exact stage profile, rejecting stale saved options.
@@ -558,7 +785,9 @@ def resolve_cleaning_profile(
     user's requested operation.
     """
 
-    if operation not in {"vacuum", "mop"}:
+    try:
+        operation = CleaningOperation(operation)
+    except ValueError:
         return None
     option_sets = {
         "fan_speed": capabilities.fan_speed_options,
@@ -622,7 +851,7 @@ def resolve_cleaning_profile(
             mop_mode=mop_route,
             mop_intensity=mop_intensity,
         )
-    applicable_keys = (
+    applicable_keys: tuple[str, ...] = (
         ("fan_speed", "mode", "mop_mode", "mop_intensity")
         if operation == "mop"
         else ("fan_speed", "mode")
@@ -641,15 +870,15 @@ def resolve_cleaning_profile(
 
     operation_mode = _operation_mode_option(capabilities.mode_options, operation)
     explicit_modes = {
-        "vacuum", "vacuum_only", "mop", "mop_only", "vacuum_and_mop",
+        "vacuum",
+        "vacuum_only",
+        "mop",
+        "mop_only",
+        "vacuum_and_mop",
         "vac_and_mop",
     }
-    wanted = (
-        {"vacuum", "vacuum_only"}
-        if operation == "vacuum"
-        else {"mop", "mop_only"}
-    )
-    room_mode = room_settings.get("mode")
+    wanted = {"vacuum", "vacuum_only"} if operation == "vacuum" else {"mop", "mop_only"}
+    room_mode = room_settings.mode
     if isinstance(room_mode, str) and room_mode:
         normalized = _normalized_profile_option(room_mode)
         operation_selector = any(
@@ -683,7 +912,7 @@ def resolve_cleaning_profile(
     if operation == "mop" and mop_mode is None:
         mop_mode = _operation_mode_option(capabilities.mop_mode_options, operation)
 
-    required = (
+    required: tuple[tuple[tuple[str, ...], str | None], ...] = (
         (capabilities.fan_speed_options, values["fan_speed"]),
         (capabilities.mode_options, mode),
     )
@@ -706,7 +935,7 @@ def resolve_cleaning_profile(
 
 
 def cleaning_profile_is_supported(
-    profile: Mapping[str, object], capabilities: AdapterCapabilities
+    profile: ResolvedCleaningProfile, capabilities: AdapterCapabilities
 ) -> bool:
     """Return whether a persisted exact profile still exists in capabilities."""
 
@@ -718,78 +947,68 @@ def cleaning_profile_is_supported(
         "cleaning_depth": capabilities.cleaning_depth_options,
     }
     if not all(
-        value is None or isinstance(value, str) and value in option_sets[key]
-        for key, value in (
-            (key, profile.get(key)) for key in PROFILE_SETTING_KEYS
-        )
+        value is None or value in option_sets[key]
+        for key, value in ((key, getattr(profile, key)) for key in PROFILE_SETTING_KEYS)
     ):
         return False
-    operation = profile.get("operation")
+    operation = profile.operation
     if operation not in {"vacuum", "mop"}:
         return False
-    required = (
-        (capabilities.fan_speed_options, profile.get("fan_speed")),
-        (capabilities.mode_options, profile.get("mode")),
+    required: tuple[tuple[tuple[str, ...], str | None], ...] = (
+        (capabilities.fan_speed_options, profile.fan_speed),
+        (capabilities.mode_options, profile.mode),
     )
     if operation == "mop":
         required += (
-            (capabilities.mop_mode_options, profile.get("mop_mode")),
-            (capabilities.mop_intensity_options, profile.get("mop_intensity")),
+            (capabilities.mop_mode_options, profile.mop_mode),
+            (capabilities.mop_intensity_options, profile.mop_intensity),
         )
     return not any(options and value is None for options, value in required)
 
 
-def can_refresh_pending_occurrence_profile(
-    occurrence: Mapping[str, object] | None,
-    stage: Mapping[str, object] | None,
-    robot_state: str | None,
-    has_active_job: bool,
-) -> bool:
-    """Return whether a stale scheduler profile may be refreshed safely.
-
-    A persisted occurrence normally keeps its exact resolved profile so later
-    default changes cannot alter scheduled work.  The sole recovery exception
-    is an unstarted scheduler stage whose assigned robot is observed docked;
-    no active or manual work may be changed this way.
-    """
-
-    return bool(
-        occurrence
-        and occurrence.get("source", "scheduler") == "scheduler"
-        and stage
-        and stage.get("status") == "pending"
-        and not stage.get("started_at")
-        and robot_state == "docked"
-        and not has_active_job
-    )
-
-
 CLEANING_PROGRAMS: tuple[CleaningProgram, ...] = (
-    "vacuum_only",
-    "mop_only",
-    "vacuum_then_mop",
-    "mop_then_vacuum",
+    CleaningProgram.VACUUM_ONLY,
+    CleaningProgram.MOP_ONLY,
+    CleaningProgram.VACUUM_THEN_MOP,
+    CleaningProgram.MOP_THEN_VACUUM,
 )
 
 
-def expand_cleaning_program(program: str) -> tuple[str, ...]:
+def expand_cleaning_program(
+    program: CleaningProgram | str,
+) -> tuple[CleaningOperation, ...]:
     """Expand a public cleaning program into ordered physical starts."""
 
-    return {
-        "vacuum_only": ("vacuum",),
-        "mop_only": ("mop",),
-        "vacuum_then_mop": ("vacuum", "mop"),
-        "mop_then_vacuum": ("mop", "vacuum"),
-    }.get(program, ())
+    programs = {
+        CleaningProgram.VACUUM_ONLY: (CleaningOperation.VACUUM,),
+        CleaningProgram.MOP_ONLY: (CleaningOperation.MOP,),
+        CleaningProgram.VACUUM_THEN_MOP: (
+            CleaningOperation.VACUUM,
+            CleaningOperation.MOP,
+        ),
+        CleaningProgram.MOP_THEN_VACUUM: (
+            CleaningOperation.MOP,
+            CleaningOperation.VACUUM,
+        ),
+    }
+    try:
+        normalized = CleaningProgram(program)
+    except ValueError:
+        return ()
+    return programs[normalized]
 
 
 def effective_cleaning_program(
-    room_program: str | None, robot_program: str
+    room_program: CleaningProgram | str | None,
+    robot_program: CleaningProgram | str,
 ) -> CleaningProgram | None:
     """Resolve a room override while rejecting malformed stored values."""
 
     program = room_program or robot_program
-    return program if program in CLEANING_PROGRAMS else None
+    try:
+        return CleaningProgram(program)
+    except ValueError:
+        return None
 
 
 def stage_pass_count(
@@ -822,8 +1041,10 @@ def resolve_pass_count(
     """Resolve a room override against one robot without downgrading it."""
 
     supported = frozenset(int(value) for value in supported_pass_counts)
-    requested = room_pass_count if room_pass_count is not None else (
-        2 if robot_default_double_pass else 1
+    requested = (
+        room_pass_count
+        if room_pass_count is not None
+        else (2 if robot_default_double_pass else 1)
     )
     return requested if requested in supported else None
 
@@ -833,7 +1054,7 @@ class ManualCleanRequest:
     """A room-targeted clean explicitly initiated by a Home Assistant user."""
 
     robot_id: str
-    area_ids: list[str]
+    area_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -902,7 +1123,7 @@ def parse_manual_clean_request(
         return None
     if not area_ids or any(area_id not in managed_areas for area_id in area_ids):
         return None
-    return ManualCleanRequest(robot_ids[0], area_ids)
+    return ManualCleanRequest(robot_ids[0], tuple(area_ids))
 
 
 def held_job_transition(
@@ -940,8 +1161,7 @@ def pending_completion_is_docked(robot_state: str | None, phase: str | None) -> 
     """
 
     return (
-        phase in {"completion_pending", "completion_held"}
-        and robot_state == "docked"
+        phase in {"completion_pending", "completion_held"} and robot_state == "docked"
     )
 
 
@@ -1025,11 +1245,7 @@ def mop_stage_start_is_observed(
     """
 
     normalized_status = (
-        str(detailed_status or "")
-        .strip()
-        .lower()
-        .replace("-", "_")
-        .replace(" ", "_")
+        str(detailed_status or "").strip().lower().replace("-", "_").replace(" ", "_")
     )
     return (
         operation == "mop"
@@ -1065,30 +1281,6 @@ def scheduler_halt_recheck_result(
         return SchedulerHaltRecheckResult(False, "robot_state_unavailable", robot_state)
     return SchedulerHaltRecheckResult(
         False, "robot_not_docked_or_cleaning", robot_state
-    )
-
-
-def should_assume_native_app_clean(
-    robot_state: str | None,
-    scheduler_fault: Mapping[str, object] | None,
-    robot_registry_id: str,
-    active: Mapping[str, object] | None,
-) -> bool:
-    """Return whether a live clean cannot be attributed to a scheduler job.
-
-    A start whose outcome was uncertain has no authoritative room observation.
-    If the vacuum is subsequently cleaning, retaining the planned scheduler room
-    would incorrectly record an unproven clean. Treat that physical clean as a
-    native-app clean instead.
-    """
-
-    return bool(
-        robot_state == "cleaning"
-        and scheduler_fault
-        and scheduler_fault.get("robot_registry_id") == robot_registry_id
-        and active
-        and active.get("source") in {"scheduler", "manual_dashboard"}
-        and not active.get("seen_cleaning")
     )
 
 
@@ -1153,9 +1345,8 @@ def profile_control_kind(
         or "robovac-double-pass" in normalised_labels
     ):
         return "passes"
-    if (
-        {"low", "medium", "high"}.issubset(normalised)
-        and any("water" in option or "mop" in option for option in normalised)
+    if {"low", "medium", "high"}.issubset(normalised) and any(
+        "water" in option or "mop" in option for option in normalised
     ):
         return "mop_intensity"
     if "vacuum" in normalised and normalised.intersection({"mop", "mop-only"}):
@@ -1246,7 +1437,11 @@ def due_at(
     provide the intended short cooldown after a manual clean or cancellation.
     """
 
-    baseline = now if last_completed is None else last_completed + timedelta(hours=interval_hours)
+    baseline = (
+        now
+        if last_completed is None
+        else last_completed + timedelta(hours=interval_hours)
+    )
     if deferred_until is None:
         return baseline
     if deferred_until > now + timedelta(hours=interval_hours):
@@ -1272,7 +1467,11 @@ def format_time_until(due_at: datetime, now: datetime) -> str:
     if remaining_minutes >= 60:
         hours = remaining_minutes // 60
         return f"in {hours} hour" if hours == 1 else f"in {hours} hours"
-    return f"in {remaining_minutes} minute" if remaining_minutes == 1 else f"in {remaining_minutes} minutes"
+    return (
+        f"in {remaining_minutes} minute"
+        if remaining_minutes == 1
+        else f"in {remaining_minutes} minutes"
+    )
 
 
 def format_last_cleaned_age(last_cleaned: datetime | None, now: datetime) -> str:
@@ -1286,15 +1485,11 @@ def format_last_cleaned_age(last_cleaned: datetime | None, now: datetime) -> str
         return "just now"
     if elapsed_minutes < 60:
         return (
-            "1 minute ago"
-            if elapsed_minutes == 1
-            else f"{elapsed_minutes} minutes ago"
+            "1 minute ago" if elapsed_minutes == 1 else f"{elapsed_minutes} minutes ago"
         )
     elapsed_hours = elapsed_minutes // 60
     if elapsed_hours < 48:
-        return (
-            "1 hour ago" if elapsed_hours == 1 else f"{elapsed_hours} hours ago"
-        )
+        return "1 hour ago" if elapsed_hours == 1 else f"{elapsed_hours} hours ago"
     elapsed_days = elapsed_hours // 24
     return "1 day ago" if elapsed_days == 1 else f"{elapsed_days} days ago"
 
@@ -1338,7 +1533,14 @@ def forecast_vacancy(
             comparable_samples=len(comparable),
         )
 
-    successes = sum(float(sample.get("minutes", 0)) >= required_minutes for sample in comparable)
+    successes = 0
+    for sample in comparable:
+        minutes = sample.get("minutes", 0)
+        if isinstance(minutes, (int, float, str)):
+            try:
+                successes += float(minutes) >= required_minutes
+            except ValueError:
+                continue
     confidence = successes / len(comparable)
     return Forecast(
         confidence >= confidence_percent / 100,
@@ -1406,9 +1608,7 @@ def learned_duration_estimate(
         return DurationEstimate(fallback, fallback, len(values), False)
     middle = len(values) // 2
     typical = (
-        values[middle]
-        if len(values) % 2
-        else (values[middle - 1] + values[middle]) / 2
+        values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
     )
     index = min(len(values) - 1, max(0, int(len(values) * 0.8 + 0.999999) - 1))
     return DurationEstimate(typical, values[index], len(values), True)
@@ -1444,7 +1644,9 @@ def managed_clean_duration_failed(
         and not isinstance(native_timer_elapsed, bool)
         else measured_minutes
     )
-    timer_is_authoritative = native_timer_elapsed is not None or duration_source == "robot_timer"
+    timer_is_authoritative = (
+        native_timer_elapsed is not None or duration_source == "robot_timer"
+    )
     return (
         job_source in {"scheduler", "manual_dashboard", "manual_home_assistant"}
         and timer_is_authoritative

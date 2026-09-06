@@ -8,6 +8,7 @@ from ..models import (
     AdapterCapabilities,
     AdapterDispatchRequest,
     AdapterDispatchResult,
+    DispatchOutcome,
     WaterReadiness,
 )
 from .base import AdapterMatchContext, VacuumAdapter
@@ -79,7 +80,7 @@ class GenericVacuumAdapter(VacuumAdapter):
             request.operation, request.passes
         ):
             return AdapterDispatchResult(
-                "unsupported",
+                DispatchOutcome.UNSUPPORTED,
                 "adapter_request_unsupported",
                 "The selected vacuum no longer supports this cleaning request.",
             )
@@ -89,11 +90,11 @@ class GenericVacuumAdapter(VacuumAdapter):
             and not bool(request.cleaning_profile.get("water_confirmed"))
         ):
             return AdapterDispatchResult(
-                "blocked",
+                DispatchOutcome.BLOCKED,
                 "water_confirmation_required",
                 "Water confirmation is required before mopping.",
             )
-        return AdapterDispatchResult("ready", "ready", "Ready")
+        return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
 
     async def async_dispatch(
         self,
@@ -114,5 +115,5 @@ class GenericVacuumAdapter(VacuumAdapter):
             blocking=True,
         )
         return AdapterDispatchResult(
-            "accepted", "accepted", "Cleaning request accepted"
+            DispatchOutcome.ACCEPTED, "accepted", "Cleaning request accepted"
         )

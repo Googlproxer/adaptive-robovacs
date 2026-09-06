@@ -1,10 +1,11 @@
 """Contract checks for Home Assistant label registry IDs."""
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
-
-CONST_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "const.py"
+CONST_PATH = (
+    Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "const.py"
+)
 
 
 class LabelContractTests(unittest.TestCase):

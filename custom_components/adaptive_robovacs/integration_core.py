@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.storage import Store
 
+from .application import SchedulerApplication
 from .const import (
     DOMAIN,
     MAP_RECOVERY_STORAGE_KEY,
@@ -15,46 +17,54 @@ from .const import (
     STORAGE_KEY,
     STORE_VERSION,
 )
-from .coordinator import AdaptiveRoboVacCoordinator
-from .services import async_register_services, async_unregister_services
+from .coordinator import AdaptiveRoboVacsCoordinator
 from .repairs_manager import (
     cleaning_program_issue_id,
     notification_delivery_issue_id,
     scheduler_halted_issue_id,
     two_pass_issue_id,
 )
-from homeassistant.helpers import issue_registry as ir
-from homeassistant.helpers.storage import Store
-
-type AdaptiveRoboVacsConfigEntry = ConfigEntry[AdaptiveRoboVacCoordinator]
+from .runtime_data import AdaptiveRoboVacsConfigEntry, AdaptiveRoboVacsRuntimeData
+from .services import async_register_services, async_unregister_services
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: AdaptiveRoboVacsConfigEntry) -> bool:
+async def async_setup_entry(
+    hass: HomeAssistant, entry: AdaptiveRoboVacsConfigEntry
+) -> bool:
     """Set up Adaptive RoboVacs from a config entry."""
 
-    coordinator = AdaptiveRoboVacCoordinator(hass, entry)
-    await coordinator.async_initialize()
-    entry.runtime_data = coordinator
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    application = SchedulerApplication(hass, entry)
+    await application.async_initialize()
+    coordinator = AdaptiveRoboVacsCoordinator(application)
+    entry.runtime_data = AdaptiveRoboVacsRuntimeData(
+        coordinator=coordinator,
+        application=application,
+        lifecycle=application.lifecycle,
+    )
 
     await async_register_services(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: AdaptiveRoboVacsConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: AdaptiveRoboVacsConfigEntry
+) -> bool:
     """Unload a config entry."""
 
-    coordinator = entry.runtime_data
-    coordinator.begin_shutdown()
+    runtime = entry.runtime_data
+    runtime.application.begin_shutdown()
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        await coordinator.async_shutdown()
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-        if not hass.data.get(DOMAIN):
+        runtime.coordinator.close()
+        await runtime.application.async_shutdown()
+        if not any(
+            loaded_entry.entry_id != entry.entry_id
+            for loaded_entry in hass.config_entries.async_entries(DOMAIN)
+        ):
             await async_unregister_services(hass)
     else:
-        coordinator.cancel_shutdown()
+        runtime.application.cancel_shutdown()
     return unload_ok
 
 
@@ -63,7 +73,7 @@ async def async_remove_entry(
 ) -> None:
     """Remove all durable data and Repairs owned by a deleted config entry."""
 
-    store: Store[dict] = Store(
+    store: Store[dict[str, object]] = Store(
         hass, STORE_VERSION, f"{STORAGE_KEY}.{entry.entry_id}"
     )
     stored = await store.async_load()
@@ -94,7 +104,7 @@ async def async_remove_entry(
     for issue_id in issue_ids:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
     await store.async_remove()
-    map_store: Store[dict] = Store(
+    map_store: Store[dict[str, object]] = Store(
         hass, MAP_RECOVERY_STORE_VERSION, f"{MAP_RECOVERY_STORAGE_KEY}.{entry.entry_id}"
     )
     await map_store.async_remove()

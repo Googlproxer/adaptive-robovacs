@@ -1,61 +1,14 @@
-"""Q10 map-bridge tests with a small fake of Home Assistant's runtime."""
+"""Behavioral tests for the Q10 bridge over an existing HA runtime."""
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-import importlib.util
-from pathlib import Path
 import sys
-import types
 import unittest
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
-
-PACKAGE_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs"
-PACKAGE_NAME = "adaptive_robovacs_map_bridge_test"
-package = types.ModuleType(PACKAGE_NAME)
-package.__path__ = [str(PACKAGE_PATH)]
-sys.modules[PACKAGE_NAME] = package
-
-homeassistant = types.ModuleType("homeassistant")
-core = types.ModuleType("homeassistant.core")
-core.HomeAssistant = object
-core.callback = lambda function: function
-helpers = types.ModuleType("homeassistant.helpers")
-dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
-dispatcher.async_dispatcher_send = lambda *_args, **_kwargs: None
-storage = types.ModuleType("homeassistant.helpers.storage")
-
-
-class _Store:
-    def __init__(self, *_args, **_kwargs) -> None:
-        pass
-
-
-storage.Store = _Store
-util = types.ModuleType("homeassistant.util")
-dt = types.ModuleType("homeassistant.util.dt")
-dt.utcnow = lambda: datetime.now(timezone.utc)
-util.dt = dt
-sys.modules.update(
-    {
-        "homeassistant": homeassistant,
-        "homeassistant.core": core,
-        "homeassistant.helpers": helpers,
-        "homeassistant.helpers.dispatcher": dispatcher,
-        "homeassistant.helpers.storage": storage,
-        "homeassistant.util": util,
-        "homeassistant.util.dt": dt,
-    }
-)
-
-SPEC = importlib.util.spec_from_file_location(
-    f"{PACKAGE_NAME}.map_recovery", PACKAGE_PATH / "map_recovery.py"
-)
-assert SPEC and SPEC.loader
-recovery = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = recovery
-SPEC.loader.exec_module(recovery)
+from custom_components.adaptive_robovacs import map_recovery_roborock as recovery
 
 
 def _literal_lz4(value: bytes) -> bytes:
@@ -122,7 +75,12 @@ class _Command:
             self.list_requests += 1
             if self.list_requests == 1:
                 self.channel.queue.put_nowait(
-                    {"61": {"op": "list", "data": [{"id": "1234", "name": "Saved map"}]}}
+                    {
+                        "61": {
+                            "op": "list",
+                            "data": [{"id": "1234", "name": "Saved map"}],
+                        }
+                    }
                 )
             else:
                 self.channel.queue.put_nowait(_packet(1234))
@@ -189,7 +147,9 @@ class Q10MapBridgeTests(unittest.IsolatedAsyncioTestCase):
     def test_extract_bytes_ignores_empty_object_attributes(self) -> None:
         self.assertIsNone(recovery._extract_bytes(object()))
 
-    async def test_list_retries_the_read_only_request_until_the_reply_arrives(self) -> None:
+    async def test_list_retries_the_read_only_request_until_the_reply_arrives(
+        self,
+    ) -> None:
         api = _Api()
         bridge = _bridge(api)
         calls = 0
@@ -199,7 +159,12 @@ class Q10MapBridgeTests(unittest.IsolatedAsyncioTestCase):
             calls += 1
             if calls == 2:
                 api.channel.queue.put_nowait(
-                    {"61": {"op": "list", "data": [{"id": "1234", "name": "Saved map"}]}}
+                    {
+                        "61": {
+                            "op": "list",
+                            "data": [{"id": "1234", "name": "Saved map"}],
+                        }
+                    }
                 )
 
         api.command.send = delayed_send
@@ -252,34 +217,232 @@ class Q10MapBridgeTests(unittest.IsolatedAsyncioTestCase):
             recovery._FRAME_RETRY_INTERVAL = previous_interval
         self.assertTrue(api.channel.subscriptions[-1].closed)
 
-    async def test_preview_options_hide_private_snapshot_identifiers(self) -> None:
-        robot = types.SimpleNamespace(registry_id="robot-registry", entity_id="vacuum.test")
-        manager = recovery.MapRecoveryManager.__new__(recovery.MapRecoveryManager)
-        manager.coordinator = types.SimpleNamespace(
-            discovery=types.SimpleNamespace(robots={"vacuum.test": robot}),
-            _notify_listeners=lambda: None,
-        )
-        manager._data = {
-            "robots": {
-                "robot-registry": {
-                    "capture_sets": [
-                        {
-                            "snapshot_id": "private-snapshot-id",
-                            "captured_at": "2026-08-25T18:20:00+00:00",
-                            "maps": [{"map_id": "private-map-id", "name": "Map1"}],
-                        }
+    def test_extract_helpers_accept_supported_shapes_and_reject_noise(self) -> None:
+        self.assertIsNone(recovery._extract_map_list(None, "61"))
+        self.assertIsNone(recovery._extract_map_list({"op": "apply"}, "61"))
+        self.assertIsNone(recovery._extract_map_list({"data": "bad"}, "61"))
+        values = recovery._extract_map_list(
+            {
+                61: {
+                    "data": [
+                        None,
+                        {},
+                        {"id": 1},
+                        {"id": "2", "name": "Upstairs", "timestamp": 123},
                     ]
                 }
-            }
-        }
-        manager._preview_selection = {}
-        manager._storage_error = None
+            },
+            "61",
+        )
+        self.assertEqual([item.name for item in values or []], ["Map 1", "Upstairs"])
+        self.assertEqual((values or [])[1].timestamp, "123")
 
-        option = "Map1 - 2026-08-25T18:20:00+00:00"
-        self.assertEqual(manager.preview_options("vacuum.test"), (option,))
-        self.assertEqual(manager.selected_preview_option("vacuum.test"), option)
-        manager.select_preview_option("vacuum.test", option)
-        self.assertEqual(manager._preview_selection["vacuum.test"], ("private-snapshot-id", "private-map-id"))
+        marker = bytearray(b"abc")
+        self.assertEqual(recovery._extract_bytes(marker), b"abc")
+        self.assertEqual(recovery._extract_bytes(memoryview(b"def")), b"def")
+        self.assertEqual(recovery._extract_bytes((None, {"raw": b"ghi"})), b"ghi")
+        self.assertEqual(recovery._extract_bytes(SimpleNamespace(data=b"jkl")), b"jkl")
+        self.assertIsNone(recovery._normalise_dps(object()))
+        self.assertEqual(
+            recovery._normalise_dps(_DpsUpdate())["61"]["data"][0]["id"], "1234"
+        )
+
+    def test_from_api_requires_command_protocol_and_stream_capabilities(self) -> None:
+        mapping_module = ModuleType("roborock.data.b01_q10.b01_q10_code_mappings")
+        protocol_module = ModuleType("roborock.protocols.b01_q10_protocol")
+        protocol_module.decode_rpc_response = lambda value: value
+        modules = {
+            mapping_module.__name__: mapping_module,
+            protocol_module.__name__: protocol_module,
+        }
+        with patch.dict(sys.modules, modules):
+            mapping_module.B01_Q10_DP = SimpleNamespace(
+                COMMON=object(), MULTI_MAP=SimpleNamespace(code=61)
+            )
+            with self.assertRaisesRegex(recovery.MapRecoveryUnavailable, "command"):
+                recovery.Q10MapProtocolBridge.from_api(SimpleNamespace())
+
+            api = SimpleNamespace(command=SimpleNamespace(send=AsyncMock()))
+            mapping_module.B01_Q10_DP = SimpleNamespace(
+                COMMON=None, MULTI_MAP=SimpleNamespace(code=61)
+            )
+            with self.assertRaisesRegex(recovery.MapRecoveryUnavailable, "protocol"):
+                recovery.Q10MapProtocolBridge.from_api(api)
+
+            mapping_module.B01_Q10_DP = SimpleNamespace(
+                COMMON=object(), MULTI_MAP=SimpleNamespace(code=61)
+            )
+            with self.assertRaisesRegex(recovery.MapRecoveryUnavailable, "stream"):
+                recovery.Q10MapProtocolBridge.from_api(api)
+
+            channel = _Channel()
+            api._api = SimpleNamespace(_channel=SimpleNamespace(_mqtt_channel=channel))
+            bridge = recovery.Q10MapProtocolBridge.from_api(api)
+            self.assertIs(bridge._channel, channel)
+            self.assertEqual(bridge._multi_map_code, "61")
+
+    async def test_stream_context_manager_and_unsupported_shape(self) -> None:
+        class ContextSubscription:
+            def __init__(self) -> None:
+                self.items = iter(("one", "two"))
+                self.exited = False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                self.exited = True
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self.items)
+                except StopIteration as err:
+                    raise StopAsyncIteration from err
+
+        subscription = ContextSubscription()
+        bridge = _bridge(_Api())
+        bridge._channel = SimpleNamespace(subscribe_stream=lambda: subscription)
+        self.assertEqual(
+            [item async for item in bridge._async_stream()], ["one", "two"]
+        )
+        self.assertTrue(subscription.exited)
+
+        bridge._channel = SimpleNamespace(subscribe_stream=lambda: object())
+        with self.assertRaisesRegex(recovery.MapRecoveryUnavailable, "shape"):
+            await anext(bridge._async_stream())
+
+    def test_decode_message_falls_back_without_leaking_protocol_errors(self) -> None:
+        bridge = _bridge(_Api())
+        self.assertEqual(bridge._decode_message({"data": []}), {"data": []})
+        packet = _packet(1234)
+        self.assertIs(bridge._decode_message(packet), packet)
+
+        wire = SimpleNamespace(payload=b"not-a-frame")
+        bridge._decode_rpc_response = Mock(side_effect=(ValueError(), {61: "ok"}))
+        self.assertEqual(bridge._decode_message(wire), {"61": "ok"})
+        bridge._decode_rpc_response = Mock(side_effect=ValueError())
+        self.assertIs(bridge._decode_message(wire), wire)
+
+    async def test_send_failures_and_active_refresh_are_normalized(self) -> None:
+        bridge = _bridge(_Api())
+        bridge._api.command.send = AsyncMock(side_effect=RuntimeError("private"))
+        with self.assertRaisesRegex(recovery.MapRecoveryError, "rejected"):
+            await bridge._async_send_common({"op": "list"})
+        with self.assertRaisesRegex(recovery.MapRecoveryError, "active map"):
+            await bridge._async_send_active_frame_request({"op": "list"})
+
+        bridge = _bridge(_Api())
+        bridge._api.refresh = AsyncMock()
+        bridge._api.command.send = AsyncMock()
+        await bridge._async_send_active_frame_request({"op": "list"})
+        bridge._api.refresh.assert_awaited_once()
+
+    async def test_list_bounds_and_invalid_frame_results_are_rejected(self) -> None:
+        bridge = _bridge(_Api())
+        bridge._async_request_and_wait = AsyncMock(return_value=[])
+        with self.assertRaisesRegex(recovery.MapRecoveryError, "did not report"):
+            await bridge.async_list_maps()
+
+        bridge._async_request_and_wait.return_value = [
+            recovery.RetainedMap(str(index), f"Map {index}") for index in range(9)
+        ]
+        with self.assertRaisesRegex(recovery.MapRecoveryError, "too many"):
+            await bridge.async_list_maps()
+
+        bridge._async_request_and_wait.return_value = object()
+        with self.assertRaisesRegex(recovery.MapRecoveryError, "invalid map frame"):
+            await bridge.async_get_map("1")
+
+    async def test_request_wait_cancels_waiter_when_sender_fails(self) -> None:
+        bridge = _bridge(_Api())
+        closed = asyncio.Event()
+
+        async def wait_forever(_predicate, *, timeout_seconds):
+            del timeout_seconds
+            try:
+                await asyncio.Future()
+            finally:
+                closed.set()
+
+        bridge._async_wait_for = wait_forever
+
+        async def fail(_request):
+            raise RuntimeError("send failed")
+
+        with self.assertRaisesRegex(RuntimeError, "send failed"):
+            await bridge._async_request_and_wait(
+                {"op": "list"},
+                lambda value: value,
+                timeout_seconds=1,
+                sender=fail,
+            )
+        self.assertTrue(closed.is_set())
+
+
+class Q10RuntimeResolverTests(unittest.TestCase):
+    def test_resolver_requires_one_registry_identity_and_one_live_runtime(self) -> None:
+        registry = SimpleNamespace(async_get=Mock(return_value=None))
+        entries = []
+        hass = SimpleNamespace(
+            config_entries=SimpleNamespace(async_entries=lambda _domain: entries)
+        )
+        resolver = recovery.Q10RuntimeResolver(hass)
+
+        with self.assertRaisesRegex(recovery.MapRecoveryUnavailable, "not a Q10"):
+            resolver.async_resolve(
+                SimpleNamespace(platform="generic", device_id="device")
+            )
+
+        with patch.object(recovery.dr, "async_get", return_value=registry):
+            with self.assertRaisesRegex(
+                recovery.MapRecoveryUnavailable, "registry entry"
+            ):
+                resolver.async_resolve(
+                    SimpleNamespace(platform="roborock", device_id="device")
+                )
+
+            registry.async_get.return_value = SimpleNamespace(identifiers=set())
+            with self.assertRaisesRegex(recovery.MapRecoveryUnavailable, "matched"):
+                resolver.async_resolve(
+                    SimpleNamespace(platform="roborock", device_id="device")
+                )
+
+            registry.async_get.return_value = SimpleNamespace(
+                identifiers={("roborock", "duid-1")}
+            )
+            entries.append(
+                SimpleNamespace(
+                    runtime_data=SimpleNamespace(
+                        b01_q10={"one": SimpleNamespace(duid="duid-1", api="api")}
+                    )
+                )
+            )
+            expected = object()
+            with patch.object(
+                recovery.Q10MapProtocolBridge, "from_api", return_value=expected
+            ) as from_api:
+                self.assertIs(
+                    resolver.async_resolve(
+                        SimpleNamespace(platform="roborock", device_id="device")
+                    ),
+                    expected,
+                )
+            from_api.assert_called_once_with("api")
+
+            entries.append(
+                SimpleNamespace(
+                    runtime_data=SimpleNamespace(
+                        b01_q10=[SimpleNamespace(duid="duid-1", api="other")]
+                    )
+                )
+            )
+            with self.assertRaisesRegex(recovery.MapRecoveryUnavailable, "ambiguous"):
+                resolver.async_resolve(
+                    SimpleNamespace(platform="roborock", device_id="device")
+                )
 
 
 if __name__ == "__main__":

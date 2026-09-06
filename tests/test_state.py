@@ -1,37 +1,29 @@
-"""Tests for the durable scheduler-state codec without Home Assistant."""
+"""Behavioral tests for the typed scheduler Store codec and migrations."""
 
-from datetime import datetime, timezone
+from __future__ import annotations
+
+import importlib
 import importlib.util
-from pathlib import Path
 import sys
 import types
 import unittest
-
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 PACKAGE_PATH = Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs"
 PACKAGE_NAME = "adaptive_robovacs_state_test"
 package = types.ModuleType(PACKAGE_NAME)
 package.__path__ = [str(PACKAGE_PATH)]
 sys.modules[PACKAGE_NAME] = package
-SPEC = importlib.util.spec_from_file_location(f"{PACKAGE_NAME}.state", PACKAGE_PATH / "state.py")
+SPEC = importlib.util.spec_from_file_location(
+    f"{PACKAGE_NAME}.state", PACKAGE_PATH / "state.py"
+)
 assert SPEC and SPEC.loader
-state_module = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = state_module
-SPEC.loader.exec_module(state_module)
-
-SCHEMA_VERSION = state_module.SCHEMA_VERSION
-ActiveJob = state_module.ActiveJob
-CleaningOccurrence = state_module.CleaningOccurrence
-CleaningStage = state_module.CleaningStage
-Deferral = state_module.Deferral
-RoomHistory = state_module.RoomHistory
-RobotCooldown = state_module.RobotCooldown
-SchedulerState = state_module.SchedulerState
-SchedulerFault = state_module.SchedulerFault
-StateSchemaError = state_module.StateSchemaError
-RobotSettings = state_module.RobotSettings
-RobotHold = state_module.RobotHold
-migrate_runtime_robot_identity = state_module.migrate_runtime_robot_identity
+state = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = state
+SPEC.loader.exec_module(state)
+models = importlib.import_module(f"{PACKAGE_NAME}.models")
 
 
 ENTRY_DATA = {
@@ -42,228 +34,191 @@ ENTRY_DATA = {
     "unresolved_start": "00:00",
     "unresolved_end": "04:00",
 }
+WHEN = datetime(2026, 8, 3, 9, 0, tzinfo=UTC)
+
+
+def populated_state():
+    """Return representative typed state spanning every durable section."""
+
+    result = state.SchedulerState.create(ENTRY_DATA)
+    room_settings, history = result.ensure_room("study", is_bedroom=False)
+    room_settings.cleaning_program = models.CleaningProgram.VACUUM_THEN_MOP
+    room_settings.vacuum_pass_count = 2
+    room_settings.fan_speed = "max"
+    history.cleaning_completed_at = WHEN - timedelta(days=2)
+    history.deferrals["cleaning"] = state.Deferral(
+        until=WHEN + timedelta(hours=1),
+        source="manual_clean",
+        created_at=WHEN,
+        room_area_id="study",
+    )
+    history.duration_samples.append(
+        state.DurationSample(
+            minutes=21.5,
+            operation=models.CleaningOperation.VACUUM,
+            passes=2,
+            robot_registry_id="registry-alpha",
+            source="state_transition",
+            recorded_at=WHEN,
+        )
+    )
+    robot_settings = result.ensure_robot("registry-alpha", supports_mopping=True)
+    robot_settings.minimum_battery = 80
+    result.robot_entity_aliases["registry-alpha"] = "vacuum.alpha"
+    result.active_jobs["registry-alpha"] = state.ActiveJob(
+        room_id="study",
+        room_ids=["study"],
+        operation=models.CleaningOperation.VACUUM,
+        phase=models.JobPhase.CLEANING,
+        source=models.JobSource.SCHEDULER,
+        started_at=WHEN,
+        expected_minutes=21.5,
+        expected_end=WHEN + timedelta(minutes=22),
+        cleaning_profile=models.ResolvedCleaningProfile(
+            operation=models.CleaningOperation.VACUUM,
+            fan_speed="max",
+        ),
+        requested_profile=models.RequestedCleaningProfile(fan_speed="max"),
+        profile_sources=(("fan_speed", "room"),),
+    )
+    result.robot_holds["registry-alpha"] = state.RobotHold(
+        reason="paused", phase="held", held_at=WHEN
+    )
+    result.robot_cooldowns["registry-alpha"] = state.RobotCooldown(
+        until=WHEN + timedelta(minutes=15), cancelled_at=WHEN
+    )
+    result.occurrences["study"] = state.CleaningOccurrence(
+        occurrence_id="occurrence-1",
+        room_id="study",
+        robot_registry_id="registry-alpha",
+        robot_entity_id="vacuum.alpha",
+        program=models.CleaningProgram.VACUUM_THEN_MOP,
+        stages=[
+            state.CleaningStage(
+                models.CleaningOperation.VACUUM,
+                2,
+                models.StageStatus.RUNNING,
+            ),
+            state.CleaningStage(models.CleaningOperation.MOP, 1),
+        ],
+        scheduled_at=WHEN,
+        created_at=WHEN,
+        adapter_id="roborock",
+        adapter_schema_version=2,
+    )
+    result.water_confirmations["occurrence-1"] = state.WaterConfirmation(
+        request_id="request-1",
+        occurrence_id="occurrence-1",
+        room_id="study",
+        robot_registry_id="registry-alpha",
+        stage_index=1,
+        confirm_hash="a" * 64,
+        cancel_hash="b" * 64,
+        tag="water-confirmation",
+        sent_at=WHEN,
+        expires_at=WHEN + timedelta(minutes=10),
+    )
+    result.water_notification_episodes["study"] = state.WaterNotificationEpisode(
+        room_id="study",
+        reason="water_confirmation_required",
+        first_sent_at=WHEN,
+        last_sent_at=WHEN,
+    )
+    result.robot_faults["registry-alpha"] = state.SchedulerFault(
+        reason_code="start_outcome_uncertain",
+        robot_registry_id="registry-alpha",
+        room_area_id="study",
+        occurred_at=WHEN,
+        phase="dispatch",
+        native_command_may_have_started=True,
+        outcome_uncertain=True,
+    )
+    result.audit.manual_events.append(
+        state.ManualAuditRecord(
+            at=WHEN,
+            robot_registry_id="registry-alpha",
+            room_ids=("study",),
+            operations=("vacuum",),
+            outcome="requested",
+        )
+    )
+    result.audit.recovery_events.append(
+        state.RecoveryAuditRecord(
+            robot_registry_id="registry-alpha",
+            room_ids=("study",),
+            at=WHEN,
+            reason="observed",
+        )
+    )
+    result.audit.room_decisions.append(
+        state.RoomDecisionRecord(
+            at=WHEN,
+            room_area_id="study",
+            reason="waiting for 30 clear minutes",
+        )
+    )
+    result.floor_plan = state.FloorPlanState(
+        revision=4,
+        rooms={
+            "study": state.FloorPlanRectangle("ground", 1, 2, 8, 6),
+        },
+        sensors={"registry-radar": state.FloorPlanSensorMarker("study", 500, 250)},
+    )
+    result.first_scheduler_online_at = WHEN - timedelta(minutes=1)
+    return result
 
 
 class SchedulerStateTests(unittest.TestCase):
-    def test_initial_baseline_and_explainable_deferrals_round_trip(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.first_scheduler_online_at = datetime(
-            2026, 8, 1, 8, 0, tzinfo=timezone.utc
-        )
-        _settings, history = state.ensure_room("study", is_bedroom=False)
-        history.deferrals["cleaning"] = Deferral(
-            until=datetime(2026, 8, 2, 8, 0, tzinfo=timezone.utc),
-            source="manual_clean",
-            created_at=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
-            room_area_id="study",
-        )
-        state.robot_cooldowns["vacuum.study"] = RobotCooldown(
-            until=datetime(2026, 8, 1, 9, 15, tzinfo=timezone.utc),
-            cancelled_at=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
-        )
-        state.audit.room_decisions.append(
-            {"room_area_id": "study", "reason": "waiting for 30 clear minutes"}
-        )
+    def test_schema_16_round_trip_is_lossless_and_idempotent(self) -> None:
+        original = populated_state()
 
-        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
+        payload = original.encode()
+        restored, migrated = state.SchedulerState.from_store(payload, ENTRY_DATA)
+        again, migrated_again = state.SchedulerState.from_store(
+            restored.encode(), ENTRY_DATA
+        )
 
         self.assertFalse(migrated)
+        self.assertFalse(migrated_again)
+        self.assertEqual(again.encode(), payload)
         self.assertEqual(
-            restored.first_scheduler_online_at,
-            datetime(2026, 8, 1, 8, 0, tzinfo=timezone.utc),
-        )
-        self.assertEqual(
-            restored.room_history["study"].deferrals["cleaning"].source,
-            "manual_clean",
-        )
-        self.assertEqual(
-            restored.robot_cooldowns["vacuum.study"].reason,
-            "physical_cancelled",
-        )
-        self.assertEqual(restored.audit.room_decisions[0]["room_area_id"], "study")
-
-    def test_v12_timestamp_only_deferrals_are_migrated_for_review(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        _settings, history = state.ensure_room("study", is_bedroom=False)
-        history.deferrals["cleaning"] = Deferral(
-            until=datetime(2026, 8, 2, 8, 0, tzinfo=timezone.utc)
-        )
-        payload = state.to_store()
-        payload["schema_version"] = 12
-        payload["room_history"]["study"]["deferrals"] = {
-            "cleaning": "2026-08-02T08:00:00+00:00"
-        }
-        payload.pop("first_scheduler_online_at")
-        payload.pop("robot_cooldowns")
-
-        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
-
-        self.assertTrue(migrated)
-        self.assertIsNone(restored.first_scheduler_online_at)
-        self.assertEqual(
-            restored.room_history["study"].deferrals["cleaning"].source,
-            "legacy_unknown",
-        )
-
-    def test_map_recovery_hold_round_trips_selected_map_id(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.robot_holds["registry-q10"] = RobotHold(
-            reason="map_recovery_pending",
-            phase="manual_verification",
-            requested_map_id="retained-map-id",
-        )
-
-        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
-
-        self.assertFalse(migrated)
-        hold = restored.robot_holds["registry-q10"]
-        self.assertEqual(hold.reason, "map_recovery_pending")
-        self.assertEqual(hold.requested_map_id, "retained-map-id")
-
-    def test_cleaning_depth_initialization_distinguishes_legacy_and_reset_values(self) -> None:
-        defaults = RobotSettings.defaults(False)
-        legacy = RobotSettings.from_mapping({}, defaults)
-        reset = RobotSettings.from_mapping(
-            {"cleaning_depth": None, "cleaning_depth_configured": True}, defaults
-        )
-
-        self.assertFalse(legacy.cleaning_depth_configured)
-        self.assertTrue(reset.cleaning_depth_configured)
-
-    def test_direct_custom_mop_migration_marker_round_trips_with_robot_settings(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        settings = state.ensure_robot("registry-rob", supports_mopping=True)
-        settings.mop_mode = "standard"
-        settings.mop_intensity = "medium"
-        settings.direct_custom_mop_migrated = True
-
-        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
-
-        self.assertFalse(migrated)
-        self.assertTrue(
-            restored.robot_settings["registry-rob"].direct_custom_mop_migrated
-        )
-        self.assertEqual(restored.robot_settings["registry-rob"].mop_mode, "standard")
-        self.assertEqual(
-            restored.robot_settings["registry-rob"].mop_intensity, "medium"
-        )
-
-    def test_v11_profile_overrides_migrate_to_custom_mode_without_losing_values(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        room, _ = state.ensure_room("study", is_bedroom=False)
-        room.cleaning_program = "vacuum_then_mop"
-        room.vacuum_pass_count = 2
-        room.fan_speed = "max"
-        payload = state.to_store()
-        payload["schema_version"] = 11
-        payload["room_settings"]["study"].pop("profile_custom")
-
-        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
-
-        self.assertTrue(migrated)
-        settings = restored.room_settings["study"]
-        self.assertTrue(settings.profile_custom)
-        self.assertEqual(settings.cleaning_program, "vacuum_then_mop")
-        self.assertEqual(settings.vacuum_pass_count, 2)
-        self.assertEqual(settings.fan_speed, "max")
-
-    def test_current_schema_preserves_custom_mode_without_room_overrides(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        room, _ = state.ensure_room("study", is_bedroom=False)
-        room.profile_custom = True
-
-        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
-
-        self.assertFalse(migrated)
-        self.assertTrue(restored.room_settings["study"].profile_custom)
-        self.assertIsNone(restored.room_settings["study"].cleaning_program)
-        self.assertEqual(
-            restored.to_store()["room_settings"]["study"]["profile_custom"], True
-        )
-
-    def test_robot_identity_migration_preserves_settings_jobs_and_unique_alias(self) -> None:
-        data = {
-            "settings": {
-                "robots": {
-                    "vacuum.alpha": {
-                        "enabled": False,
-                        "cleaning_program": "vacuum_only",
-                    }
-                }
-            },
-            "rooms": {
-                "study": {
-                    "duration_samples": [
-                        {"robot": "vacuum.alpha", "minutes": 20}
-                    ]
-                }
-            },
-            "active": {"vacuum.alpha": {"room": "study"}},
-            "robot_holds": {"vacuum.alpha": {"reason": "paused"}},
-            "occurrences": {
-                "study": {
-                    "robot_registry_id": "registry-alpha",
-                    "robot_entity_id": "vacuum.alpha",
-                }
-            },
-        }
-
-        changed = migrate_runtime_robot_identity(
-            data,
-            {"registry-alpha": "vacuum.renamed"},
-            {"registry-alpha": "vacuum.alpha"},
-        )
-
-        self.assertTrue(changed)
-        self.assertFalse(data["settings"]["robots"]["registry-alpha"]["enabled"])
-        self.assertNotIn("vacuum.alpha", data["settings"]["robots"])
-        self.assertEqual(
-            data["robot_entity_aliases"]["registry-alpha"], "vacuum.alpha"
-        )
-        self.assertIn("vacuum.renamed", data["active"])
-        self.assertIn("vacuum.renamed", data["robot_holds"])
-        self.assertEqual(
-            data["rooms"]["study"]["duration_samples"][0]["robot"],
+            restored.audit.manual_events[0].robot_registry_id,
             "registry-alpha",
         )
-        self.assertEqual(
-            data["occurrences"]["study"]["robot_entity_id"],
-            "vacuum.renamed",
-        )
-        self.assertFalse(
-            migrate_runtime_robot_identity(
-                data, {"registry-alpha": "vacuum.renamed"}
-            )
-        )
+        self.assertNotIn("robot", payload["audit"]["manual_events"][0])
 
-    def test_robot_identity_migration_does_not_guess_between_ambiguous_robots(self) -> None:
-        data = {
-            "settings": {
-                "robots": {
-                    "vacuum.old_one": {"enabled": False},
-                    "vacuum.old_two": {"enabled": True},
-                }
-            },
-            "rooms": {},
-            "active": {},
-            "robot_holds": {},
-            "occurrences": {},
-        }
+    def test_schema_16_rejects_an_unknown_persisted_fault_code(self) -> None:
+        payload = populated_state().encode()
+        payload["robot_faults"]["registry-alpha"]["reason_code"] = "future_fault"
 
-        migrate_runtime_robot_identity(
-            data,
-            {
-                "registry-one": "vacuum.new_one",
-                "registry-two": "vacuum.new_two",
-            },
-        )
+        with self.assertRaises(state.StateSchemaError):
+            state.SchedulerState.from_store(payload, ENTRY_DATA)
 
-        self.assertIn("vacuum.old_one", data["settings"]["robots"])
-        self.assertIn("vacuum.old_two", data["settings"]["robots"])
-        self.assertNotIn("registry-one", data["settings"]["robots"])
-        self.assertNotIn("registry-two", data["settings"]["robots"])
+    def test_each_versioned_schema_migrates_once_to_schema_16(self) -> None:
+        for version in range(2, 16):
+            with self.subTest(version=version):
+                payload = populated_state().to_store()
+                payload["schema_version"] = version
+                if version < 15:
+                    payload.pop("floor_plan")
+                if version < 10:
+                    payload["scheduler_fault"] = next(
+                        iter(payload["robot_faults"].values())
+                    )
 
-    def test_v1_payload_migrates_without_losing_active_hold_or_audit_data(self) -> None:
+                migrated, changed = state.SchedulerState.from_store(payload, ENTRY_DATA)
+                stable, changed_again = state.SchedulerState.from_store(
+                    migrated.encode(), ENTRY_DATA
+                )
+
+                self.assertTrue(changed)
+                self.assertFalse(changed_again)
+                self.assertEqual(stable.encode()["schema_version"], 16)
+                self.assertEqual(stable.room_settings["study"].fan_speed, "max")
+                self.assertEqual(stable.active_jobs["registry-alpha"].room_id, "study")
+                self.assertEqual(stable.audit.manual_events[0].outcome, "requested")
+
+    def test_v1_payload_preserves_settings_history_jobs_holds_and_audit(self) -> None:
         payload = {
             "version": 1,
             "observe_only": False,
@@ -278,13 +233,17 @@ class SchedulerStateTests(unittest.TestCase):
                         "carpet": True,
                     }
                 },
-                "robots": {"vacuum.alpha": {"minimum_battery": 85, "double_pass": True}},
+                "robots": {
+                    "vacuum.alpha": {
+                        "minimum_battery": 85,
+                        "double_pass": True,
+                    }
+                },
             },
             "rooms": {
                 "kitchen": {
                     "vacuum": "2026-08-01T09:00:00+00:00",
                     "defer": {"vacuum": "2026-08-05T09:00:00+00:00"},
-                    "samples": [{"start": "2026-08-03T09:00:00+00:00", "minutes": 30}],
                     "duration_samples": [
                         {
                             "minutes": 26.5,
@@ -292,7 +251,6 @@ class SchedulerStateTests(unittest.TestCase):
                             "passes": 1,
                             "robot": "vacuum.alpha",
                             "source": "state_transition",
-                            "at": "2026-08-01T09:26:30+00:00",
                         }
                     ],
                 }
@@ -303,467 +261,501 @@ class SchedulerStateTests(unittest.TestCase):
                     "operation": "vacuum",
                     "phase": "paused",
                     "source": "scheduler",
-                    "expected_minutes": 28,
-                    "expected_end": "2026-08-05T09:28:00+00:00",
                 }
             },
-            "robot_holds": {
-                "vacuum.alpha": {
-                    "reason": "paused",
-                    "phase": "held",
-                    "held_at": "2026-08-05T09:02:00+00:00",
-                }
-            },
+            "robot_holds": {"vacuum.alpha": {"reason": "paused", "phase": "held"}},
             "manual_events": [{"outcome": "requested"}],
             "recovery_events": [{"reason": "paused"}],
-            "last_evaluation": "2026-08-05T09:00:00+00:00",
-            "last_preview": {"reason": "interval"},
+            "last_preview": {},
         }
 
-        state, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+        restored, migrated = state.SchedulerState.from_store(payload, ENTRY_DATA)
 
         self.assertTrue(migrated)
-        self.assertTrue(state.global_settings.party_mode)
-        self.assertEqual(state.room_settings["kitchen"].vacuum_interval, 72)
+        self.assertTrue(restored.global_settings.party_mode)
+        self.assertEqual(restored.room_settings["kitchen"].cleaning_interval, 72)
+        self.assertEqual(restored.robot_settings["vacuum.alpha"].minimum_battery, 85)
         self.assertEqual(
-            state.room_history["kitchen"].cleaning_completed_at,
-            datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
+            restored.room_history["kitchen"].duration_samples[0].minutes, 26.5
         )
-        self.assertEqual(state.robot_settings["vacuum.alpha"].minimum_battery, 85)
-        self.assertEqual(state.room_history["kitchen"].duration_samples[0].minutes, 26.5)
-        self.assertEqual(state.active_jobs["vacuum.alpha"].phase, "paused")
-        self.assertEqual(state.robot_holds["vacuum.alpha"].reason, "paused")
-        self.assertEqual(state.audit.manual_events, [{"outcome": "requested"}])
+        self.assertEqual(restored.active_jobs["vacuum.alpha"].phase, "paused")
+        self.assertEqual(restored.robot_holds["vacuum.alpha"].reason, "paused")
+        self.assertEqual(restored.audit.manual_events[0].outcome, "requested")
+        encoded = restored.encode()
+        self.assertEqual(encoded["schema_version"], 16)
+        self.assertNotIn("carpet", encoded["room_settings"]["kitchen"])
 
-        stored = state.to_store()
-        self.assertEqual(stored["schema_version"], SCHEMA_VERSION)
-        self.assertNotIn("carpet", stored["room_settings"]["kitchen"])
-        self.assertNotIn("active", stored)
-        self.assertEqual(stored["active_jobs"]["vacuum.alpha"]["room"], "kitchen")
-
-    def test_v7_carpet_setting_is_dropped_during_the_v8_migration(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        payload = state.to_store()
-        payload["schema_version"] = 7
-        payload["room_settings"]["study"]["carpet"] = True
-
-        migrated, did_migrate = SchedulerState.from_store(payload, ENTRY_DATA)
-
-        self.assertTrue(did_migrate)
-        self.assertNotIn("carpet", migrated.to_store()["room_settings"]["study"])
-
-    def test_v6_round_trip_preserves_occurrence_window_pass_fault_and_job_adapter(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        study_settings, _ = state.ensure_room("study", is_bedroom=False)
-        study_settings.desired_window_start = "10:15"
-        study_settings.pass_count = 2
-        study_settings.fan_speed = "max"
-        study_settings.mop_mode = "deep"
-        study_settings.cleaning_depth = "fine"
-        state.ensure_room("kitchen", is_bedroom=False)
-        state.room_history["study"] = RoomHistory(
-            vacuum_completed_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
-            deferrals={"vacuum": datetime(2026, 8, 2, tzinfo=timezone.utc)},
+    def test_registry_identity_migration_survives_entity_rename(self) -> None:
+        scheduler_state = populated_state()
+        scheduler_state.robot_settings["vacuum.alpha"] = (
+            scheduler_state.robot_settings.pop("registry-alpha")
         )
-        state.active_jobs["vacuum.beta"] = ActiveJob(
-            room_id="study",
-            room_ids=["study"],
-            operation="vacuum",
-            phase="cleaning",
-            source="scheduler",
-            expected_minutes=25,
-            expected_end=datetime(2026, 8, 3, 9, 25, tzinfo=timezone.utc),
-            mop_washing_at=datetime(2026, 8, 3, 9, 1, tzinfo=timezone.utc),
-            docked_at=datetime(2026, 8, 3, 9, 28, tzinfo=timezone.utc),
-            interruption_started_at=datetime(2026, 8, 3, 9, 10, tzinfo=timezone.utc),
-            interruption_minutes=3.5,
-            forecast_sample_eligible=True,
-            adapter_id="roborock",
-            adapter_schema_version=1,
-            cleaning_profile={"operation": "vacuum", "fan_speed": "max"},
-            requested_profile={"fan_speed": "max", "mode": "vacuum"},
-            profile_sources={"fan_speed": "room", "mode": "robot"},
-            manual_mode="configured",
+        scheduler_state.active_jobs["vacuum.alpha"] = scheduler_state.active_jobs.pop(
+            "registry-alpha"
         )
-        state.robot_entity_aliases["registry-robot"] = "vacuum.beta"
-        state.robot_faults["registry-robot"] = SchedulerFault(
-            reason_code="start_outcome_uncertain",
-            robot_registry_id="registry-robot",
-            room_area_id="study",
-            occurred_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
-            phase="dispatch",
-            native_command_may_have_started=True,
-            outcome_uncertain=True,
+        scheduler_state.robot_holds["vacuum.alpha"] = scheduler_state.robot_holds.pop(
+            "registry-alpha"
         )
-        state.occurrences["study"] = CleaningOccurrence(
-            occurrence_id="occurrence-1",
-            room_id="study",
-            robot_registry_id="registry-robot",
-            robot_entity_id="vacuum.beta",
-            program="vacuum_then_mop",
-            stages=[
-                CleaningStage(
-                    "vacuum",
-                    2,
-                    "completed",
-                    cleaning_profile={
-                        "operation": "vacuum",
-                        "fan_speed": "max",
-                        "mode": "vacuum",
-                    },
-                    requested_profile={"fan_speed": "max", "mode": "vacuum"},
-                    profile_sources={"fan_speed": "room", "mode": "robot"},
-                ),
-                CleaningStage("mop", 1),
-            ],
-            scheduled_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
-            created_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
-            adapter_id="roborock",
-            adapter_schema_version=2,
-            current_stage=1,
-            source="manual_dashboard",
-            manual_mode="configured",
-            manual_override=True,
-            bypass_desired_window=True,
-            manual_context_id="context-one",
+        scheduler_state.robot_cooldowns["vacuum.alpha"] = (
+            scheduler_state.robot_cooldowns.pop("registry-alpha")
         )
 
-        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
+        changed = state.migrate_robot_identity(
+            scheduler_state,
+            {"registry-alpha": "vacuum.renamed"},
+            {"registry-alpha": "vacuum.alpha"},
+        )
 
-        self.assertFalse(migrated)
-        self.assertFalse(restored.global_settings.observe_only)
-        self.assertEqual(restored.room_settings["study"].desired_window_start, "10:15")
-        self.assertIsNone(restored.room_settings["study"].desired_window_end)
-        self.assertIsNone(restored.room_settings["kitchen"].desired_window_start)
+        self.assertTrue(changed)
+        self.assertIn("registry-alpha", scheduler_state.robot_settings)
+        self.assertNotIn("vacuum.alpha", scheduler_state.active_jobs)
         self.assertEqual(
-            restored.room_history["study"].deferrals["vacuum"].until,
-            datetime(2026, 8, 2, tzinfo=timezone.utc),
+            scheduler_state.occurrences["study"].robot_entity_id,
+            "vacuum.renamed",
         )
         self.assertEqual(
-            restored.room_history["study"].deferrals["vacuum"].source,
-            "legacy_unknown",
+            scheduler_state.audit.manual_events[0].robot_registry_id,
+            "registry-alpha",
         )
-        self.assertEqual(restored.active_jobs["vacuum.beta"].expected_minutes, 25)
-        self.assertEqual(
-            restored.active_jobs["vacuum.beta"].mop_washing_at,
-            datetime(2026, 8, 3, 9, 1, tzinfo=timezone.utc),
-        )
-        self.assertEqual(restored.active_jobs["vacuum.beta"].adapter_id, "roborock")
-        self.assertEqual(
-            restored.active_jobs["vacuum.beta"].docked_at,
-            datetime(2026, 8, 3, 9, 28, tzinfo=timezone.utc),
-        )
-        self.assertEqual(restored.active_jobs["vacuum.beta"].interruption_minutes, 3.5)
-        self.assertTrue(restored.active_jobs["vacuum.beta"].forecast_sample_eligible)
-        self.assertEqual(restored.room_settings["study"].pass_count, 2)
-        self.assertEqual(restored.room_settings["study"].fan_speed, "max")
-        self.assertEqual(restored.room_settings["study"].mop_mode, "deep")
-        self.assertEqual(restored.room_settings["study"].cleaning_depth, "fine")
-        self.assertEqual(
-            restored.robot_faults["registry-robot"].robot_registry_id,
-            "registry-robot",
-        )
-        self.assertEqual(restored.occurrences["study"].current_stage, 1)
-        self.assertEqual(restored.occurrences["study"].stages[0].status, "completed")
-        self.assertEqual(
-            restored.occurrences["study"].stages[0].cleaning_profile["fan_speed"],
-            "max",
-        )
-        self.assertEqual(restored.occurrences["study"].source, "manual_dashboard")
-        self.assertTrue(restored.occurrences["study"].manual_override)
-        self.assertTrue(restored.occurrences["study"].bypass_desired_window)
-        self.assertEqual(
-            restored.active_jobs["vacuum.beta"].cleaning_profile["fan_speed"],
-            "max",
-        )
-        self.assertEqual(
-            restored.active_jobs["vacuum.beta"].profile_sources["fan_speed"],
-            "room",
-        )
-        self.assertEqual(
-            restored.robot_entity_aliases["registry-robot"], "vacuum.beta"
+        self.assertFalse(
+            state.migrate_robot_identity(
+                scheduler_state, {"registry-alpha": "vacuum.renamed"}
+            )
         )
 
-        runtime_restored, runtime_migrated = SchedulerState.from_store(
-            restored.to_runtime_data(), ENTRY_DATA
+    def test_ambiguous_legacy_identity_is_not_guessed(self) -> None:
+        scheduler_state = state.SchedulerState.create(ENTRY_DATA)
+        scheduler_state.robot_settings["vacuum.old_one"] = state.RobotSettings(
+            enabled=False
         )
-        self.assertTrue(runtime_migrated)
-        self.assertEqual(
-            runtime_restored.robot_faults["registry-robot"].reason_code,
-            "start_outcome_uncertain",
-        )
+        scheduler_state.robot_settings["vacuum.old_two"] = state.RobotSettings()
 
-        stored_room = restored.to_store()["room_settings"]["study"]
-        self.assertEqual(
-            stored_room["daily_window"],
-            {"version": 1, "start": "10:15", "end": None},
-        )
-
-    def test_v6_payload_migrates_to_nullable_room_profiles(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        payload = state.to_store()
-        payload["schema_version"] = 6
-        for key in ("fan_speed", "mode", "mop_mode", "mop_intensity", "cleaning_depth"):
-            payload["room_settings"]["study"].pop(key)
-
-        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
-
-        self.assertTrue(migrated)
-        self.assertIsNone(restored.room_settings["study"].fan_speed)
-        self.assertIsNone(restored.room_settings["study"].mode)
-
-    def test_v9_global_fault_migrates_to_its_robot_scope(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        payload = state.to_store()
-        payload["schema_version"] = 9
-        payload.pop("robot_faults")
-        payload.pop("room_faults")
-        payload["scheduler_fault"] = SchedulerFault(
-            reason_code="start_confirmation_failed",
-            robot_registry_id="registry-robot",
-            room_area_id="study",
-            occurred_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
-            phase="start_confirmation",
-        ).to_store()
-
-        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
-
-        self.assertTrue(migrated)
-        self.assertEqual(
-            restored.robot_faults["registry-robot"].reason_code,
-            "start_confirmation_failed",
-        )
-        self.assertEqual(restored.room_faults, {})
-
-    def test_current_schema_preserves_independent_robot_and_room_faults(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.robot_faults["registry-robot"] = SchedulerFault(
-            reason_code="start_confirmation_failed",
-            robot_registry_id="registry-robot",
-            room_area_id="study",
-            occurred_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
-            phase="start_confirmation",
-        )
-        state.room_faults["kitchen"] = SchedulerFault(
-            reason_code="area_mapping_missing",
-            robot_registry_id="registry-other",
-            room_area_id="kitchen",
-            occurred_at=datetime(2026, 8, 3, 9, 5, tzinfo=timezone.utc),
-            phase="adapter_preflight",
-        )
-
-        restored, migrated = SchedulerState.from_store(state.to_store(), ENTRY_DATA)
-
-        self.assertFalse(migrated)
-        self.assertEqual(set(restored.robot_faults), {"registry-robot"})
-        self.assertEqual(set(restored.room_faults), {"kitchen"})
-
-    def test_current_schema_rejects_malformed_profile_values(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        payload = state.to_store()
-        payload["room_settings"]["study"]["fan_speed"] = ["max"]
-
-        with self.assertRaises(StateSchemaError):
-            SchedulerState.from_store(payload, ENTRY_DATA)
-
-    def test_v2_rooms_migrate_to_inherited_daily_windows(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        payload = state.to_store()
-        payload["schema_version"] = 2
-        payload["room_settings"]["study"].pop("daily_window")
-
-        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
-
-        self.assertTrue(migrated)
-        self.assertIsNone(restored.room_settings["study"].desired_window_start)
-        self.assertIsNone(restored.room_settings["study"].desired_window_end)
-        runtime = restored.to_runtime_data()["settings"]["rooms"]["study"]
-        self.assertEqual(runtime["cleaning_interval"], 84)
-        self.assertEqual(runtime["vacuum_interval"], 84)
-        self.assertEqual(runtime["mop_interval"], 84)
-        self.assertIsNone(runtime["cleaning_program"])
-        self.assertIsNone(runtime["vacuum_pass_count"])
-        self.assertIsNone(runtime["mop_pass_count"])
-
-    def test_v3_payload_migrates_room_passes_to_robot_default(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        payload = state.to_store()
-        payload["schema_version"] = 3
-        payload["room_settings"]["study"].pop("pass_count")
-        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
-
-        self.assertTrue(migrated)
-        self.assertIsNone(restored.room_settings["study"].pass_count)
-
-    def test_v4_dual_cadence_and_mopping_enable_migrate_to_one_program(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        state.ensure_robot("vacuum.alpha", supports_mopping=False)
-        payload = state.to_store()
-        payload["schema_version"] = 4
-        payload["room_settings"]["study"].pop("cleaning_interval")
-        payload["room_settings"]["study"]["vacuum_interval"] = 72
-        payload["room_settings"]["study"]["mop_interval"] = 144
-        payload["robot_settings"]["vacuum.alpha"].pop("cleaning_program")
-        payload["robot_settings"]["vacuum.alpha"]["mopping_enabled"] = True
-
-        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
-
-        self.assertTrue(migrated)
-        self.assertEqual(restored.room_settings["study"].cleaning_interval, 72)
-        self.assertEqual(
-            restored.robot_settings["vacuum.alpha"].cleaning_program,
-            "vacuum_then_mop",
-        )
-
-    def test_invalid_samples_are_dropped_without_invalidating_a_v1_migration(self) -> None:
-        state, migrated = SchedulerState.from_store(
+        state.migrate_robot_identity(
+            scheduler_state,
             {
-                "rooms": {
-                    "study": {
-                        "samples": [{"start": "not-a-date", "minutes": 20}],
-                        "duration_samples": [{"minutes": "bad"}],
-                    }
-                }
+                "registry-one": "vacuum.new_one",
+                "registry-two": "vacuum.new_two",
             },
-            ENTRY_DATA,
         )
 
-        self.assertTrue(migrated)
-        self.assertEqual(state.room_history["study"].occupancy_samples, [])
-        self.assertEqual(state.room_history["study"].duration_samples, [])
+        self.assertIn("vacuum.old_one", scheduler_state.robot_settings)
+        self.assertIn("vacuum.old_two", scheduler_state.robot_settings)
 
-    def test_newer_schema_is_rejected_before_state_is_mutated(self) -> None:
-        with self.assertRaises(StateSchemaError):
-            SchedulerState.from_store({"schema_version": SCHEMA_VERSION + 1}, ENTRY_DATA)
-
-    def test_v14_store_migrates_to_an_empty_floor_plan(self) -> None:
-        payload = SchedulerState.create(ENTRY_DATA).to_store()
-        payload["schema_version"] = 14
-        payload.pop("floor_plan")
-
-        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
-
-        self.assertTrue(migrated)
-        self.assertEqual(
-            restored.to_store()["floor_plan"],
-            {"revision": 0, "rooms": {}, "edges": [], "sensors": {}},
+    def test_unresolved_reference_round_trips_without_becoming_dispatchable(
+        self,
+    ) -> None:
+        scheduler_state = state.SchedulerState.create(ENTRY_DATA)
+        scheduler_state.unresolved_robot_references["vacuum.missing"] = (
+            state.UnresolvedRobotReference(
+                legacy_key="vacuum.missing",
+                reason="no_registry_match",
+                first_seen_at=WHEN,
+                settings=state.RobotSettings(enabled=False),
+                occurrence_room_ids=("study",),
+            )
         )
 
-    def test_floor_plan_round_trip_is_canonical_and_registry_backed(self) -> None:
-        payload = SchedulerState.create(ENTRY_DATA).to_store()
-        payload["floor_plan"] = {
-            "revision": 4,
-            "rooms": {
-                "kitchen": {"floor_id": "ground", "x": 1, "y": 2, "width": 8, "height": 6},
-                "hall": {"floor_id": "ground", "x": 10, "y": 2, "width": 4, "height": 6},
-            },
-            "edges": [["hall", "kitchen"]],
-            "sensors": {
-                "registry-radar": {"area_id": "kitchen", "x": 500, "y": 250}
-            },
-        }
-
-        restored, migrated = SchedulerState.from_store(payload, ENTRY_DATA)
+        restored, migrated = state.SchedulerState.from_store(
+            scheduler_state.encode(), ENTRY_DATA
+        )
 
         self.assertFalse(migrated)
-        self.assertEqual(restored.floor_plan.revision, 4)
-        self.assertEqual(restored.to_store()["floor_plan"], payload["floor_plan"])
+        reference = restored.unresolved_robot_references["vacuum.missing"]
+        self.assertEqual(reference.reason, "no_registry_match")
+        self.assertNotIn("vacuum.missing", restored.robot_settings)
+        self.assertNotIn("vacuum.missing", restored.active_jobs)
 
-    def test_runtime_save_path_preserves_floor_plan(self) -> None:
-        runtime = SchedulerState.create(ENTRY_DATA).to_runtime_data()
-        runtime["floor_plan"] = {
-            "revision": 1,
-            "rooms": {
-                "kitchen": {
-                    "floor_id": "ground",
-                    "x": 1,
-                    "y": 2,
-                    "width": 8,
-                    "height": 6,
-                }
-            },
-            "edges": [],
-            "sensors": {
-                "registry-radar": {"area_id": "kitchen", "x": 500, "y": 250}
-            },
-        }
-
-        restored, migrated = SchedulerState.from_store(runtime, ENTRY_DATA)
-
-        self.assertTrue(migrated)
-        self.assertEqual(restored.to_store()["floor_plan"], runtime["floor_plan"])
-
-    def test_current_schema_rejects_noncanonical_floor_plan_edges(self) -> None:
-        payload = SchedulerState.create(ENTRY_DATA).to_store()
-        payload["floor_plan"]["edges"] = [["kitchen", "hall"]]
-
-        with self.assertRaises(StateSchemaError):
-            SchedulerState.from_store(payload, ENTRY_DATA)
-
-    def test_current_schema_requires_all_structural_sections(self) -> None:
-        with self.assertRaises(StateSchemaError):
-            SchedulerState.from_store({"schema_version": SCHEMA_VERSION, "global": {}}, ENTRY_DATA)
-
-        payload = SchedulerState.create(ENTRY_DATA).to_store()
-        payload.pop("robot_entity_aliases")
-        with self.assertRaises(StateSchemaError):
-            SchedulerState.from_store(payload, ENTRY_DATA)
-
-    def test_unknown_daily_window_version_is_rejected(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        payload = state.to_store()
-        payload["room_settings"]["study"]["daily_window"]["version"] = 2
-
-        with self.assertRaises(StateSchemaError):
-            SchedulerState.from_store(payload, ENTRY_DATA)
-
-    def test_invalid_persisted_daily_time_is_rejected(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        payload = state.to_store()
-        payload["room_settings"]["study"]["daily_window"]["start"] = "9:00"
-
-        with self.assertRaises(StateSchemaError):
-            SchedulerState.from_store(payload, ENTRY_DATA)
-
-    def test_invalid_global_daily_time_is_rejected(self) -> None:
-        payload = SchedulerState.create(ENTRY_DATA).to_store()
-        payload["global"]["unresolved_start"] = "9:00"
-
-        with self.assertRaises(StateSchemaError):
-            SchedulerState.from_store(payload, ENTRY_DATA)
-
-    def test_out_of_range_persisted_numbers_are_rejected(self) -> None:
-        state = SchedulerState.create(ENTRY_DATA)
-        state.ensure_room("study", is_bedroom=False)
-        state.ensure_robot("registry-alpha", supports_mopping=False)
-        payload = state.to_store()
-
-        invalid_values = (
-            ("global", "forecast_confidence", 101),
-            ("room_settings", "cleaning_interval", -1),
-            ("room_settings", "expected_minutes", 181),
-            ("robot_settings", "minimum_battery", 10),
+    def test_current_schema_rejects_malformed_or_lossy_records(self) -> None:
+        mutations = (
+            lambda payload: payload.pop("robot_entity_aliases"),
+            lambda payload: payload["global"].__setitem__("hall_start", "9:00"),
+            lambda payload: payload["room_settings"]["study"].__setitem__(
+                "fan_speed", ["max"]
+            ),
+            lambda payload: payload["active_jobs"]["registry-alpha"].__setitem__(
+                "phase", "invented"
+            ),
+            lambda payload: payload["occurrences"]["study"].__setitem__(
+                "program", "invented"
+            ),
+            lambda payload: payload["audit"]["manual_events"][0].__setitem__(
+                "robot", "vacuum.alpha"
+            ),
+            lambda payload: payload["floor_plan"].__setitem__(
+                "edges", [["study", "hall"]]
+            ),
         )
-        for section, field, value in invalid_values:
-            with self.subTest(section=section, field=field):
-                candidate = SchedulerState.from_store(payload, ENTRY_DATA)[0].to_store()
-                if section == "global":
-                    candidate[section][field] = value
-                elif section == "room_settings":
-                    candidate[section]["study"][field] = value
-                else:
-                    candidate[section]["registry-alpha"][field] = value
-                with self.assertRaises(StateSchemaError):
-                    SchedulerState.from_store(candidate, ENTRY_DATA)
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                payload = populated_state().to_store()
+                mutate(payload)
+                with self.assertRaises(state.StateSchemaError):
+                    state.SchedulerState.from_store(payload, ENTRY_DATA)
+
+    def test_newer_schema_is_rejected_without_a_fallback_write(self) -> None:
+        with self.assertRaises(state.StateSchemaError):
+            state.SchedulerState.from_store(
+                {"schema_version": state.SCHEMA_VERSION + 1}, ENTRY_DATA
+            )
+
+
+class StateCodecBoundaryTests(unittest.TestCase):
+    """Exercise corruption handling at the durable JSON boundary."""
+
+    def test_scalar_decoders_are_strict_only_where_schema_requires_it(self) -> None:
+        self.assertTrue(state._boolean(None, True, "flag"))
+        with self.assertRaisesRegex(state.StateSchemaError, "must be a boolean"):
+            state._boolean(1, False, "flag")
+
+        self.assertEqual(state._number(object(), 4.5), 4.5)
+        self.assertEqual(state._number("not-a-number", 4.5), 4.5)
+        self.assertEqual(state._integer(object(), 4), 4)
+        self.assertEqual(state._integer("not-an-integer", 4), 4)
+        self.assertEqual(state._bounded_number(None, 5, "value", 0, 10), 5)
+        for invalid in (object(), "not-a-number"):
+            with (
+                self.subTest(invalid=type(invalid).__name__),
+                self.assertRaisesRegex(state.StateSchemaError, "must be a number"),
+            ):
+                state._bounded_number(invalid, 5, "value", 0, 10)
+        with self.assertRaisesRegex(state.StateSchemaError, "between 0 and 10"):
+            state._bounded_number(11, 5, "value", 0, 10)
+
+        with self.assertRaisesRegex(state.StateSchemaError, "zero-padded"):
+            state._daily_time("9:00", "08:00", "window")
+        with self.assertRaisesRegex(state.StateSchemaError, "or null"):
+            state._optional_daily_time("9:00", "window")
+        self.assertIsNone(state._optional_daily_time(None, "window"))
+        self.assertEqual(state._optional_daily_time("09:00", "window"), "09:00")
+
+        for invalid in (0, 3, "bad"):
+            with (
+                self.subTest(pass_count=invalid),
+                self.assertRaisesRegex(state.StateSchemaError, "pass_count"),
+            ):
+                state._optional_pass_count(invalid)
+        self.assertIsNone(state._optional_pass_count(None))
+
+    def test_timestamp_collection_and_enum_decoders_fail_closed(self) -> None:
+        naive = datetime(2026, 1, 2, 3, 4)
+        self.assertEqual(state._timestamp(naive).tzinfo, UTC)
+        self.assertEqual(
+            state._timestamp("2026-01-02T03:04:00Z"),
+            datetime(2026, 1, 2, 3, 4, tzinfo=UTC),
+        )
+        self.assertIsNone(state._timestamp("not-a-date"))
+        self.assertEqual(state._string_list(["one", 2, "three"]), ["one", "three"])
+        self.assertEqual(state._string_list("one"), [])
+        self.assertEqual(state._sequence((1, 2)), (1, 2))
+        self.assertEqual(state._sequence({1, 2}), ())
+        self.assertIsNone(state._cleaning_operation("invalid"))
+        self.assertEqual(
+            state._cleaning_operations(["vacuum", "invalid", "mop"]),
+            (models.CleaningOperation.VACUUM, models.CleaningOperation.MOP),
+        )
+        self.assertIsNone(state._cleaning_program("invalid"))
+        self.assertIsNone(state._job_phase("invalid"))
+        self.assertIsNone(state._job_source("invalid"))
+
+    def test_profile_decoders_reject_unbounded_or_ill_typed_values(self) -> None:
+        self.assertEqual(state._profile_mapping(None), {})
+        self.assertEqual(state._profile_sources_mapping(None), {})
+        for value, message in (
+            ([], "must be an object"),
+            ({"unknown": "value"}, "unsupported fields"),
+            ({"fan_speed": 1}, "strings or null"),
+        ):
+            with (
+                self.subTest(profile=value),
+                self.assertRaisesRegex(state.StateSchemaError, message),
+            ):
+                state._profile_mapping(value)
+        for value in ([], {"unknown": "room"}, {"fan_speed": "other"}):
+            with (
+                self.subTest(sources=value),
+                self.assertRaisesRegex(state.StateSchemaError, "sources"),
+            ):
+                state._profile_sources_mapping(value)
+
+    def test_legacy_history_records_discard_only_invalid_samples(self) -> None:
+        self.assertIsNone(state.OccupancySample.from_mapping({"minutes": 2}))
+        self.assertEqual(
+            state.OccupancySample.from_mapping(
+                {"start": WHEN.isoformat(), "minutes": -2}
+            ).minutes,
+            0,
+        )
+        self.assertIsNone(state.DurationSample.from_mapping({}))
+        self.assertIsNone(
+            state.DurationSample.from_mapping(
+                {
+                    "operation": "vacuum",
+                    "robot": "vacuum.alpha",
+                    "source": "observed",
+                    "minutes": 0,
+                }
+            )
+        )
+        self.assertIsNone(state.Deferral.from_mapping({"source": "legacy"}))
+
+        history = state.RoomHistory.from_mapping(
+            {
+                "vacuum": "2026-01-01T00:00:00Z",
+                "mop": "2026-01-02T00:00:00Z",
+                "defer": {
+                    "vacuum": "2026-01-03T00:00:00Z",
+                    "mop": None,
+                    "bad": "not-a-date",
+                },
+                "deferral_meta": {
+                    "mop": {
+                        "source": "legacy_metadata",
+                        "until": "2026-01-04T00:00:00Z",
+                    }
+                },
+                "samples": [
+                    {"start": "2026-01-01T00:00:00Z", "minutes": 5},
+                    {"minutes": 9},
+                    "invalid",
+                ],
+                "duration_samples": [
+                    {
+                        "minutes": 12,
+                        "operation": "vacuum",
+                        "passes": 1,
+                        "robot": "vacuum.alpha",
+                        "source": "observed",
+                    },
+                    {},
+                    "invalid",
+                ],
+            }
+        )
+
+        self.assertEqual(
+            history.cleaning_completed_at,
+            datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        self.assertEqual(history.deferrals["cleaning"].until.day, 4)
+        self.assertEqual(history.deferrals["mop"].source, "legacy_metadata")
+        self.assertEqual(len(history.occupancy_samples), 1)
+        self.assertEqual(len(history.duration_samples), 1)
+
+    def test_nested_record_parsers_cover_invalid_and_legacy_shapes(self) -> None:
+        self.assertIsNone(state.ActiveJob.from_mapping({"operation": "vacuum"}))
+        active = state.ActiveJob.from_mapping(
+            {
+                "rooms": ["study"],
+                "operation": "vacuum",
+                "phase": "cleaning",
+                "source": "scheduler",
+            }
+        )
+        self.assertEqual(active.room_id, "study")
+        self.assertIsNone(state.CleaningStage.from_mapping({"operation": "bad"}))
+        stage = state.CleaningStage.from_mapping(
+            {"operation": "vacuum", "status": "bad"}
+        )
+        self.assertEqual(stage.status, models.StageStatus.PENDING)
+        with self.assertRaisesRegex(state.StateSchemaError, "does not match"):
+            state.CleaningStage.from_mapping(
+                {
+                    "operation": "vacuum",
+                    "cleaning_profile": {"operation": "mop"},
+                }
+            )
+
+        self.assertIsNone(state.CleaningOccurrence.from_mapping({}))
+        occurrence = populated_state().occurrences["study"].to_store()
+        occurrence["source"] = "invalid"
+        with self.assertRaisesRegex(state.StateSchemaError, "source is invalid"):
+            state.CleaningOccurrence.from_mapping(occurrence)
+        occurrence = populated_state().occurrences["study"].to_store()
+        occurrence["manual_mode"] = "automatic"
+        with self.assertRaisesRegex(state.StateSchemaError, "manual_mode"):
+            state.CleaningOccurrence.from_mapping(occurrence)
+
+        self.assertIsNone(state.WaterConfirmation.from_mapping({}))
+        confirmation = populated_state().water_confirmations["occurrence-1"].to_store()
+        confirmation["status"] = "bad"
+        self.assertEqual(
+            state.WaterConfirmation.from_mapping(confirmation).status,
+            "pending",
+        )
+        self.assertIsNone(state.WaterNotificationEpisode.from_mapping({}))
+        self.assertIsNone(state.SchedulerFault.from_mapping({}))
+        self.assertIsNone(state.RobotHold.from_mapping({}))
+        self.assertIsNone(state.RobotCooldown.from_mapping({}))
+        self.assertIsNone(state.UnresolvedRobotReference.from_mapping({}))
+
+    def test_floor_plan_codec_rejects_noncanonical_and_invalid_geometry(self) -> None:
+        with self.assertRaisesRegex(state.StateSchemaError, "floor_id"):
+            state.FloorPlanRectangle.from_mapping(
+                {"floor_id": "", "x": 0, "y": 0, "width": 2, "height": 2}
+            )
+        with self.assertRaises(state.StateSchemaError):
+            state.FloorPlanRectangle.from_mapping(
+                {"floor_id": "ground", "x": -1, "y": 0, "width": 2, "height": 2}
+            )
+        with self.assertRaisesRegex(state.StateSchemaError, "area_id"):
+            state.FloorPlanSensorMarker.from_mapping({"area_id": "", "x": 0, "y": 0})
+        with self.assertRaises(state.StateSchemaError):
+            state.FloorPlanSensorMarker.from_mapping(
+                {"area_id": "study", "x": 1001, "y": 0}
+            )
+
+        valid = populated_state().floor_plan.to_store()
+        mutations = (
+            lambda payload: payload.__setitem__("revision", True),
+            lambda payload: payload.__setitem__("edges", {}),
+            lambda payload: payload["rooms"].__setitem__("", {}),
+            lambda payload: payload["sensors"].__setitem__("", {}),
+            lambda payload: payload["edges"].append(["study"]),
+            lambda payload: payload["edges"].append(["z", "a"]),
+            lambda payload: payload["edges"].extend(
+                [["hall", "study"], ["hall", "study"]]
+            ),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                payload = deepcopy(valid)
+                mutate(payload)
+                with self.assertRaises(state.StateSchemaError):
+                    state.FloorPlanState.from_mapping(payload)
+
+    def test_schema_16_validation_rejects_every_typed_section_boundary(self) -> None:
+        def replace_section(name, value):
+            return lambda payload: payload.__setitem__(name, value)
+
+        mutations = (
+            replace_section("room_settings", []),
+            lambda payload: payload["robot_settings"].__setitem__("", {}),
+            lambda payload: payload["active_jobs"].__setitem__("registry-alpha", []),
+            lambda payload: payload["active_jobs"].__setitem__(
+                "registry-alpha", {"operation": "vacuum"}
+            ),
+            lambda payload: payload["robot_holds"].__setitem__(
+                "registry-alpha", {"reason": None}
+            ),
+            lambda payload: payload["room_settings"]["study"].__setitem__(
+                "cleaning_program", 1
+            ),
+            lambda payload: payload["robot_settings"]["registry-alpha"].__setitem__(
+                "cleaning_program", "invented"
+            ),
+            lambda payload: payload["active_jobs"]["registry-alpha"].__setitem__(
+                "operation", 1
+            ),
+            lambda payload: payload["active_jobs"]["registry-alpha"].__setitem__(
+                "source", "invented"
+            ),
+            lambda payload: payload["active_jobs"]["registry-alpha"].__setitem__(
+                "requested_operations", "vacuum"
+            ),
+            lambda payload: payload["active_jobs"]["registry-alpha"].__setitem__(
+                "requested_operations", ["invented"]
+            ),
+            lambda payload: payload["occurrences"]["study"].__setitem__(
+                "source", "invented"
+            ),
+            lambda payload: payload["occurrences"]["study"].__setitem__("stages", []),
+            lambda payload: payload["occurrences"]["study"]["stages"].__setitem__(
+                0, "invalid"
+            ),
+            lambda payload: payload["occurrences"]["study"]["stages"][0].__setitem__(
+                "operation", "invented"
+            ),
+            lambda payload: payload["occurrences"]["study"]["stages"][0].__setitem__(
+                "status", "invented"
+            ),
+            lambda payload: payload["robot_entity_aliases"].__setitem__(
+                "registry-alpha", 4
+            ),
+            lambda payload: payload["audit"].__setitem__("manual_events", {}),
+            lambda payload: payload["audit"]["manual_events"][0].__setitem__(
+                "robot_registry_id", ""
+            ),
+            lambda payload: payload["audit"]["manual_events"][0].__setitem__(
+                "operations", "vacuum"
+            ),
+            lambda payload: payload["audit"]["manual_events"][0].__setitem__(
+                "operations", ["invented"]
+            ),
+            lambda payload: payload["audit"]["recovery_events"][0].__setitem__(
+                "robot", "vacuum.alpha"
+            ),
+            lambda payload: payload["audit"]["recovery_events"][0].__setitem__(
+                "robot_registry_id", 1
+            ),
+            lambda payload: payload["water_confirmations"]["occurrence-1"].__setitem__(
+                "status", "invalid"
+            ),
+            lambda payload: payload["evaluation"].__setitem__("last_preview", []),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                payload = populated_state().to_store()
+                mutate(payload)
+                with self.assertRaises(state.StateSchemaError):
+                    state.SchedulerState.from_store(payload, ENTRY_DATA)
+
+    def test_identity_migration_handles_collisions_samples_and_audits(self) -> None:
+        scheduler_state = populated_state()
+        scheduler_state.robot_settings["vacuum.alpha"] = state.RobotSettings(
+            enabled=False
+        )
+        scheduler_state.active_jobs["vacuum.alpha"] = None
+        scheduler_state.room_history["study"].duration_samples[
+            0
+        ].robot_registry_id = "vacuum.alpha"
+        scheduler_state.occurrences["study"].robot_registry_id = "vacuum.alpha"
+        scheduler_state.audit.manual_events[0] = state.ManualAuditRecord(
+            at=WHEN,
+            robot_registry_id="vacuum.alpha",
+            room_ids=("study",),
+            operations=("vacuum",),
+            outcome="requested",
+        )
+        scheduler_state.audit.recovery_events[0] = state.RecoveryAuditRecord(
+            robot_registry_id="vacuum.alpha",
+            room_ids=("study",),
+            at=WHEN,
+            reason="observed",
+        )
+
+        changed = state.migrate_robot_identity(
+            scheduler_state,
+            {"registry-alpha": "vacuum.renamed"},
+            {"registry-alpha": "vacuum.alpha"},
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            scheduler_state.room_history["study"].duration_samples[0].robot_registry_id,
+            "registry-alpha",
+        )
+        self.assertEqual(
+            scheduler_state.audit.manual_events[0].robot_registry_id,
+            "registry-alpha",
+        )
+        self.assertEqual(
+            scheduler_state.audit.recovery_events[0].robot_registry_id,
+            "registry-alpha",
+        )
+        self.assertIsNotNone(scheduler_state.active_jobs["registry-alpha"])
+
+    def test_optional_number_and_frozen_json_boundaries_are_lossless(self) -> None:
+        self.assertIsNone(state._optional_number(None))
+        self.assertIsNone(state._optional_number(object()))
+        self.assertIsNone(state._optional_number("bad"))
+        self.assertEqual(state._optional_number("2.5"), 2.5)
+        frozen = state.FrozenJsonObject.from_mapping(
+            {"z": [1, {"nested": True}], "a": {"value": None}}
+        )
+        self.assertEqual(
+            frozen.to_mapping(),
+            {"a": {"value": None}, "z": [1, {"nested": True}]},
+        )
 
 
 if __name__ == "__main__":
