@@ -41,6 +41,12 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertTrue(root_icon.is_file())
         self.assertEqual(root_icon.read_bytes(), integration_icon.read_bytes())
 
+    def test_ci_runs_pytest_as_a_module(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("python -m pytest", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
