@@ -145,6 +145,23 @@
           "recovery_unavailable": "Recovery is unavailable while the integration is stopping or its saved state needs repair."
         }
       }
+    },
+    "retired_map_hold": {
+      "title": "Confirm the vacuum map after upgrading",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Confirm localization and room mapping",
+            "description": "Map snapshots and map-selection controls have been removed. {robot} still has an unconfirmed map selection from an older version. Check that the robot is correctly localized on the intended map and that its Home Assistant room mapping is correct. With the robot docked or idle and no tracked clean active, submit this Repair to recheck the mapping and release only this hold. This sends no physical command and starts no clean."
+          }
+        },
+        "error": {
+          "recovery_unavailable": "Recovery is unavailable while the integration is shutting down or its saved state is unsafe.",
+          "recovery_changed": "This hold changed or was already cleared. Close and reopen the current Repair.",
+          "awaiting_safe_dock": "Restore the vacuum and wait until it is docked or idle with no tracked clean active.",
+          "mapping_invalid": "Home Assistant room mapping is missing, stale, or ambiguous. Correct it before confirming."
+        }
+      }
     }
   }
 }

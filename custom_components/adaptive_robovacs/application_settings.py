@@ -33,7 +33,6 @@ from .projections import floor_plan_view as build_floor_plan_view
 from .state import (
     ActiveJob,
     FloorPlanState,
-    RobotHold,
     RobotSettings,
     RoomHistory,
     RoomSettings,
@@ -183,43 +182,6 @@ class ApplicationSettingsMixin:
         """Return whether persisted data failed validation and dispatch is disabled."""
 
         return self._storage_safe_mode
-
-    def _map_recovery_dispatch_block_reason(self) -> str | None:
-        """Return a stable reason that blocks a map-changing outbound action."""
-
-        if self._closing:
-            return "the integration is shutting down"
-        if self._storage_safe_mode:
-            return "storage-safe mode is enabled"
-        if self.state.global_settings.observe_only:
-            return "observe-only mode is enabled"
-        if self.state.global_settings.party_mode:
-            return "party mode is enabled"
-        if (
-            self._startup_state_settle_until is not None
-            and _now() < self._startup_state_settle_until
-        ):
-            return "startup state settling is still active"
-        return None
-
-    async def _async_set_map_recovery_hold(
-        self,
-        registry_id: str,
-        hold: RobotHold | None,
-    ) -> None:
-        """Checkpoint one map hold through the application-owned aggregate."""
-
-        if hold is None:
-            self.state.robot_holds.pop(registry_id, None)
-        else:
-            self.state.robot_holds[registry_id] = hold
-        await self._async_save()
-        self._notify_listeners()
-
-    async def _async_refresh_for_map_recovery(self) -> None:
-        """Refresh registry identity before map-verification revalidation."""
-
-        await self.async_refresh_discovery(notify=False)
 
     def get_global_setting(self, key: str) -> Any:
         """Return a global control value without exposing mutable Store data."""

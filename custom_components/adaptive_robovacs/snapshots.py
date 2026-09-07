@@ -8,7 +8,6 @@ from datetime import datetime
 from enum import StrEnum
 
 from .discovery import RobotProfile
-from .map_recovery_models import MapRecoverySummary
 from .models import (
     AdapterCapabilities,
     CleaningOperation,
@@ -161,7 +160,6 @@ class RobotHoldView:
     held_at: datetime | None
     last_observed_at: datetime | None
     returning_at: datetime | None
-    requested_map_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,18 +537,6 @@ class FloorPlanView:
 
 
 @dataclass(frozen=True, slots=True)
-class MapView:
-    """Archived-map recovery presentation for one robot."""
-
-    robot_registry_id: str
-    available: bool
-    summary: MapRecoverySummary
-    preview_options: tuple[str, ...]
-    selected_preview_option: str | None
-    selected_preview: bytes | None
-
-
-@dataclass(frozen=True, slots=True)
 class SchedulerView:
     """Global scheduler values exposed to Home Assistant."""
 
@@ -593,7 +579,6 @@ class IntegrationSnapshot:
     scheduler: SchedulerView
     rooms: tuple[RoomView, ...]
     robots: tuple[RobotView, ...]
-    maps: tuple[MapView, ...]
     floor_plan: FloorPlanView
 
     def room(self, area_id: str) -> RoomView | None:
@@ -608,11 +593,5 @@ class IntegrationSnapshot:
     def robot_by_registry_id(self, registry_id: str) -> RobotView | None:
         return next(
             (robot for robot in self.robots if robot.registry_id == registry_id),
-            None,
-        )
-
-    def map_for_robot(self, registry_id: str) -> MapView | None:
-        return next(
-            (item for item in self.maps if item.robot_registry_id == registry_id),
             None,
         )

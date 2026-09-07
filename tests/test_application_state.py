@@ -165,6 +165,7 @@ def state_application() -> SchedulerApplication:
     app.state.ensure_robot("registry-alpha", supports_mopping=True)
     app.storage = SimpleNamespace(async_save=AsyncMock())
     app.repairs = SimpleNamespace(
+        sync_retired_map_holds=Mock(),
         sync_unresolved_robot_references=Mock(),
         sync_dispatch_faults=Mock(),
         sync_two_pass_issues=Mock(),
@@ -515,49 +516,6 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(ValueError):
                 method()
-
-    async def test_map_recovery_gates_and_hold_checkpoint(self) -> None:
-        app = state_application()
-        for configure, expected in (
-            (lambda: setattr(app, "_closing", True), "shutting down"),
-            (lambda: setattr(app, "_storage_safe_mode", True), "storage-safe"),
-            (
-                lambda: setattr(app.state.global_settings, "observe_only", True),
-                "observe-only",
-            ),
-            (
-                lambda: setattr(app.state.global_settings, "party_mode", True),
-                "party mode",
-            ),
-            (
-                lambda: setattr(app, "_startup_state_settle_until", NOW),
-                "startup state settling",
-            ),
-        ):
-            app._closing = False
-            app._storage_safe_mode = False
-            app.state.global_settings.observe_only = False
-            app.state.global_settings.party_mode = False
-            app._startup_state_settle_until = None
-            configure()
-            with patch(
-                "custom_components.adaptive_robovacs.application._now",
-                return_value=NOW - timedelta(seconds=1),
-            ):
-                self.assertIn(expected, app._map_recovery_dispatch_block_reason())
-
-        app._startup_state_settle_until = NOW - timedelta(seconds=1)
-        with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
-        ):
-            self.assertIsNone(app._map_recovery_dispatch_block_reason())
-        hold = RobotHold("map_recovery_pending", "held", held_at=NOW)
-        await app._async_set_map_recovery_hold("registry-alpha", hold)
-        self.assertIs(app.state.robot_holds["registry-alpha"], hold)
-        await app._async_set_map_recovery_hold("registry-alpha", None)
-        self.assertNotIn("registry-alpha", app.state.robot_holds)
-        self.assertEqual(app.storage.async_save.await_count, 2)
-        self.assertEqual(app._notify_listeners.call_count, 2)
 
     async def test_setting_commands_validate_and_publish_preview(self) -> None:
         app = state_application()

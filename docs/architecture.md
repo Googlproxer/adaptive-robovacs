@@ -79,10 +79,12 @@ adapters.
   profile or dispatch behavior.
 - `storage.py`, `notifications.py`, `repair_service.py`, and `floor_plans.py`
   expose narrow typed boundaries without a coordinator reference.
-- `map_recovery_models.py`, `map_recovery_store.py`, `map_recovery.py`, and
-  `map_recovery_roborock.py` isolate the optional map archive and existing
-  Roborock-runtime bridge. Map recovery has a separate Store and never creates
-  another vendor login.
+- `retired_features.py` removes only entry-owned obsolete controls and the
+  retired map archive through Home Assistant APIs. No capture or vendor map
+  transport remains.
+- `application_legacy_map.py` handles pre-1.14 map-selection holds through a
+  compatibility Repair. It validates existing HA room mappings and persists a
+  scoped hold release without sending physical commands.
 
 ### Presentation
 

@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
 from .commands import (
+    AcknowledgeRetiredMapCommand,
     AcknowledgeRobotErrorCommand,
     AcknowledgeRoomRecoveryCommand,
     RecheckAndResumeCommand,
@@ -27,6 +28,7 @@ from .const import DOMAIN
 from .repairs_manager import (
     cleaning_program_issue_id,
     notification_delivery_issue_id,
+    retired_map_hold_issue_id,
     robot_dispatch_fault_issue_id,
     robot_error_recovery_issue_id,
     room_dispatch_fault_issue_id,
@@ -92,7 +94,9 @@ class ErrorRecoveryRepairFlow(RepairsFlow):
     def __init__(
         self,
         submit: CommandSubmitter,
-        command: AcknowledgeRoomRecoveryCommand | AcknowledgeRobotErrorCommand,
+        command: AcknowledgeRoomRecoveryCommand
+        | AcknowledgeRobotErrorCommand
+        | AcknowledgeRetiredMapCommand,
     ) -> None:
         self._submit = submit
         self._command = command
@@ -260,6 +264,13 @@ async def async_create_fix_flow(
         raise ValueError("The Adaptive RoboVacs repair is no longer available")
     submit = runtime.application.async_execute
     robot_registry_id = str((data or {}).get("robot_registry_id", ""))
+    if issue_id == retired_map_hold_issue_id(entry_id, robot_registry_id):
+        return ErrorRecoveryRepairFlow(
+            submit,
+            AcknowledgeRetiredMapCommand(
+                robot_registry_id, str((data or {}).get("held_at", ""))
+            ),
+        )
     if issue_id == robot_dispatch_fault_issue_id(entry_id, robot_registry_id):
         return RobotDispatchFaultRepairFlow(submit, robot_registry_id)
     if issue_id == notification_delivery_issue_id(entry_id):

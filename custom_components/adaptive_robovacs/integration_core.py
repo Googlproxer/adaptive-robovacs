@@ -12,8 +12,6 @@ from homeassistant.helpers.storage import Store
 from .application import SchedulerApplication
 from .const import (
     DOMAIN,
-    MAP_RECOVERY_STORAGE_KEY,
-    MAP_RECOVERY_STORE_VERSION,
     PLATFORMS,
     STORAGE_KEY,
     STORE_VERSION,
@@ -24,6 +22,10 @@ from .repairs_manager import (
     notification_delivery_issue_id,
     scheduler_halted_issue_id,
     two_pass_issue_id,
+)
+from .retired_features import (
+    async_remove_retired_map_archive,
+    async_retire_map_entities,
 )
 from .runtime_data import AdaptiveRoboVacsConfigEntry, AdaptiveRoboVacsRuntimeData
 from .services import async_register_services, async_unregister_services
@@ -70,6 +72,8 @@ async def async_setup_entry(
     application = SchedulerApplication(hass, entry)
     await application.async_initialize()
     _async_retire_controls(hass, entry)
+    async_retire_map_entities(hass, entry.entry_id)
+    await async_remove_retired_map_archive(hass, entry.entry_id)
     coordinator = AdaptiveRoboVacsCoordinator(application)
     entry.runtime_data = AdaptiveRoboVacsRuntimeData(
         coordinator=coordinator,
@@ -139,7 +143,4 @@ async def async_remove_entry(
     for issue_id in issue_ids:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
     await store.async_remove()
-    map_store: Store[dict[str, object]] = Store(
-        hass, MAP_RECOVERY_STORE_VERSION, f"{MAP_RECOVERY_STORAGE_KEY}.{entry.entry_id}"
-    )
-    await map_store.async_remove()
+    await async_remove_retired_map_archive(hass, entry.entry_id)

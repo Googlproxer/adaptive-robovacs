@@ -7,7 +7,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .commands import (
-    SelectMapPreviewCommand,
     SetGlobalCommand,
     SetRobotSettingCommand,
     SetRoomCleaningPeriodCommand,
@@ -375,37 +374,6 @@ class _RobotSelect(AdaptiveEntity, SelectEntity):
         )
 
 
-class _MapRecoveryPreviewSelect(AdaptiveEntity, SelectEntity):
-    """Select an archived map image only; this never talks to the robot."""
-
-    def __init__(
-        self, coordinator: AdaptiveRoboVacsCoordinator, robot_entity_id: str
-    ) -> None:
-        unique_fragment = robot_unique_fragment(coordinator, robot_entity_id)
-        super().__init__(
-            coordinator,
-            f"robot_{unique_fragment}_map_recovery_preview",
-            "map snapshot preview",
-            "robot_map_snapshot_preview_select",
-            robot_entity_id=robot_entity_id,
-            robot_name_suffix="map snapshot preview",
-        )
-        self.robot_entity_id = robot_entity_id
-
-    @property
-    def options(self) -> list[str]:
-        return list(self.map_view(self.robot_entity_id).preview_options)
-
-    @property
-    def current_option(self) -> str | None:
-        return self.map_view(self.robot_entity_id).selected_preview_option
-
-    async def async_select_option(self, option: str) -> None:
-        await self.coordinator.async_execute(
-            SelectMapPreviewCommand(self.robot_entity_id, option)
-        )
-
-
 class _RoomProfileSelect(AdaptiveEntity, SelectEntity):
     """One room override backed by the union of same-floor robot options."""
 
@@ -555,12 +523,6 @@ def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
                     "cleaning depth",
                 )
             )
-        if (
-            (map_view := coordinator.data.map_for_robot(robot.registry_id))
-            and map_view.available
-            and map_view.preview_options
-        ):
-            entities.append(_MapRecoveryPreviewSelect(coordinator, robot.entity_id))
     for room in coordinator.data.rooms:
         supports_mopping = any(
             robot.floor_id == room.floor_id and "mop" in robot.supported_operations

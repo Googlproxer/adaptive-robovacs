@@ -14,6 +14,7 @@ from .models import (
     cleaning_profile_is_supported,
     effective_cleaning_program,
     expand_cleaning_program,
+    map_recovery_hold_is_manual,
     resolve_cleaning_profile,
     stage_pass_count,
 )
@@ -21,6 +22,7 @@ from .repairs_manager import (
     cleaning_program_issue_id,
     fault_summary,
     notification_delivery_issue_id,
+    retired_map_hold_issue_id,
     robot_dispatch_fault_issue_id,
     robot_error_recovery_issue_id,
     room_dispatch_fault_issue_id,
@@ -31,6 +33,7 @@ from .repairs_manager import (
 )
 from .state import (
     CleaningOccurrence,
+    RobotHold,
     RobotSettings,
     RoomRecovery,
     RoomSettings,
@@ -232,6 +235,45 @@ class RepairService:
                 "held_at": held_at.isoformat(),
             },
         )
+
+    def sync_retired_map_holds(
+        self, holds: Mapping[str, RobotHold], robots: Iterable[DiscoveredRobot]
+    ) -> None:
+        """Keep a confirmation path only for maintenance holds from older releases."""
+
+        pending = {
+            key: hold
+            for key, hold in holds.items()
+            if map_recovery_hold_is_manual(hold.reason)
+        }
+        expected = {retired_map_hold_issue_id(self._entry_id, key) for key in pending}
+        registry = ir.async_get(self._hass)
+        for (domain, issue_id), issue in tuple(registry.issues.items()):
+            if (
+                domain == DOMAIN
+                and issue.translation_key == "retired_map_hold"
+                and issue.data
+                and issue.data.get("entry_id") == self._entry_id
+                and issue_id not in expected
+            ):
+                ir.async_delete_issue(self._hass, DOMAIN, issue_id)
+        names = {robot.registry_id: robot.name for robot in robots}
+        for key, hold in pending.items():
+            ir.async_create_issue(
+                self._hass,
+                DOMAIN,
+                retired_map_hold_issue_id(self._entry_id, key),
+                is_fixable=True,
+                is_persistent=True,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="retired_map_hold",
+                translation_placeholders={"robot": names.get(key, "the vacuum")},
+                data={
+                    "entry_id": self._entry_id,
+                    "robot_registry_id": key,
+                    "held_at": hold.held_at.isoformat() if hold.held_at else "",
+                },
+            )
 
     def delete_robot_error_recovery(self, registry_id: str) -> None:
         ir.async_delete_issue(

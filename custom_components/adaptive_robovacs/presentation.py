@@ -130,7 +130,6 @@ def robot_hold_attributes(hold: RobotHoldView | None) -> dict[str, object] | Non
         "held_at": _iso(hold.held_at),
         "last_observed_at": _iso(hold.last_observed_at),
         "returning_at": _iso(hold.returning_at),
-        "requested_map_id": hold.requested_map_id,
     }
 
 

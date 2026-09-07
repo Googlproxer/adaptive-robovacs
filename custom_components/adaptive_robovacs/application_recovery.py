@@ -406,9 +406,8 @@ class ApplicationRecoveryMixin:
         """Keep observed pauses/errors durable and classify physical follow-up only."""
 
         hold = self.state.robot_holds.get(robot_id)
-        # Selecting a robot-retained map is a maintenance operation, not a
-        # cleaning lifecycle.  It can only be released by the explicit
-        # map-selection confirmation service after mapping has been rechecked.
+        # Pre-1.14 maintenance holds survive until the compatibility Repair
+        # confirms localization and rechecks Home Assistant room mapping.
         if hold and map_recovery_hold_is_manual(hold.reason):
             if state_text not in {"unavailable", "unknown"}:
                 hold.last_observed_at = now

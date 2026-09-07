@@ -1377,7 +1377,6 @@ class RobotHold:
     held_at: datetime | None = None
     last_observed_at: datetime | None = None
     returning_at: datetime | None = None
-    requested_map_id: str | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> RobotHold | None:
@@ -1390,9 +1389,6 @@ class RobotHold:
             held_at=_timestamp(value.get("held_at")),
             last_observed_at=_timestamp(value.get("last_observed_at")),
             returning_at=_timestamp(value.get("returning_at")),
-            requested_map_id=_optional_string(
-                value.get("requested_map_id"), "robot hold requested_map_id"
-            ),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -1402,7 +1398,6 @@ class RobotHold:
             "held_at": _iso(self.held_at),
             "last_observed_at": _iso(self.last_observed_at),
             "returning_at": _iso(self.returning_at),
-            "requested_map_id": self.requested_map_id,
         }
 
 
@@ -1951,7 +1946,22 @@ class SchedulerState:
         retired_settings = RETIRED_GLOBAL_SETTINGS.intersection(
             _mapping(data.get("global"), "global")
         )
-        return cls._from_versioned(data, entry_data), bool(retired_settings)
+        retired_hold_fields = any(
+            isinstance(hold, Mapping) and "requested_map_id" in hold
+            for hold in (
+                *_mapping(data.get("robot_holds"), "robot_holds").values(),
+                *(
+                    _mapping(reference, "unresolved reference").get("hold")
+                    for reference in _mapping(
+                        data.get("unresolved_robot_references"),
+                        "unresolved_robot_references",
+                    ).values()
+                ),
+            )
+        )
+        return cls._from_versioned(data, entry_data), bool(
+            retired_settings or retired_hold_fields
+        )
 
     @classmethod
     def _validate_current_schema(cls, data: Mapping[str, object]) -> None:

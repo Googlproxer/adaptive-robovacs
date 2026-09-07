@@ -97,6 +97,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 "ApplicationEventsMixin",
                 "ApplicationFaultMixin",
                 "ApplicationJobsMixin",
+                "ApplicationLegacyMapMixin",
                 "ApplicationPolicyMixin",
                 "ApplicationRecoveryMixin",
                 "ApplicationRoomRecoveryMixin",
@@ -152,7 +153,6 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         }
         for name in (
             "button.py",
-            "camera.py",
             "number.py",
             "select.py",
             "sensor.py",
@@ -171,9 +171,6 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "repairs.py",
             "repair_service.py",
             "storage.py",
-            "map_recovery.py",
-            "map_recovery_store.py",
-            "map_recovery_roborock.py",
         ):
             self.assertNotIn(".coordinator", imported_modules(PACKAGE / name), name)
 

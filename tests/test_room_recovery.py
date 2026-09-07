@@ -637,7 +637,6 @@ class RoomRecoveryTests(unittest.IsolatedAsyncioTestCase):
         timer.call_args.args[1](NOW + timedelta(seconds=10))
         coroutine = app._async_create_task.call_args.args[0]
         coroutine.close()
-        app.map_recovery = SimpleNamespace(handle_state_transition=Mock())
         await app._async_execute_command(
             StateChangedCommand("sensor.alpha_error", "none", "unknown", NOW)
         )

@@ -25,6 +25,11 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ### Removed
 
+- Removed map snapshots, automatic post-clean captures, archived previews,
+  retained-map activation/confirmation controls, and their dedicated Roborock
+  bridge. Upgrade deletes only the entry's obsolete archive and entities;
+  outstanding map-selection holds require explicit confirmation through Repairs.
+
 - Removed bedroom-transit label handling, the aggregate bedroom occupancy gate,
   the separate daytime restriction, and the special unresolved-occupancy rule.
 - Removed the transit time selectors, configuration fields, and room attribute.

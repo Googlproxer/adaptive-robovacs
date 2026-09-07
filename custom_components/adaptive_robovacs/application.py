@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from datetime import datetime, timedelta
-from typing import Any, cast
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -21,6 +21,7 @@ from .application_evaluation import ApplicationEvaluationMixin
 from .application_events import ApplicationEventsMixin
 from .application_faults import ApplicationFaultMixin
 from .application_jobs import ApplicationJobsMixin
+from .application_legacy_map import ApplicationLegacyMapMixin
 from .application_policy import ApplicationPolicyMixin
 from .application_recovery import ApplicationRecoveryMixin
 from .application_room_recovery import ApplicationRoomRecoveryMixin
@@ -28,15 +29,13 @@ from .application_settings import ApplicationSettingsMixin
 from .application_water import ApplicationWaterMixin
 from .command_queue import ApplicationCommandQueue
 from .commands import (
+    AcknowledgeRetiredMapCommand,
     AcknowledgeRobotErrorCommand,
     AcknowledgeRoomRecoveryCommand,
-    ActivateRetainedMapCommand,
-    CaptureMapSnapshotCommand,
     ClearLegacyDeferralsCommand,
     CommandResult,
     EvaluateCommand,
     ExpireWaterConfirmationCommand,
-    ListRetainedMapsCommand,
     ManualCleanRoomCommand,
     ObservedManualCleanCommand,
     RecheckAndResumeCommand,
@@ -49,7 +48,6 @@ from .commands import (
     SaveFloorPlanCommand,
     SchedulerCommand,
     SchedulerCommandResult,
-    SelectMapPreviewCommand,
     SetGlobalCommand,
     SetRobotSettingCommand,
     SetRoomAdjacencyCommand,
@@ -58,7 +56,6 @@ from .commands import (
     SetRoomSettingCommand,
     StateChangedCommand,
     StopAndReturnCommand,
-    VerifyRetainedMapCommand,
     WaterConfirmationResponseCommand,
 )
 from .const import (
@@ -73,7 +70,6 @@ from .discovery import (
 from .dispatch import DispatchDependencies, DispatchPipeline
 from .gateway import HomeAssistantVacuumGateway
 from .lifecycle import SchedulerRuntime
-from .map_recovery import MapRecoveryDependencies, MapRecoveryService
 from .models import (
     EvaluationCause,
     EvaluationMode,
@@ -83,7 +79,6 @@ from .models import (
 from .notifications import NotificationService
 from .observations import HomeAssistantObserver
 from .projections import (
-    MapRecoveryProjectionSource,
     build_snapshot,
 )
 from .repair_service import RepairService
@@ -137,6 +132,7 @@ def _track_point(
 
 
 class SchedulerApplication(
+    ApplicationLegacyMapMixin,
     ApplicationSettingsMixin,
     ApplicationEventsMixin,
     ApplicationEvaluationMixin,
@@ -200,26 +196,6 @@ class SchedulerApplication(
         )
         self.observer = HomeAssistantObserver(hass)
         self.notifications = NotificationService(hass)
-        self.map_recovery = MapRecoveryService(
-            hass,
-            entry.entry_id,
-            MapRecoveryDependencies(
-                robot_for_entity_id=lambda entity_id: self.discovery.robots.get(
-                    entity_id
-                ),
-                robot_for_registry_id=self.robot_for_registry_id,
-                hold_for_registry_id=lambda registry_id: self.state.robot_holds.get(
-                    registry_id
-                ),
-                active_job_for_registry_id=lambda registry_id: (
-                    self.state.active_jobs.get(registry_id)
-                ),
-                dispatch_block_reason=self._map_recovery_dispatch_block_reason,
-                async_set_hold=self._async_set_map_recovery_hold,
-                async_refresh_discovery=self._async_refresh_for_map_recovery,
-                publish_snapshot=self._notify_listeners,
-            ),
-        )
         self.lifecycle = SchedulerRuntime(
             hass,
             interval_handler=self._async_interval,
@@ -253,7 +229,6 @@ class SchedulerApplication(
         else:
             self.repairs.set_storage_unsafe(False)
         await self.async_refresh_discovery()
-        await self.map_recovery.async_initialize()
         baseline_initialized = False
         if self.state.first_scheduler_online_at is None:
             self.state.first_scheduler_online_at = _now()
@@ -280,7 +255,6 @@ class SchedulerApplication(
         self._closing = True
         await self.lifecycle.async_stop()
         await self.commands.async_close()
-        await self.map_recovery.async_shutdown()
         while self._recovery_timers:
             self._recovery_timers.popitem()[1]()
         while self._start_confirmation_timers:
@@ -354,12 +328,6 @@ class SchedulerApplication(
                             *capabilities.error_entity_ids,
                         }:
                             self._reset_room_recovery_dock(robot.registry_id)
-                if entity_id in self.discovery.robots:
-                    self.map_recovery.handle_state_transition(
-                        entity_id,
-                        old_state,
-                        new_state,
-                    )
                 return CommandResult.from_mapping(
                     await self.async_evaluate(
                         dry_run=False,
@@ -454,6 +422,12 @@ class SchedulerApplication(
                 return CommandResult.from_mapping(
                     await self.async_acknowledge_robot_error(registry_id, held_at)
                 )
+            case AcknowledgeRetiredMapCommand(
+                robot_registry_id=registry_id, held_at=held_at
+            ):
+                return CommandResult.from_mapping(
+                    await self.async_acknowledge_retired_map(registry_id, held_at)
+                )
             case RecheckTwoPassCompatibilityCommand(area_id=area_id):
                 return CommandResult.from_mapping(
                     {"cleared": await self.async_recheck_room_compatibility(area_id)}
@@ -490,41 +464,6 @@ class SchedulerApplication(
                 return CommandResult.from_mapping(
                     await self.async_save_floor_plan(request)
                 )
-            case ListRetainedMapsCommand(robot_entity_id=entity_id):
-                map_list = await self.map_recovery.async_list_maps(entity_id)
-                return CommandResult.from_mapping(map_list.as_response())
-            case CaptureMapSnapshotCommand(robot_entity_id=entity_id, trigger=trigger):
-                capture = await self.map_recovery.async_capture(
-                    entity_id,
-                    trigger=trigger,
-                )
-                self._notify_listeners()
-                return CommandResult.from_mapping(capture.as_response())
-            case ActivateRetainedMapCommand(
-                robot_entity_id=entity_id,
-                map_id=map_id,
-                confirm=confirm,
-            ):
-                activation = await self.map_recovery.async_activate(
-                    entity_id,
-                    map_id,
-                    confirm=confirm,
-                )
-                self._notify_listeners()
-                return CommandResult.from_mapping(activation.as_response())
-            case VerifyRetainedMapCommand(robot_entity_id=entity_id, confirm=confirm):
-                verification = await self.map_recovery.async_verify(
-                    entity_id,
-                    confirm=confirm,
-                )
-                preview = await self.async_evaluate(
-                    dry_run=True,
-                    reason="map-selection-confirmed",
-                )
-                return CommandResult.from_mapping(verification.as_response(preview))
-            case SelectMapPreviewCommand(robot_entity_id=entity_id, option=option):
-                self.map_recovery.select_preview_option(entity_id, option)
-                self._notify_listeners()
         return None
 
     def _async_create_task(
@@ -562,18 +501,11 @@ class SchedulerApplication(
             self._snapshot = build_snapshot(self)
         return self._snapshot
 
-    @property
-    def map_recovery_projection(self) -> MapRecoveryProjectionSource:
-        """Expose the map archive's read-only snapshot port."""
-
-        # The concrete service intentionally also owns command methods. Keep
-        # that mutable surface out of the presentation protocol.
-        return cast(MapRecoveryProjectionSource, self.map_recovery)
-
     @callback
     def _notify_listeners(self) -> None:
         """Build once, then publish one transactionally settled snapshot."""
 
+        self._sync_retired_map_issues()
         try:
             snapshot = build_snapshot(self)
         except Exception as err:

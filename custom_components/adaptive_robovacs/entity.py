@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import SIGNAL_DISCOVERY_UPDATED
 from .coordinator import AdaptiveRoboVacsCoordinator
 from .runtime_data import AdaptiveRoboVacsConfigEntry
-from .snapshots import MapView, RobotView, RoomView
+from .snapshots import RobotView, RoomView
 
 
 def robot_unique_fragment(
@@ -83,15 +83,6 @@ class AdaptiveEntity(CoordinatorEntity[AdaptiveRoboVacsCoordinator]):
         if robot is None:
             raise KeyError(current_entity_id)
         return robot
-
-    def map_view(self, entity_id: str) -> MapView:
-        """Return this update's map view, following registry renames."""
-
-        robot = self.robot_view(entity_id)
-        result = self.coordinator.data.map_for_robot(robot.registry_id)
-        if result is None:
-            raise KeyError(robot.registry_id)
-        return result
 
     @property
     def name(self) -> str | None:

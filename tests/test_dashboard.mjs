@@ -308,6 +308,28 @@ test("vacuum card contains one selected vacuum and uses its friendly name", () =
   assert.ok(configuration.entities.every((row) => !row.entity.includes("robot_two")));
 });
 
+test("vacuum card ignores retired map controls and never offers map actions", () => {
+  const states = baseStates();
+  for (const role of [
+    "robot_map_capture_status", "robot_map_capture",
+    "robot_map_snapshot_preview_select", "robot_map_snapshot_preview",
+  ]) {
+    states[`sensor.${role}`] = adaptiveState(role, {
+      robot_entity_id: "vacuum.robot_one",
+      map_selection_pending: true,
+      available_maps: [{ map_id: "old-map", name: "Old map" }],
+    });
+  }
+  const { configuration } = configure(VacuumCard, {
+    vacuum_entity_id: "vacuum.robot_one",
+  }, states);
+  assert.deepEqual(configuration.entities, [
+    { entity: "sensor.robot_one_status", name: "Status" },
+    { entity: "switch.robot_one_enabled", name: "Enabled" },
+    { entity: "button.robot_one_stop_return", name: "Stop and return to dock" },
+  ]);
+});
+
 test("room card contains one selected room with simple controls before advanced settings", () => {
   const { configuration } = configure(RoomCard, { area_id: "kitchen" });
   assert.equal(configuration.title, "Kitchen");

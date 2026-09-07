@@ -11,27 +11,19 @@ from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.adaptive_robovacs import services
 from custom_components.adaptive_robovacs.commands import (
-    ActivateRetainedMapCommand,
-    CaptureMapSnapshotCommand,
     ClearLegacyDeferralsCommand,
     CommandResult,
     EvaluateCommand,
-    ListRetainedMapsCommand,
     ManualCleanRoomCommand,
     RecordManualCleanCommand,
     SaveFloorPlanCommand,
     SetRoomAdjacencyCommand,
-    VerifyRetainedMapCommand,
 )
 from custom_components.adaptive_robovacs.const import (
     DOMAIN,
-    SERVICE_ACTIVATE_RETAINED_MAP,
-    SERVICE_CAPTURE_MAP_SNAPSHOT,
     SERVICE_CLEAR_LEGACY_DEFERRALS,
-    SERVICE_CONFIRM_MAP_SELECTION,
     SERVICE_EVALUATE,
     SERVICE_LIST_LEGACY_DEFERRALS,
-    SERVICE_LIST_RETAINED_MAPS,
     SERVICE_MANUAL_CLEAN_ROOM,
     SERVICE_RECORD_MANUAL_CLEAN,
     SERVICE_SAVE_FLOOR_PLAN,
@@ -147,30 +139,6 @@ class ServiceRoutingTests(unittest.IsolatedAsyncioTestCase):
                 ManualCleanRoomCommand,
             ),
             (
-                SERVICE_LIST_RETAINED_MAPS,
-                {"robot_entity_id": "vacuum.alpha"},
-                ListRetainedMapsCommand,
-            ),
-            (
-                SERVICE_CAPTURE_MAP_SNAPSHOT,
-                {"robot_entity_id": "vacuum.alpha"},
-                CaptureMapSnapshotCommand,
-            ),
-            (
-                SERVICE_ACTIVATE_RETAINED_MAP,
-                {
-                    "robot_entity_id": "vacuum.alpha",
-                    "map_id": "1",
-                    "confirm": True,
-                },
-                ActivateRetainedMapCommand,
-            ),
-            (
-                SERVICE_CONFIRM_MAP_SELECTION,
-                {"robot_entity_id": "vacuum.alpha", "confirm": True},
-                VerifyRetainedMapCommand,
-            ),
-            (
                 SERVICE_CLEAR_LEGACY_DEFERRALS,
                 {"area_ids": ["study"], "confirm": True},
                 ClearLegacyDeferralsCommand,
@@ -206,7 +174,14 @@ class ServiceRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_registration_is_idempotent_and_keeps_response_contracts(
         self,
     ) -> None:
-        self.assertEqual(len(self.hass.services.handlers), 11)
+        self.assertEqual(len(self.hass.services.handlers), 7)
+        for retired in (
+            "capture_map_snapshot",
+            "list_retained_maps",
+            "activate_retained_map",
+            "confirm_map_selection",
+        ):
+            self.assertNotIn((DOMAIN, retired), self.hass.services.handlers)
         self.hass.services.present = True
         before = dict(self.hass.services.handlers)
         await services.async_register_services(self.hass)

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 from homeassistant.config_entries import ConfigEntryState
 
 from custom_components.adaptive_robovacs.commands import (
+    AcknowledgeRetiredMapCommand,
     AcknowledgeRobotErrorCommand,
     AcknowledgeRoomRecoveryCommand,
     CommandResult,
@@ -30,6 +31,7 @@ from custom_components.adaptive_robovacs.repairs import (
 from custom_components.adaptive_robovacs.repairs_manager import (
     cleaning_program_issue_id,
     notification_delivery_issue_id,
+    retired_map_hold_issue_id,
     robot_dispatch_fault_issue_id,
     robot_error_recovery_issue_id,
     room_dispatch_fault_issue_id,
@@ -46,6 +48,7 @@ class RepairFlowTests(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         for command in (
+            AcknowledgeRetiredMapCommand("registry-alpha", "timestamp"),
             AcknowledgeRoomRecoveryCommand("study", "episode-1"),
             AcknowledgeRobotErrorCommand("registry-alpha", "timestamp"),
         ):
@@ -181,6 +184,15 @@ class RepairFlowTests(unittest.IsolatedAsyncioTestCase):
             config_entries=SimpleNamespace(async_entries=lambda _domain: [entry])
         )
         cases = (
+            (
+                retired_map_hold_issue_id("entry-1", "registry-alpha"),
+                {
+                    "entry_id": "entry-1",
+                    "robot_registry_id": "registry-alpha",
+                    "held_at": "timestamp",
+                },
+                ErrorRecoveryRepairFlow,
+            ),
             (
                 robot_dispatch_fault_issue_id("entry-1", "registry-alpha"),
                 {"entry_id": "entry-1", "robot_registry_id": "registry-alpha"},

@@ -11,11 +11,8 @@ NAME: Final = "Adaptive RoboVacs"
 # reach the schema-versioned codec in state.py for migration.
 STORE_VERSION: Final = 1
 STORAGE_KEY: Final = f"{DOMAIN}.data"
-MAP_RECOVERY_STORE_VERSION: Final = 1
-MAP_RECOVERY_STORAGE_KEY: Final = f"{DOMAIN}.map_recovery"
-MAP_RECOVERY_RETENTION: Final = 10
 
-PLATFORMS: Final = ("button", "camera", "number", "select", "sensor", "switch")
+PLATFORMS: Final = ("button", "number", "select", "sensor", "switch")
 SCAN_INTERVAL: Final = timedelta(minutes=15)
 HISTORY_DAYS: Final = 56
 FALLBACK_SAMPLE_COUNT: Final = 6
@@ -46,10 +43,6 @@ DEFAULT_UNRESOLVED_END: Final = "05:00"
 SERVICE_EVALUATE: Final = "evaluate"
 SERVICE_RECORD_MANUAL_CLEAN: Final = "record_manual_clean"
 SERVICE_MANUAL_CLEAN_ROOM: Final = "manual_clean_room"
-SERVICE_LIST_RETAINED_MAPS: Final = "list_retained_maps"
-SERVICE_CAPTURE_MAP_SNAPSHOT: Final = "capture_map_snapshot"
-SERVICE_ACTIVATE_RETAINED_MAP: Final = "activate_retained_map"
-SERVICE_CONFIRM_MAP_SELECTION: Final = "confirm_map_selection"
 SERVICE_LIST_LEGACY_DEFERRALS: Final = "list_legacy_deferrals"
 SERVICE_CLEAR_LEGACY_DEFERRALS: Final = "clear_legacy_deferrals"
 SERVICE_SAVE_FLOOR_PLAN: Final = "save_floor_plan"

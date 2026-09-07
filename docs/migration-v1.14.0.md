@@ -1,9 +1,10 @@
 # Migrating to Adaptive RoboVacs 1.14.0
 
 Version 1.14.0 adds room-scoped robot-error recovery and removes bedroom-transit
-handling. Home Assistant 2026.9.1 and Python 3.14.2 are the minimum supported
-versions; the pinned CI interpreter is Python 3.14.7. This is a breaking release
-because it removes supported controls and a room attribute.
+handling and the map snapshot/recovery feature. Home Assistant 2026.9.1 and
+Python 3.14.2 are the minimum supported versions; the pinned CI interpreter is
+Python 3.14.7. This is a breaking release
+because it removes supported services, controls, and attributes.
 
 ## Removed behavior and interfaces
 
@@ -47,6 +48,47 @@ Matching uses domain, integration platform, stable unique ID, and config-entry
 ownership, so renamed controls are retired without changing unrelated entities.
 Other entities keep their IDs and histories. Cleanup does not purge recorder data.
 
+## Map snapshot removal
+
+Capture buttons, capture-status sensors, preview selectors and cameras, and
+retained-map activation/confirmation dashboard actions are removed. The
+`adaptive_robovacs.capture_map_snapshot`, `list_retained_maps`,
+`activate_retained_map`, and `confirm_map_selection` services are no longer
+registered. The robot hold attribute `requested_map_id` is also removed.
+
+Remove references from custom automations, scripts, templates, and dashboards
+before installing this version. The integration dashboard removes these controls
+automatically. Historical entity IDs may have been renamed; retired unique IDs
+have the prefix `<entry_id>_robot_<original_robot_fragment>_` and these suffixes:
+
+| Entity domain | Retired suffix |
+| --- | --- |
+| button | `capture_map_snapshot` |
+| sensor | `map_recovery` |
+| select, camera | `map_recovery_preview` |
+
+Setup removes only matching records owned by that entry, including renamed
+entities and robots no longer discovered. It also deletes that entry's obsolete
+`adaptive_robovacs.map_recovery.<entry_id>` archive through the Store API without
+reading its contents. This deletes archived captures and previews, including
+corrupt archives. Missing archives are harmless; filesystem failures are logged
+and retried on the next setup. No other entry's archive, scheduler Store,
+recorder history, robot-retained map, or floor-plan editor data is deleted.
+
+Old `map_recovery_pending` holds stay blocked across restart. A compatibility
+Repair requires confirmation that the robot is correctly localized and its Home
+Assistant room mapping is correct. It refreshes discovery, validates each mapped
+room, and requires a docked/idle robot with no tracked active job. Opening or
+dismissing the Repair does not acknowledge it. Submitting it clears only the
+matching hold after a successful save, sends no physical command, and starts no
+clean. Stale confirmations and failed saves cannot release another hold. Other
+faults, room recoveries, and normal dispatch safeguards remain authoritative.
+
+Obsolete `requested_map_id` fields are ignored and stripped from valid scheduler
+payloads, including quarantined robot holds. Schema 17 and the scheduler Store
+envelope remain unchanged. Invalid retained data and newer payload schemas
+still enter storage-safe mode without overwriting the scheduler Store.
+
 ## Recovering interrupted rooms
 
 An error during an integration-owned, single-room scheduled or dashboard clean
@@ -83,14 +125,13 @@ estimate establishes completion. An ambiguous association retains its robot
 hold and gets a robot Repair requiring safe docking and explicit abandonment
 of the old checkpoint. No cleaning is credited by that confirmation.
 
-## Deployment
+## Release status
 
-The local 1.14.0 change is prepared for review and has not been published or
-installed. Deployment requires explicit approval. Existing live transit
-selectors remain until the new integration is installed and set up.
+Version 1.14.0 is prepared as a draft GitHub release. It has not been deployed
+to Home Assistant. Draft creation does not install it through HACS, change Home
+Assistant configuration, reload the integration, or restart Home Assistant.
 
-For a subsequently approved release, follow the repository release procedure:
-validate, publish the matching annotated tag and full release, verify CI, install
-the exact version through HACS, and restart only after confirming both vacuums
-are not cleaning. Verify that the integration loads, obsolete controls are
-absent, and retained room and robot state remains intact.
+Before any later deployment, audit and update consumers of the removed controls
+and services, publish the approved release, and follow the repository's exact-tag
+HACS and safe-restart procedure. Verify integration loading, removal of obsolete
+controls and archives, and preservation of room and robot state after upgrade.

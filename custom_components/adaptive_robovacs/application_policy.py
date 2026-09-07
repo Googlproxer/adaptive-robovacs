@@ -138,8 +138,6 @@ class ApplicationPolicyMixin:
             self, robot_id: str, deadline: datetime
         ) -> None: ...
 
-        def _map_recovery_dispatch_block_reason(self) -> str | None: ...
-
     def fault_affects_robot(self, robot: DiscoveredRobot) -> bool:
         return robot.registry_id in self.state.robot_faults
 

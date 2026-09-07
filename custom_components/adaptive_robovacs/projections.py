@@ -10,7 +10,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
-from .map_recovery_models import MapRecoverySummary, RecoveryCapability
 from .models import (
     CleaningOperation,
     DurationEstimate,
@@ -44,7 +43,6 @@ from .snapshots import (
     FrozenJsonObject,
     IntegrationSnapshot,
     ManualAuditView,
-    MapView,
     ObservedProfileView,
     RobotEligibilityView,
     RobotHoldView,
@@ -73,29 +71,12 @@ from .state import (
 )
 
 
-class MapRecoveryProjectionSource(Protocol):
-    """Map-recovery reads needed for a presentation snapshot."""
-
-    def capability(self, robot_entity_id: str) -> RecoveryCapability: ...
-
-    def summary(self, robot_entity_id: str) -> MapRecoverySummary: ...
-
-    def preview_options(self, robot_entity_id: str) -> tuple[str, ...]: ...
-
-    def selected_preview_option(self, robot_entity_id: str) -> str | None: ...
-
-    def selected_preview(self, robot_entity_id: str) -> bytes | None: ...
-
-
 class ProjectionSource(Protocol):
     """Narrow read interface used by the presentation projection."""
 
     hass: HomeAssistant
     discovery: DiscoverySnapshot
     state: SchedulerState
-
-    @property
-    def map_recovery_projection(self) -> MapRecoveryProjectionSource: ...
 
     @property
     def observe_only(self) -> bool: ...
@@ -233,7 +214,6 @@ def _hold_view(hold: RobotHold | None) -> RobotHoldView | None:
         held_at=hold.held_at,
         last_observed_at=hold.last_observed_at,
         returning_at=hold.returning_at,
-        requested_map_id=hold.requested_map_id,
     )
 
 
@@ -844,28 +824,6 @@ def build_snapshot(source: ProjectionSource) -> IntegrationSnapshot:
             key=lambda item: item.area_id,
         )
     )
-    maps = tuple(
-        MapView(
-            robot_registry_id=robot.registry_id,
-            available=(
-                source.map_recovery_projection.capability(robot.entity_id).available
-            ),
-            summary=source.map_recovery_projection.summary(robot.entity_id),
-            preview_options=source.map_recovery_projection.preview_options(
-                robot.entity_id
-            ),
-            selected_preview_option=(
-                source.map_recovery_projection.selected_preview_option(robot.entity_id)
-            ),
-            selected_preview=source.map_recovery_projection.selected_preview(
-                robot.entity_id
-            ),
-        )
-        for robot in sorted(
-            source.discovery.robots.values(),
-            key=lambda item: item.registry_id,
-        )
-    )
     confidence = source.get_global_setting("forecast_confidence")
     if not isinstance(confidence, (int, float)):
         raise TypeError("forecast_confidence must be numeric")
@@ -892,6 +850,5 @@ def build_snapshot(source: ProjectionSource) -> IntegrationSnapshot:
         scheduler=scheduler,
         rooms=rooms,
         robots=robots,
-        maps=maps,
         floor_plan=plan,
     )

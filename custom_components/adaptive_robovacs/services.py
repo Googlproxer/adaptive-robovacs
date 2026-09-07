@@ -12,27 +12,19 @@ from homeassistant.helpers import config_validation as cv
 
 from .application import SchedulerApplication
 from .commands import (
-    ActivateRetainedMapCommand,
-    CaptureMapSnapshotCommand,
     ClearLegacyDeferralsCommand,
     EvaluateCommand,
-    ListRetainedMapsCommand,
     ManualCleanRoomCommand,
     RecordManualCleanCommand,
     SaveFloorPlanCommand,
     SchedulerCommandResult,
     SetRoomAdjacencyCommand,
-    VerifyRetainedMapCommand,
 )
 from .const import (
     DOMAIN,
-    SERVICE_ACTIVATE_RETAINED_MAP,
-    SERVICE_CAPTURE_MAP_SNAPSHOT,
     SERVICE_CLEAR_LEGACY_DEFERRALS,
-    SERVICE_CONFIRM_MAP_SELECTION,
     SERVICE_EVALUATE,
     SERVICE_LIST_LEGACY_DEFERRALS,
-    SERVICE_LIST_RETAINED_MAPS,
     SERVICE_MANUAL_CLEAN_ROOM,
     SERVICE_RECORD_MANUAL_CLEAN,
     SERVICE_SAVE_FLOOR_PLAN,
@@ -135,40 +127,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
         )
 
-    async def list_retained_maps(call: ServiceCall) -> dict[str, Any]:
-        return _service_response(
-            await _application(hass, call.data.get("entry_id")).async_execute(
-                ListRetainedMapsCommand(call.data["robot_entity_id"])
-            )
-        )
-
-    async def capture_map_snapshot(call: ServiceCall) -> dict[str, Any]:
-        return _service_response(
-            await _application(hass, call.data.get("entry_id")).async_execute(
-                CaptureMapSnapshotCommand(call.data["robot_entity_id"])
-            )
-        )
-
-    async def activate_retained_map(call: ServiceCall) -> dict[str, Any]:
-        return _service_response(
-            await _application(hass, call.data.get("entry_id")).async_execute(
-                ActivateRetainedMapCommand(
-                    call.data["robot_entity_id"],
-                    call.data["map_id"],
-                    call.data["confirm"],
-                )
-            )
-        )
-
-    async def confirm_map_selection(call: ServiceCall) -> dict[str, Any]:
-        return _service_response(
-            await _application(hass, call.data.get("entry_id")).async_execute(
-                VerifyRetainedMapCommand(
-                    call.data["robot_entity_id"], call.data["confirm"]
-                )
-            )
-        )
-
     async def list_legacy_deferrals(call: ServiceCall) -> dict[str, Any]:
         return {
             "legacy_deferrals": _application(
@@ -221,57 +179,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Optional("dry_run", default=False): cv.boolean,
-                vol.Optional("entry_id"): str,
-            }
-        ),
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LIST_RETAINED_MAPS,
-        list_retained_maps,
-        schema=vol.Schema(
-            {
-                vol.Required("robot_entity_id"): cv.entity_id,
-                vol.Optional("entry_id"): str,
-            }
-        ),
-        supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CAPTURE_MAP_SNAPSHOT,
-        capture_map_snapshot,
-        schema=vol.Schema(
-            {
-                vol.Required("robot_entity_id"): cv.entity_id,
-                vol.Optional("entry_id"): str,
-            }
-        ),
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_ACTIVATE_RETAINED_MAP,
-        activate_retained_map,
-        schema=vol.Schema(
-            {
-                vol.Required("robot_entity_id"): cv.entity_id,
-                vol.Required("map_id"): str,
-                vol.Required("confirm"): vol.All(cv.boolean, vol.Equal(True)),
-                vol.Optional("entry_id"): str,
-            }
-        ),
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CONFIRM_MAP_SELECTION,
-        confirm_map_selection,
-        schema=vol.Schema(
-            {
-                vol.Required("robot_entity_id"): cv.entity_id,
-                vol.Required("confirm"): vol.All(cv.boolean, vol.Equal(True)),
                 vol.Optional("entry_id"): str,
             }
         ),

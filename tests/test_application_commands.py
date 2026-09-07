@@ -8,13 +8,10 @@ from unittest.mock import AsyncMock, Mock
 
 from custom_components.adaptive_robovacs.application import SchedulerApplication
 from custom_components.adaptive_robovacs.commands import (
-    ActivateRetainedMapCommand,
-    CaptureMapSnapshotCommand,
     ClearLegacyDeferralsCommand,
     CommandResult,
     EvaluateCommand,
     ExpireWaterConfirmationCommand,
-    ListRetainedMapsCommand,
     ManualCleanRoomCommand,
     ObservedManualCleanCommand,
     RecheckAndResumeCommand,
@@ -25,7 +22,6 @@ from custom_components.adaptive_robovacs.commands import (
     RecordManualCleanCommand,
     RefreshDiscoveryCommand,
     SaveFloorPlanCommand,
-    SelectMapPreviewCommand,
     SetGlobalCommand,
     SetRobotSettingCommand,
     SetRoomAdjacencyCommand,
@@ -34,7 +30,6 @@ from custom_components.adaptive_robovacs.commands import (
     SetRoomSettingCommand,
     StateChangedCommand,
     StopAndReturnCommand,
-    VerifyRetainedMapCommand,
     WaterConfirmationResponseCommand,
 )
 from custom_components.adaptive_robovacs.discovery import DiscoverySnapshot
@@ -77,21 +72,6 @@ def routed_application() -> SchedulerApplication:
     app.async_set_room_adjacency = AsyncMock(return_value={"revision": 2})
     app.async_save_floor_plan = AsyncMock(return_value={"revision": 3})
 
-    def response(value):
-        return SimpleNamespace(as_response=lambda *args: value)
-
-    app.map_recovery = SimpleNamespace(
-        handle_state_transition=Mock(),
-        async_list_maps=AsyncMock(return_value=response({"maps": []})),
-        async_capture=AsyncMock(return_value=response({"captured": True})),
-        async_activate=AsyncMock(return_value=response({"activated": True})),
-        async_verify=AsyncMock(
-            return_value=SimpleNamespace(
-                as_response=lambda preview: {"verified": True, "preview": preview}
-            )
-        ),
-        select_preview_option=Mock(),
-    )
     app._notify_listeners = Mock()
     app._reset_room_recovery_dock = Mock()
     app.has_notification_targets = Mock(return_value=True)
@@ -209,9 +189,6 @@ class ApplicationCommandRouterTests(unittest.IsolatedAsyncioTestCase):
         await app._async_execute_command(
             StateChangedCommand("vacuum.alpha", "docked", "cleaning", None)
         )
-        app.map_recovery.handle_state_transition.assert_called_once_with(
-            "vacuum.alpha", "docked", "cleaning"
-        )
         app.async_evaluate.assert_awaited_with(
             dry_run=False, reason="state:vacuum.alpha"
         )
@@ -240,7 +217,7 @@ class ApplicationCommandRouterTests(unittest.IsolatedAsyncioTestCase):
             "vacuum.alpha", context=None
         )
 
-    async def test_timer_discovery_water_and_map_commands_route(self) -> None:
+    async def test_timer_discovery_and_water_commands_route(self) -> None:
         app = routed_application()
         await app._async_execute_command(RefreshDiscoveryCommand("labels"))
         app._async_refresh_discovery_after_device_label_change.assert_awaited_once()
@@ -255,48 +232,6 @@ class ApplicationCommandRouterTests(unittest.IsolatedAsyncioTestCase):
         )
         await app._async_execute_command(ExpireWaterConfirmationCommand("request"))
         app._async_expire_water_confirmation.assert_awaited_once_with("request")
-
-        self.assertEqual(
-            payload(
-                await app._async_execute_command(
-                    ListRetainedMapsCommand("vacuum.alpha")
-                )
-            ),
-            {"maps": []},
-        )
-        self.assertEqual(
-            payload(
-                await app._async_execute_command(
-                    CaptureMapSnapshotCommand("vacuum.alpha", "manual")
-                )
-            ),
-            {"captured": True},
-        )
-        self.assertEqual(
-            payload(
-                await app._async_execute_command(
-                    ActivateRetainedMapCommand("vacuum.alpha", "map-1", True)
-                )
-            ),
-            {"activated": True},
-        )
-        self.assertEqual(
-            payload(
-                await app._async_execute_command(
-                    VerifyRetainedMapCommand("vacuum.alpha", True)
-                )
-            ),
-            {"verified": True, "preview": {"preview": True}},
-        )
-        self.assertIsNone(
-            await app._async_execute_command(
-                SelectMapPreviewCommand("vacuum.alpha", "map-1")
-            )
-        )
-        app.map_recovery.select_preview_option.assert_called_once_with(
-            "vacuum.alpha", "map-1"
-        )
-        self.assertEqual(app._notify_listeners.call_count, 3)
 
 
 if __name__ == "__main__":

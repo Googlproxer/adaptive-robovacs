@@ -217,7 +217,6 @@ class PresentationTests(unittest.TestCase):
                     held_at=WHEN,
                     last_observed_at=WHEN,
                     returning_at=None,
-                    requested_map_id=None,
                 )
             )["reason"],
             "paused",

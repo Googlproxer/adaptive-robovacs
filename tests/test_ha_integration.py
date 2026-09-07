@@ -83,7 +83,7 @@ def empty_snapshot() -> IntegrationSnapshot:
         floor_plan=plan,
         failure=None,
     )
-    return IntegrationSnapshot(scheduler, (), (), (), plan)
+    return IntegrationSnapshot(scheduler, (), (), plan)
 
 
 class _FakeApplication:
@@ -473,6 +473,10 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "custom_components.adaptive_robovacs.integration_core.Store",
+                side_effect=make_store,
+            ),
+            patch(
+                "custom_components.adaptive_robovacs.retired_features.Store",
                 side_effect=make_store,
             ),
             patch(

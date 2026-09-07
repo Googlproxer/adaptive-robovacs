@@ -176,34 +176,6 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
         }
 
 
-class _MapRecoverySensor(AdaptiveEntity, SensorEntity):
-    """Expose optional map-capture state without leaking raw map payloads."""
-
-    def __init__(
-        self, coordinator: AdaptiveRoboVacsCoordinator, robot_entity_id: str
-    ) -> None:
-        super().__init__(
-            coordinator,
-            f"robot_{robot_unique_fragment(coordinator, robot_entity_id)}_map_recovery",
-            "map capture status",
-            "robot_map_capture_status",
-            robot_entity_id=robot_entity_id,
-            robot_name_suffix="map capture status",
-        )
-        self.robot_entity_id = robot_entity_id
-
-    @property
-    def native_value(self) -> str:
-        return self.map_view(self.robot_entity_id).summary.state
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        return {
-            **super().extra_state_attributes,
-            **self.map_view(self.robot_entity_id).summary.as_attributes(),
-        }
-
-
 class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
     def __init__(
         self, coordinator: AdaptiveRoboVacsCoordinator, area_id: str, name: str
@@ -467,7 +439,6 @@ def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
         entities.extend(
             [
                 _RobotStatusSensor(coordinator, robot.entity_id),
-                _MapRecoverySensor(coordinator, robot.entity_id),
             ]
         )
     for room in coordinator.data.rooms:

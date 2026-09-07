@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -13,12 +10,7 @@ from unittest.mock import patch
 
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-if importlib.util.find_spec("turbojpeg") is None:
-    turbojpeg = types.ModuleType("turbojpeg")
-    turbojpeg.TurboJPEG = type("TurboJPEG", (), {})
-    sys.modules["turbojpeg"] = turbojpeg
-
-from custom_components.adaptive_robovacs import button, camera, number, select, sensor
+from custom_components.adaptive_robovacs import button, number, select, sensor
 from custom_components.adaptive_robovacs import switch as switch_platform
 from custom_components.adaptive_robovacs.commands import (
     EvaluateCommand,
@@ -28,10 +20,6 @@ from custom_components.adaptive_robovacs.commands import (
     SetRoomSettingCommand,
 )
 from custom_components.adaptive_robovacs.entity import async_setup_dynamic_entities
-from custom_components.adaptive_robovacs.map_recovery_models import (
-    MapRecoverySummary,
-    RecoveryCapabilityState,
-)
 from custom_components.adaptive_robovacs.models import (
     AdapterCapabilities,
     CleaningOperation,
@@ -46,7 +34,6 @@ from custom_components.adaptive_robovacs.snapshots import (
     FaultView,
     FloorPlanView,
     FrozenJsonObject,
-    MapView,
     ObservedProfileView,
     RobotSettingsView,
     RoomRecoveryView,
@@ -236,34 +223,11 @@ def room_view(area_id: str = "study", name: str = "Study"):
     )
 
 
-def map_view() -> MapView:
-    summary = MapRecoverySummary(
-        state=RecoveryCapabilityState.READY.value,
-        reason=None,
-        retention=10,
-        capture_count=1,
-        last_capture=WHEN,
-        last_error=None,
-        map_selection_pending=False,
-        capture_sets=(),
-        available_maps=(),
-    )
-    return MapView(
-        robot_registry_id="registry-alpha",
-        available=True,
-        summary=summary,
-        preview_options=("Ground - 2026-09-04T12:00:00+00:00",),
-        selected_preview_option="Ground - 2026-09-04T12:00:00+00:00",
-        selected_preview=b"png",
-    )
-
-
 class _Snapshot:
     def __init__(self) -> None:
         self.scheduler = scheduler_view()
         self.rooms = (room_view(),)
         self.robots = (robot_view(),)
-        self.maps = (map_view(),)
 
     def room(self, area_id):
         return next((item for item in self.rooms if item.area_id == area_id), None)
@@ -277,12 +241,6 @@ class _Snapshot:
     def robot_by_registry_id(self, registry_id):
         return next(
             (item for item in self.robots if item.registry_id == registry_id),
-            None,
-        )
-
-    def map_for_robot(self, registry_id):
-        return next(
-            (item for item in self.maps if item.robot_registry_id == registry_id),
             None,
         )
 
@@ -307,7 +265,6 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
     def test_every_platform_builds_coordinator_entities_with_stable_ids(self) -> None:
         groups = (
             button._entities(self.coordinator),
-            camera._entities(self.coordinator),
             number._entities(self.coordinator),
             select._entities(self.coordinator),
             sensor._entities(self.coordinator),
@@ -399,12 +356,10 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
             self.coordinator, "study", "desired_window_start", "start"
         )
         program = select._RobotProgramSelect(self.coordinator, "vacuum.alpha")
-        preview = select._MapRecoveryPreviewSelect(self.coordinator, "vacuum.alpha")
         self.assertEqual(global_time.current_option, "00:00")
         self.assertEqual(room_time.current_option, "Use global")
         self.assertIn("Mop only", program.options)
         self.assertEqual(program.current_option, "Vacuum then mop")
-        self.assertEqual(preview.options[0].split(" - ")[0], "Ground")
         await global_time.async_select_option("09:00")
         self.assertIsInstance(self.coordinator.commands[-1], SetGlobalCommand)
 
@@ -418,10 +373,6 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
         ).async_press()
         self.assertIsInstance(self.coordinator.commands[-2], EvaluateCommand)
         self.assertIsInstance(self.coordinator.commands[-1], ManualCleanRoomCommand)
-        image = await camera._MapRecoveryCamera(
-            self.coordinator, "vacuum.alpha"
-        ).async_camera_image()
-        self.assertEqual(image, b"png")
 
     def test_dynamic_addition_deduplicates_existing_entities(self) -> None:
         added = []
@@ -554,10 +505,6 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
             await entity.async_select_option("Robot default")
             self.assertIsNone(self.coordinator.commands[-1].value)
 
-        preview = select._MapRecoveryPreviewSelect(self.coordinator, "vacuum.alpha")
-        self.assertEqual(preview.current_option, preview.options[0])
-        await preview.async_select_option(preview.options[0])
-
     def test_sensor_states_cover_global_active_and_waiting_presentations(self) -> None:
         scheduler_entity = sensor._SchedulerSensor(self.coordinator)
         scheduler = self.coordinator.data.scheduler
@@ -620,10 +567,6 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
             "legacy",
         )
 
-        map_sensor = sensor._MapRecoverySensor(self.coordinator, "vacuum.alpha")
-        self.assertEqual(map_sensor.native_value, "ready")
-        self.assertEqual(map_sensor.extra_state_attributes["capture_count"], 1)
-
         room = self.coordinator.data.rooms[0]
         cleaned = sensor._RoomLastCleanedSensor(self.coordinator, "study", "Study")
         room.last_vacuum = None
@@ -684,7 +627,7 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
         entry = SimpleNamespace(
             runtime_data=SimpleNamespace(coordinator=self.coordinator)
         )
-        for module in (button, camera, number, select, sensor, switch_platform):
+        for module in (button, number, select, sensor, switch_platform):
             with (
                 self.subTest(module=module.__name__),
                 patch.object(module, "async_setup_dynamic_entities") as setup,

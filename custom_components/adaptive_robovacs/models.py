@@ -148,7 +148,6 @@ class EvaluationCause(StrEnum):
     READY_CONFIRMATION = "ready_confirmation"
     RECOVERY = "recovery"
     WATER_CONFIRMATION = "water_confirmation"
-    MAP_RECOVERY = "map_recovery"
     CAPABILITY_REFRESH = "capability_refresh"
     REPAIR = "repair"
     USER_PREVIEW = "dashboard_preview"
@@ -1638,7 +1637,7 @@ def can_request_return_to_dock(state: str | None) -> bool:
 
 
 def map_recovery_hold_is_manual(reason: str | None) -> bool:
-    """Return whether a scheduler hold can only be released by verification."""
+    """Recognize an old map-selection hold requiring the compatibility Repair."""
 
     return reason == "map_recovery_pending"
 

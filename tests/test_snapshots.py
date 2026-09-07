@@ -57,16 +57,11 @@ class _States:
         return SimpleNamespace(state=value) if value else None
 
 
-class _EmptyMapRecovery:
-    pass
-
-
 class _Source:
     def __init__(self) -> None:
         self.hass = SimpleNamespace(states=_States())
         self.state = SchedulerState.create(ENTRY_DATA)
         self.discovery = DiscoverySnapshot.empty()
-        self.map_recovery = _EmptyMapRecovery()
         self.observe_only = True
         self.party_mode = False
         self.scheduler_halted = False
@@ -260,16 +255,13 @@ class SnapshotTests(unittest.TestCase):
 
         room = SimpleNamespace(area_id="study")
         robot = SimpleNamespace(entity_id="vacuum.alpha", registry_id="registry-alpha")
-        map_view = SimpleNamespace(robot_registry_id="registry-alpha")
-        populated = replace(snapshot, rooms=(room,), robots=(robot,), maps=(map_view,))
+        populated = replace(snapshot, rooms=(room,), robots=(robot,))
         self.assertIs(populated.room("study"), room)
         self.assertIsNone(populated.room("missing"))
         self.assertIs(populated.robot_by_entity_id("vacuum.alpha"), robot)
         self.assertIsNone(populated.robot_by_entity_id("vacuum.missing"))
         self.assertIs(populated.robot_by_registry_id("registry-alpha"), robot)
         self.assertIsNone(populated.robot_by_registry_id("registry-missing"))
-        self.assertIs(populated.map_for_robot("registry-alpha"), map_view)
-        self.assertIsNone(populated.map_for_robot("registry-missing"))
 
     def test_projection_helpers_resolve_only_current_registry_objects(self) -> None:
         when = datetime(2026, 9, 5, 10, tzinfo=UTC)

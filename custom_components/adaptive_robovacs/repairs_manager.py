@@ -74,6 +74,10 @@ def robot_error_recovery_issue_id(entry_id: str, registry_id: str) -> str:
     return f"robot_error_recovery_{entry_id}_{registry_id}"
 
 
+def retired_map_hold_issue_id(entry_id: str, registry_id: str) -> str:
+    return f"retired_map_hold_{entry_id}_{registry_id}"
+
+
 def scheduler_halted_issue_id(entry_id: str) -> str:
     """Return the legacy global-halt issue ID removed by schema 16."""
 

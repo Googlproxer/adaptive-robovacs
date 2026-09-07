@@ -168,6 +168,14 @@ class AcknowledgeRobotErrorCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class AcknowledgeRetiredMapCommand:
+    """Confirm a legacy map hold without retaining any map-changing service."""
+
+    robot_registry_id: str
+    held_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class RecheckRoomFaultCommand:
     """Recheck one room-scoped dispatch failure."""
 
@@ -215,46 +223,6 @@ class SaveFloorPlanCommand:
     request: FloorPlanWrite
 
 
-@dataclass(frozen=True, slots=True)
-class ListRetainedMapsCommand:
-    """Return retained maps for one currently discovered robot."""
-
-    robot_entity_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class CaptureMapSnapshotCommand:
-    """Capture one read-only retained-map snapshot."""
-
-    robot_entity_id: str
-    trigger: str = "manual"
-
-
-@dataclass(frozen=True, slots=True)
-class ActivateRetainedMapCommand:
-    """Activate one retained map after explicit confirmation."""
-
-    robot_entity_id: str
-    map_id: str
-    confirm: bool
-
-
-@dataclass(frozen=True, slots=True)
-class VerifyRetainedMapCommand:
-    """Finish or reject a held map-recovery transaction."""
-
-    robot_entity_id: str
-    confirm: bool
-
-
-@dataclass(frozen=True, slots=True)
-class SelectMapPreviewCommand:
-    """Select a cached preview without contacting a robot."""
-
-    robot_entity_id: str
-    option: str
-
-
 type SchedulerCommand = (
     EvaluateCommand
     | StateChangedCommand
@@ -274,17 +242,13 @@ type SchedulerCommand = (
     | RecheckRoomFaultCommand
     | AcknowledgeRoomRecoveryCommand
     | AcknowledgeRobotErrorCommand
+    | AcknowledgeRetiredMapCommand
     | RecheckTwoPassCompatibilityCommand
     | RecheckCleaningProgramCommand
     | RecheckNotificationTargetsCommand
     | ClearLegacyDeferralsCommand
     | SetRoomAdjacencyCommand
     | SaveFloorPlanCommand
-    | ListRetainedMapsCommand
-    | CaptureMapSnapshotCommand
-    | ActivateRetainedMapCommand
-    | VerifyRetainedMapCommand
-    | SelectMapPreviewCommand
 )
 
 
