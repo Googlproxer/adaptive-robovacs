@@ -242,7 +242,7 @@ class AdaptiveRoboVacsTimestampRow extends HTMLElement {
     clearTimeout(this._timer);
     this._timer = undefined;
     if (!this._connected || !this._hass || !this._config || isDocumentHidden()) return;
-    this._row.setConfig(this._config);
+    this._row.config = this._config;
     this._row.hass = this._hass;
     const display = AdaptiveRoboVacsTimestampRow.display(this._hass.states[this._config.entity]);
     this._value.textContent = display.text;

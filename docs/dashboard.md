@@ -79,6 +79,10 @@ Status details. Rows grow to accommodate wrapped text on narrow displays.
 
 Auto-entities subscribes to its template, including `now()` for day labels. These
 evaluations produce card configuration only, with no entity or Store writes.
+Return the final list with `{{ result.rows }}`. Applying `to_json` to that list
+turns populated rows into text because JSON booleans are not native Python
+values; Auto-entities then treats fragments of that text as entity IDs. Keep
+`to_json` only for the individual text embedded in Bubble Card's JavaScript.
 
 ## Floor-plan cards
 

@@ -94,7 +94,9 @@ class ScheduleDisplayTests(unittest.IsolatedAsyncioTestCase):
                 "{% set robot_entity_id = " + json.dumps(robot) + " %}" + TEMPLATE,
                 self.hass,
             )
-            return json.loads(template.async_render(parse_result=False))
+            result = template.async_render_to_info().result()
+            self.assertIsInstance(result, list)
+            return result
 
     async def test_timestamp_repeated_writes_emit_no_countdown_state_changes(
         self,
@@ -157,6 +159,8 @@ class ScheduleDisplayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cards[0]["entity"], "sensor.status_a_entry_1")
         self.assertEqual(cards[0]["tap_action"], {"action": "more-info"})
         self.assertTrue(cards[0]["show_attribute"])
+        self.assertIs(cards[0]["show_state"], False)
+        self.assertIs(cards[0]["show_attribute"], True)
         self.assertNotIn("attribute", cards[0])
 
     async def test_empty_unavailable_and_midnight_refresh_without_entity_writes(

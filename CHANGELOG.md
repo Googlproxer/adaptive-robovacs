@@ -5,6 +5,19 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.15.1] - 2026-09-08
+
+### Fixed
+
+- Restore Next clean rows by assigning the native Home Assistant row's `config`
+  property instead of calling a nonexistent `setConfig` method.
+- Return native card lists from the Kiosk template, preventing Auto-entities
+  configuration errors when enabled rooms produce Bubble Card rows.
+- Exercise the actual template subscription result type and native row interface
+  in regression tests.
+
+Detailed notes: [`docs/releases/v1.15.1.md`](docs/releases/v1.15.1.md).
+
 ## [1.15.0] - 2026-09-08
 
 ### Added

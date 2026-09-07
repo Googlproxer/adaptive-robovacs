@@ -10,7 +10,6 @@ class MockElement {
   }
   attachShadow() { return new MockElement(); }
   append(...children) { this.children = children; }
-  setConfig(config) { this.config = config; }
   setAttribute(name, value) { this[name] = value; }
   addEventListener(name, listener) { this.listeners.set(name, listener); }
   dispatchEvent(event) { this.events.push(event); }
@@ -779,6 +778,10 @@ test("timestamp timers pause while hidden, clean up, and preserve exact-time det
   row.setConfig({ entity: "sensor.next", name: "Next clean" });
   row.hass = { states: { "sensor.next": { state: new Date(now + 61000).toISOString() } } };
   row.connectedCallback();
+  // HA's generic entity row accepts reactive properties, not setConfig().
+  assert.equal(row._row.setConfig, undefined);
+  assert.deepEqual(row._row.config, { entity: "sensor.next", name: "Next clean" });
+  assert.equal(row._row.hass, row._hass);
   assert.equal(row._value.textContent, "in 2 minutes");
   t.mock.timers.tick(1000);
   assert.equal(row._value.textContent, "in 1 minute");
