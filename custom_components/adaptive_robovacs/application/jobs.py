@@ -2,7 +2,7 @@
 
 Robot observations stay authoritative here while pure reducers in jobs.py
 decide durable transitions and effects. Restart-only normalization and timers
-live in application_recovery.py.
+live in recovery.py.
 """
 
 from __future__ import annotations
@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .commands import SchedulerCommand, SchedulerCommandResult
-from .const import START_CONFIRMATION_TIMEOUT
-from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
-from .jobs import (
+from ..commands import SchedulerCommand, SchedulerCommandResult
+from ..const import START_CONFIRMATION_TIMEOUT
+from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
+from ..jobs import (
     DeferralCandidate,
     JobTransition,
     ManualAuditEffect,
@@ -30,14 +30,14 @@ from .jobs import (
     reduce_manual_deferrals,
     should_assume_native_app_clean,
 )
-from .models import (
+from ..models import (
     CleaningOperation,
     JobPhase,
     elapsed_total_duration_minutes,
     managed_clean_duration_failed,
     pending_completion_is_docked,
 )
-from .state import (
+from ..state import (
     ActiveJob,
     ManualAuditRecord,
     RecoveryAuditRecord,
@@ -50,9 +50,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    from . import application
+    from . import core
 
-    return application._now()
+    return core._now()
 
 
 class ApplicationJobsMixin:

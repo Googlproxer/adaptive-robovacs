@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
-from .commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
-from .const import DEFAULT_EXPECTED_MINUTES
-from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
-from .jobs import active_rooms, cancellation_cooldown
-from .models import (
+from ..commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
+from ..const import DEFAULT_EXPECTED_MINUTES
+from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
+from ..jobs import active_rooms, cancellation_cooldown
+from ..models import (
     EvaluationCause,
     EvaluationMode,
     JobPhase,
@@ -24,7 +24,7 @@ from .models import (
     offline_held_recovery_outcome,
     pending_completion_is_docked,
 )
-from .state import (
+from ..state import (
     ActiveJob,
     RecoveryAuditRecord,
     RobotHold,
@@ -37,9 +37,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    from . import application
+    from . import core
 
-    return application._now()
+    return core._now()
 
 
 def async_track_point_in_utc_time(
@@ -47,9 +47,9 @@ def async_track_point_in_utc_time(
     action: Callable[[datetime], None],
     deadline: datetime,
 ) -> Callable[[], None]:
-    from . import application
+    from . import core
 
-    return application._track_point(hass, action, deadline)
+    return core._track_point(hass, action, deadline)
 
 
 class ApplicationRecoveryMixin:

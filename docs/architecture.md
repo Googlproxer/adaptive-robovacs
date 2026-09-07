@@ -43,24 +43,37 @@ mutate a coordinator.
 
 ### Application
 
-`application.py` is the composition root, transaction router, and sole owner of
+The `application/` package contains the scheduler's state owner and focused
+workflow components. Its small `__init__.py` exports `SchedulerApplication`,
+preserving `from .application import SchedulerApplication` for integration
+setup, services, and typed runtime data. Internal components import each other
+within the package and use parent-relative imports for domain and infrastructure
+dependencies; `application/jobs.py` orchestrates the root `jobs.py` reducers,
+and `application/dispatch.py` orchestrates the root `dispatch.py` pipeline.
+
+`application/core.py` is the composition root, transaction router, and sole owner of
 mutable `SchedulerState`. Its focused components keep that ownership boundary
 without rebuilding a second god file:
 
-- `application_events.py` translates Home Assistant callbacks into commands.
-- `application_evaluation.py` owns the observe-to-plan transaction.
-- `application_dispatch.py` owns occurrence preparation and the persisted
+- `application/events.py` translates Home Assistant callbacks into commands.
+- `application/evaluation.py` owns the observe-to-plan transaction.
+- `application/dispatch.py` owns occurrence preparation and the persisted
   checkpoint-before-start transaction.
-- `application_recovery.py` restores checkpoints and owns recovery timers,
-  while `application_jobs.py` applies pure lifecycle reducers to observed
+- `application/recovery.py` restores checkpoints and owns recovery timers,
+  while `application/jobs.py` applies pure lifecycle reducers to observed
   robot state.
-- `application_room_recovery.py` shares live/startup error recovery and serialized
+- `application/room_recovery.py` shares live/startup error recovery and serialized
   Repair acknowledgement. It persists room blocks, interrupted occurrences, and
   robot/job detachment together before exposing a released robot to scheduling.
-- `application_policy.py` supplies observations and pure scheduling inputs.
-- `application_settings.py` owns typed configuration and floor-plan changes.
-- `application_faults.py` and `application_water.py` own their scoped workflows.
-- `application_actions.py` handles explicit user cleaning and return requests.
+- `application/policy.py` supplies observations and pure scheduling inputs.
+- `application/settings.py` owns typed configuration and floor-plan changes.
+- `application/faults.py` and `application/water.py` own their scoped workflows.
+- `application/actions.py` handles explicit user cleaning and return requests.
+
+Clock and timer helpers remain in `application/core.py`. Component wrappers
+resolve them through deferred imports to preserve one patchable clock without
+an eager circular import. The architecture tests resolve relative import depth
+and enforce dependency boundaries across every application submodule.
 
 `commands.py` defines the accepted command union, while `command_queue.py`
 provides serialization and shutdown draining. A command observes current
@@ -82,7 +95,7 @@ adapters.
 - `retired_features.py` removes only entry-owned obsolete controls and the
   retired map archive through Home Assistant APIs. No capture or vendor map
   transport remains.
-- `application_legacy_map.py` handles pre-1.14 map-selection holds through a
+- `application/legacy_map.py` handles pre-1.14 map-selection holds through a
   compatibility Repair. It validates existing HA room mappings and persists a
   scoped hold release without sending physical commands.
 

@@ -90,7 +90,7 @@ class WaterConfirmationTests(unittest.IsolatedAsyncioTestCase):
         app.hass = object()
         request = confirmation()
         with patch(
-            "custom_components.adaptive_robovacs.application."
+            "custom_components.adaptive_robovacs.application.core."
             "async_track_point_in_utc_time",
             side_effect=track,
         ):
@@ -142,7 +142,8 @@ class WaterConfirmationTests(unittest.IsolatedAsyncioTestCase):
         app._schedule_water_confirmation = Mock()
 
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_restore_water_confirmations()
 
@@ -156,7 +157,8 @@ class WaterConfirmationTests(unittest.IsolatedAsyncioTestCase):
         pending = confirmation()
         app.state.water_confirmations[pending.occurrence_id] = pending
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_expire_water_confirmation(pending.request_id)
             await drain(app)
@@ -192,7 +194,8 @@ class WaterConfirmationTests(unittest.IsolatedAsyncioTestCase):
         request = confirmation()
         app.state.water_confirmations[request.occurrence_id] = request
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_handle_water_confirmation(action="confirm-water")
             await drain(app)
@@ -213,7 +216,8 @@ class WaterConfirmationTests(unittest.IsolatedAsyncioTestCase):
         app._water_confirmation_timers[request.request_id] = timer
         app.state.water_confirmations[request.occurrence_id] = request
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_handle_water_confirmation(
                 request_id=request.request_id,

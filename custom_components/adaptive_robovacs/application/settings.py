@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING, Any, cast
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
-from .floor_plans import FloorPlanWrite, replace_floor_plan, replace_room_adjacency
-from .models import (
+from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
+from ..floor_plans import FloorPlanWrite, replace_floor_plan, replace_room_adjacency
+from ..models import (
     ROOM_PROFILE_OVERRIDE_KEYS,
     CleaningProgram,
     JobPhase,
@@ -26,11 +26,11 @@ from .models import (
     room_cleaning_profile,
     room_cleaning_profile_update,
 )
-from .planner import ScheduleCandidate
-from .presentation import floor_plan_attributes
-from .projections import ProjectionSource
-from .projections import floor_plan_view as build_floor_plan_view
-from .state import (
+from ..planner import ScheduleCandidate
+from ..presentation import floor_plan_attributes
+from ..projections import ProjectionSource
+from ..projections import floor_plan_view as build_floor_plan_view
+from ..state import (
     ActiveJob,
     FloorPlanState,
     RobotSettings,
@@ -43,9 +43,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    from . import application
+    from . import core
 
-    return application._now()
+    return core._now()
 
 
 def _iso(value: datetime | None) -> str | None:

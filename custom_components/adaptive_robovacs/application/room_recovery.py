@@ -15,11 +15,11 @@ from uuid import uuid4
 
 from homeassistant.core import HomeAssistant, callback
 
-from .commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
-from .const import READY_CONFIRMATION_DELAY
-from .discovery import DiscoveredRobot, DiscoverySnapshot
-from .jobs import active_rooms, interrupted_occurrence
-from .models import (
+from ..commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
+from ..const import READY_CONFIRMATION_DELAY
+from ..discovery import DiscoveredRobot, DiscoverySnapshot
+from ..jobs import active_rooms, interrupted_occurrence
+from ..models import (
     EvaluationCause,
     EvaluationMode,
     JobPhase,
@@ -27,9 +27,9 @@ from .models import (
     ready_confirmation_elapsed,
     room_recovery_dock_is_safe,
 )
-from .observations import HomeAssistantObserver
-from .repair_service import RepairService
-from .state import (
+from ..observations import HomeAssistantObserver
+from ..repair_service import RepairService
+from ..state import (
     ActiveJob,
     CleaningOccurrence,
     RecoveryAuditRecord,
@@ -37,11 +37,11 @@ from .state import (
     RoomRecovery,
     SchedulerState,
 )
-from .storage import SchedulerStore
+from ..storage import SchedulerStore
 
 
 def _now() -> datetime:
-    from .application import _now as application_now
+    from .core import _now as application_now
 
     return application_now()
 
@@ -162,7 +162,7 @@ class ApplicationRoomRecoveryMixin:
                     )
                 )
 
-            from .application import _track_point
+            from .core import _track_point
 
             self._room_recovery_timers[robot.registry_id] = _track_point(
                 self.hass, check, now + READY_CONFIRMATION_DELAY

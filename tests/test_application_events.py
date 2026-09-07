@@ -57,7 +57,7 @@ class ApplicationEventTests(unittest.IsolatedAsyncioTestCase):
             context=SimpleNamespace(user_id="user-1", id="context-1"),
         )
         with patch(
-            "custom_components.adaptive_robovacs.application_events."
+            "custom_components.adaptive_robovacs.application.events."
             "parse_manual_clean_request",
             return_value=request,
         ):
@@ -70,7 +70,7 @@ class ApplicationEventTests(unittest.IsolatedAsyncioTestCase):
         app.async_execute.reset_mock()
         app._on_call_service(SimpleNamespace(data={}, context=event.context))
         with patch(
-            "custom_components.adaptive_robovacs.application_events."
+            "custom_components.adaptive_robovacs.application.events."
             "parse_manual_clean_request",
             return_value=None,
         ):
@@ -126,7 +126,8 @@ class ApplicationEventTests(unittest.IsolatedAsyncioTestCase):
         app, tasks = event_application()
         request = ManualCleanRequest("vacuum.alpha", ("study",))
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_record_observed_manual_clean(request, "context-1")
         await asyncio.gather(*tasks)
@@ -144,7 +145,8 @@ class ApplicationEventTests(unittest.IsolatedAsyncioTestCase):
         app.storage.async_save.reset_mock()
         app.state.active_jobs["registry-alpha"] = active_job()
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_record_observed_manual_clean(request, "context-2")
         self.assertEqual(app.state.audit.manual_events[-1].outcome, "ignored")
@@ -222,7 +224,8 @@ class PublicCommandApplicationTests(unittest.IsolatedAsyncioTestCase):
         app = state_application()
         app._apply_manual_deferral = Mock(return_value=["study:vacuum"])
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             result = await app.async_record_manual_clean(
                 "vacuum.alpha", ["study"], ["vacuum"]
@@ -306,7 +309,8 @@ class PublicCommandApplicationTests(unittest.IsolatedAsyncioTestCase):
         app.hass.states.values["vacuum.alpha"] = SimpleNamespace(state="cleaning")
         context = SimpleNamespace(id="context")
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             result = await app.async_stop_and_return_to_dock(
                 "vacuum.alpha", context=context

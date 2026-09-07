@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 
-from .commands import (
+from ..commands import (
     EvaluateCommand,
     ObservedManualCleanCommand,
     RefreshDiscoveryCommand,
@@ -18,8 +18,8 @@ from .commands import (
     SchedulerCommandResult,
     StateChangedCommand,
 )
-from .discovery import DiscoveredRoom, DiscoverySnapshot
-from .models import (
+from ..discovery import DiscoveredRoom, DiscoverySnapshot
+from ..models import (
     CleaningOperation,
     EvaluationCause,
     EvaluationMode,
@@ -28,13 +28,13 @@ from .models import (
     ManualCleanRequest,
     parse_manual_clean_request,
 )
-from .state import ActiveJob, ManualAuditRecord, SchedulerState
+from ..state import ActiveJob, ManualAuditRecord, SchedulerState
 
 
 def _now() -> datetime:
-    from . import application
+    from . import core
 
-    return application._now()
+    return core._now()
 
 
 class ApplicationEventsMixin:

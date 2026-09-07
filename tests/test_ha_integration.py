@@ -196,7 +196,7 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
         app.state.robot_settings["registry-alpha"].mop_intensity = "medium"
         try:
             with patch(
-                "custom_components.adaptive_robovacs.application._now",
+                "custom_components.adaptive_robovacs.application.core._now",
                 return_value=clock,
             ):
                 await app.async_execute(
@@ -214,7 +214,7 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 self.hass.states.async_set(entity_id, value)
             for offset in (1, 11):
                 with patch(
-                    "custom_components.adaptive_robovacs.application._now",
+                    "custom_components.adaptive_robovacs.application.core._now",
                     return_value=clock + timedelta(seconds=offset),
                 ):
                     await app.async_execute(
@@ -227,7 +227,7 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(snapshot.room("study").failure)
             recovery = app.state.room_recoveries["study"]
             with patch(
-                "custom_components.adaptive_robovacs.application._now",
+                "custom_components.adaptive_robovacs.application.core._now",
                 return_value=clock + timedelta(seconds=22),
             ):
                 result = await app.async_execute(

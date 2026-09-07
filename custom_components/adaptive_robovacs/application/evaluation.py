@@ -12,23 +12,23 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import EVENT_EVALUATION
-from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
-from .planner import (
+from ..const import EVENT_EVALUATION
+from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
+from ..planner import (
     CandidateRobotDecision,
     PlanningInput,
     ScheduleCandidate,
     build_schedule_plan,
 )
-from .state import FrozenJsonObject, RoomHistory, RoomSettings, SchedulerState
+from ..state import FrozenJsonObject, RoomHistory, RoomSettings, SchedulerState
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    from . import application
+    from . import core
 
-    return application._now()
+    return core._now()
 
 
 def _iso(value: datetime | None) -> str | None:

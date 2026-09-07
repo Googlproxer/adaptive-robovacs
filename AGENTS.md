@@ -35,12 +35,16 @@ update the relevant version documentation, and run validation against the
 updated test environment. This check does not authorize a live upgrade or
 deployment.
 
-Run both checks before committing integration changes:
+Run these checks before committing integration changes:
 
 ```powershell
 python -m unittest discover -s tests -v
 Get-ChildItem custom_components\adaptive_robovacs\*.py | ForEach-Object { python -m py_compile $_.FullName }
+python -m compileall -q custom_components/adaptive_robovacs
 ```
+
+The recursive compilation check also covers the `application` and `adapters`
+packages.
 
 The GitHub Actions workflow runs the same checks. Keep its official actions on
 their current compatible major versions and grant it only the permissions it

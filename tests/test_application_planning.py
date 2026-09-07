@@ -117,7 +117,7 @@ class RobotReadinessTests(unittest.IsolatedAsyncioTestCase):
             candidate_robot = app.discovery.robots["vacuum.alpha"]
             configured_robot = configure(app, candidate_robot)
             with patch(
-                "custom_components.adaptive_robovacs.application._now",
+                "custom_components.adaptive_robovacs.application.core._now",
                 return_value=NOW,
             ):
                 return app._robot_technically_ready(configured_robot or candidate_robot)
@@ -286,7 +286,8 @@ class RobotReadinessTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             app._ready_since.clear()
             self.assertEqual(
@@ -326,7 +327,7 @@ class RobotReadinessTests(unittest.IsolatedAsyncioTestCase):
         old = Mock()
         app._ready_confirmation_timers["vacuum.alpha"] = old
         with patch(
-            "custom_components.adaptive_robovacs.application."
+            "custom_components.adaptive_robovacs.application.core."
             "async_track_point_in_utc_time",
             side_effect=track,
         ):

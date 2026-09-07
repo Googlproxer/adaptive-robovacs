@@ -9,7 +9,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from custom_components.adaptive_robovacs.application_room_recovery import (
+from custom_components.adaptive_robovacs.application.room_recovery import (
     matching_occurrence,
 )
 from custom_components.adaptive_robovacs.commands import (
@@ -128,9 +128,12 @@ def set_observation(app, state, *, error="none", status="charging"):
 
 async def reconcile(app, now=NOW, *, startup=False):
     with (
-        patch("custom_components.adaptive_robovacs.application._now", return_value=now),
         patch(
-            "custom_components.adaptive_robovacs.application._track_point",
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=now,
+        ),
+        patch(
+            "custom_components.adaptive_robovacs.application.core._track_point",
             return_value=Mock(),
         ),
     ):
@@ -249,7 +252,7 @@ class RoomRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await reconcile(app, NOW + timedelta(seconds=1))
         await reconcile(app, NOW + timedelta(seconds=11))
         with patch(
-            "custom_components.adaptive_robovacs.application._now",
+            "custom_components.adaptive_robovacs.application.core._now",
             return_value=NOW + timedelta(seconds=12),
         ):
             result = await app.async_acknowledge_robot_error(
@@ -580,7 +583,7 @@ class RoomRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         hold = app.state.robot_holds["registry-alpha"]
         with patch(
-            "custom_components.adaptive_robovacs.application._now",
+            "custom_components.adaptive_robovacs.application.core._now",
             return_value=NOW + timedelta(seconds=12),
         ):
             self.assertTrue(
@@ -626,7 +629,7 @@ class RoomRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         set_observation(app, "docked")
         with patch(
-            "custom_components.adaptive_robovacs.application._track_point",
+            "custom_components.adaptive_robovacs.application.core._track_point",
             return_value=Mock(),
         ) as timer:
             self.assertFalse(

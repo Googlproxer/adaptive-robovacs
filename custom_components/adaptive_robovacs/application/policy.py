@@ -16,15 +16,15 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
-from .commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
-from .const import (
+from ..commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
+from ..const import (
     EXTRA_CLEAR_MINUTES,
     FALLBACK_SAMPLE_COUNT,
     HISTORY_DAYS,
     READY_CONFIRMATION_DELAY,
 )
-from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
-from .models import (
+from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
+from ..models import (
     CleaningOperation,
     CleaningProgram,
     EvaluationCause,
@@ -55,14 +55,14 @@ from .models import (
     startup_dispatch_allowed,
     unresolved_occupancy_allowed,
 )
-from .observations import HomeAssistantObserver
-from .planner import (
+from ..observations import HomeAssistantObserver
+from ..planner import (
     CandidateRobotDecision,
     RobotEligibility,
     ScheduleCandidate,
     VacancyDiagnostic,
 )
-from .state import (
+from ..state import (
     ActiveJob,
     CleaningStage,
     Deferral,
@@ -79,15 +79,15 @@ DOCK_COMPLETION_DWELL = timedelta(minutes=5)
 
 
 def _now() -> datetime:
-    from . import application
+    from . import core
 
-    return application._now()
+    return core._now()
 
 
 def _local(value: datetime) -> datetime:
-    from . import application
+    from . import core
 
-    return application._local(value)
+    return core._local(value)
 
 
 def async_track_point_in_utc_time(
@@ -95,9 +95,9 @@ def async_track_point_in_utc_time(
     action: Callable[[datetime], None],
     deadline: datetime,
 ) -> Callable[[], None]:
-    from . import application
+    from . import core
 
-    return application._track_point(hass, action, deadline)
+    return core._track_point(hass, action, deadline)
 
 
 class ApplicationPolicyMixin:

@@ -16,12 +16,12 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
-from .commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
-from .const import START_CONFIRMATION_TIMEOUT
-from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
-from .dispatch import DispatchPipeline
-from .jobs import should_assume_native_app_clean
-from .models import (
+from ..commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
+from ..const import START_CONFIRMATION_TIMEOUT
+from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
+from ..dispatch import DispatchPipeline
+from ..jobs import should_assume_native_app_clean
+from ..models import (
     EvaluationCause,
     EvaluationMode,
     FaultCode,
@@ -30,9 +30,9 @@ from .models import (
     StageStatus,
     scheduler_halt_recheck_result,
 )
-from .repair_service import RepairService
-from .repairs_manager import fault_summary
-from .state import RoomHistory, RoomSettings, SchedulerFault, SchedulerState
+from ..repair_service import RepairService
+from ..repairs_manager import fault_summary
+from ..state import RoomHistory, RoomSettings, SchedulerFault, SchedulerState
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,9 +40,9 @@ _LOGGER = logging.getLogger(__name__)
 def _application_now() -> datetime:
     """Use the application clock, including its deterministic test override."""
 
-    from . import application
+    from . import core
 
-    return application._now()
+    return core._now()
 
 
 def _track_deadline(
@@ -52,9 +52,9 @@ def _track_deadline(
 ) -> Callable[[], None]:
     """Use the application's Home Assistant timer seam."""
 
-    from . import application
+    from . import core
 
-    return application._track_point(hass, action, deadline)
+    return core._track_point(hass, action, deadline)
 
 
 class ApplicationFaultMixin:

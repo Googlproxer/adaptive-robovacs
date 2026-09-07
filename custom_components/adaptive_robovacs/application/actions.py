@@ -10,19 +10,19 @@ from typing import TYPE_CHECKING, Any, cast
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .discovery import DiscoveredRobot, DiscoverySnapshot
-from .gateway import VacuumGateway
-from .models import CleaningOperation, can_request_return_to_dock
-from .planner import ScheduleCandidate
-from .projections import ProjectionSource, robot_view, room_view
-from .snapshots import RobotView, RoomView
-from .state import ActiveJob, ManualAuditRecord, RobotHold, SchedulerState
+from ..discovery import DiscoveredRobot, DiscoverySnapshot
+from ..gateway import VacuumGateway
+from ..models import CleaningOperation, can_request_return_to_dock
+from ..planner import ScheduleCandidate
+from ..projections import ProjectionSource, robot_view, room_view
+from ..snapshots import RobotView, RoomView
+from ..state import ActiveJob, ManualAuditRecord, RobotHold, SchedulerState
 
 
 def _now() -> datetime:
-    from . import application
+    from . import core
 
-    return application._now()
+    return core._now()
 
 
 class ApplicationActionsMixin:

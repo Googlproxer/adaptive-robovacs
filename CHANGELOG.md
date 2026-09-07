@@ -5,7 +5,21 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
-## [1.14.0] - Unreleased
+## [1.14.1] - 2026-09-08
+
+### Changed
+
+- Grouped the scheduler application into an `application/` package with focused
+  module names, preserving the public `SchedulerApplication` import, scheduling
+  behavior, entity IDs, and Store schema 17.
+- Updated internal imports, shared clock test targets, recursive architecture
+  checks, and compilation guidance for the new package layout.
+
+Detailed notes: [`docs/releases/v1.14.1.md`](docs/releases/v1.14.1.md).
+Migration: no additional migration from v1.14.0. Code installation is followed
+by a separately initiated Home Assistant restart to activate the new package.
+
+## [1.14.0] - 2026-09-07
 
 ### Added
 

@@ -36,7 +36,7 @@ async def evaluate(
     """Call the real method despite the fixture's callback mock."""
 
     with patch(
-        "custom_components.adaptive_robovacs.application._now", return_value=NOW
+        "custom_components.adaptive_robovacs.application.core._now", return_value=NOW
     ):
         return await SchedulerApplication.async_evaluate(
             app, dry_run=dry_run, reason=reason
@@ -214,7 +214,7 @@ class EvaluationDispatchTests(unittest.IsolatedAsyncioTestCase):
 
                     app._async_save = AsyncMock(side_effect=save_then_remove)
                 with patch(
-                    "custom_components.adaptive_robovacs.application_evaluation."
+                    "custom_components.adaptive_robovacs.application.evaluation."
                     "build_schedule_plan",
                     return_value=plan,
                 ):
@@ -308,7 +308,7 @@ class EvaluationDispatchTests(unittest.IsolatedAsyncioTestCase):
 
                 app._async_prepare_occurrence = AsyncMock(side_effect=prepare)
                 with patch(
-                    "custom_components.adaptive_robovacs.application_evaluation."
+                    "custom_components.adaptive_robovacs.application.evaluation."
                     "build_schedule_plan",
                     return_value=plan,
                 ):

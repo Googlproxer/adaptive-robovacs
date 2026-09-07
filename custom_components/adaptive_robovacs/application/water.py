@@ -18,17 +18,17 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 
-from .commands import (
+from ..commands import (
     EvaluateCommand,
     ExpireWaterConfirmationCommand,
     SchedulerCommand,
     SchedulerCommandResult,
     WaterConfirmationResponseCommand,
 )
-from .models import EvaluationCause, EvaluationMode, StageStatus
-from .notifications import NotificationService
-from .repair_service import RepairService
-from .state import SchedulerState, WaterConfirmation
+from ..models import EvaluationCause, EvaluationMode, StageStatus
+from ..notifications import NotificationService
+from ..repair_service import RepairService
+from ..state import SchedulerState, WaterConfirmation
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,9 +36,9 @@ _LOGGER = logging.getLogger(__name__)
 def _application_now() -> datetime:
     """Use the application clock, including its deterministic test override."""
 
-    from . import application
+    from . import core
 
-    return application._now()
+    return core._now()
 
 
 def _track_deadline(
@@ -48,9 +48,9 @@ def _track_deadline(
 ) -> Callable[[], None]:
     """Use the application's Home Assistant timer seam."""
 
-    from . import application
+    from . import core
 
-    return application._track_point(hass, action, deadline)
+    return core._track_point(hass, action, deadline)
 
 
 class ApplicationWaterMixin:

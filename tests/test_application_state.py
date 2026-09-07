@@ -229,7 +229,7 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         settings.desired_window_end = "05:00"
 
         with patch(
-            "custom_components.adaptive_robovacs.application_policy._local",
+            "custom_components.adaptive_robovacs.application.policy._local",
             side_effect=lambda value: value,
         ):
             for hour in (23, 2):
@@ -256,7 +256,7 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         app.state.room_history[target.area_id].occupancy = "unresolved"
 
         with patch(
-            "custom_components.adaptive_robovacs.application_policy._local",
+            "custom_components.adaptive_robovacs.application.policy._local",
             side_effect=lambda value: value,
         ):
             for hour, allowed in ((22, True), (2, True), (5, False), (12, False)):
@@ -328,11 +328,11 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "custom_components.adaptive_robovacs.application.async_discover",
+                "custom_components.adaptive_robovacs.application.core.async_discover",
                 AsyncMock(return_value=new_snapshot),
             ),
             patch(
-                "custom_components.adaptive_robovacs.application.async_dispatcher_send"
+                "custom_components.adaptive_robovacs.application.core.async_dispatcher_send"
             ) as dispatcher,
         ):
             await SchedulerApplication.async_refresh_discovery(app)
@@ -355,11 +355,11 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         app._discovery_signal_pending = False
         with (
             patch(
-                "custom_components.adaptive_robovacs.application.async_discover",
+                "custom_components.adaptive_robovacs.application.core.async_discover",
                 AsyncMock(return_value=new_snapshot),
             ),
             patch(
-                "custom_components.adaptive_robovacs.application.async_dispatcher_send"
+                "custom_components.adaptive_robovacs.application.core.async_dispatcher_send"
             ) as dispatcher,
         ):
             await SchedulerApplication.async_refresh_discovery(app, notify=False)
@@ -381,11 +381,11 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "custom_components.adaptive_robovacs.application.build_snapshot",
+                "custom_components.adaptive_robovacs.application.core.build_snapshot",
                 return_value=published_snapshot,
             ),
             patch(
-                "custom_components.adaptive_robovacs.application.async_dispatcher_send",
+                "custom_components.adaptive_robovacs.application.core.async_dispatcher_send",
                 side_effect=capture_discovery,
             ) as dispatcher,
         ):
@@ -639,7 +639,8 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_latch_scheduler_fault(
                 discovered_robot,
@@ -678,7 +679,8 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
 
         app.state.active_jobs["registry-alpha"] = active_job()
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_latch_scheduler_fault(
                 discovered_robot,
@@ -702,7 +704,7 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_adapter_fault_is_normalized_before_persistence(self) -> None:
         app = state_application()
         with self.assertLogs(
-            "custom_components.adaptive_robovacs.application_faults",
+            "custom_components.adaptive_robovacs.application.faults",
             level="ERROR",
         ):
             await app._async_latch_scheduler_fault(
@@ -808,7 +810,7 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         app._discard_unconfirmed_scheduler_job.reset_mock()
         app._async_clear_robot_fault.reset_mock()
         with patch(
-            "custom_components.adaptive_robovacs.application_faults."
+            "custom_components.adaptive_robovacs.application.faults."
             "should_assume_native_app_clean",
             return_value=False,
         ):
@@ -964,11 +966,11 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         app._async_create_task = create_task
         with (
             patch(
-                "custom_components.adaptive_robovacs.application._now",
+                "custom_components.adaptive_robovacs.application.core._now",
                 return_value=NOW,
             ),
             patch(
-                "custom_components.adaptive_robovacs.application."
+                "custom_components.adaptive_robovacs.application.core."
                 "async_track_point_in_utc_time",
                 side_effect=track,
             ),

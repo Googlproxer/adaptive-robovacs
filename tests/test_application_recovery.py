@@ -201,7 +201,8 @@ class RecoveryHelperTests(unittest.IsolatedAsyncioTestCase):
         old = Mock()
         app._recovery_timers["vacuum.alpha"] = old
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             app._schedule_recovery_completion(
                 "vacuum.alpha", NOW - timedelta(seconds=1)
@@ -222,11 +223,11 @@ class RecoveryHelperTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "custom_components.adaptive_robovacs.application._now",
+                "custom_components.adaptive_robovacs.application.core._now",
                 return_value=NOW,
             ),
             patch(
-                "custom_components.adaptive_robovacs.application."
+                "custom_components.adaptive_robovacs.application.core."
                 "async_track_point_in_utc_time",
                 side_effect=track,
             ),
@@ -261,7 +262,7 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     state=state_text, last_changed=NOW
                 )
                 with patch(
-                    "custom_components.adaptive_robovacs.application._now",
+                    "custom_components.adaptive_robovacs.application.core._now",
                     return_value=NOW,
                 ):
                     await app._async_recover_active_jobs()
@@ -276,7 +277,8 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
         app.state.active_jobs["registry-alpha"] = job
         app._mop_washing_is_observed.return_value = True
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_recover_active_jobs()
         app._mark_mop_washing_started.assert_called_once()
@@ -289,7 +291,8 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
             state="idle", last_changed=NOW
         )
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_recover_active_jobs()
         app._async_latch_scheduler_fault.assert_not_awaited()
@@ -301,7 +304,8 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
             state="docked", last_changed=NOW
         )
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_recover_active_jobs()
         app._async_latch_scheduler_fault.assert_awaited_once()
@@ -317,7 +321,8 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
             state="docked", last_changed=NOW
         )
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_recover_active_jobs()
         app._async_complete_job.assert_awaited_once_with(
@@ -333,7 +338,8 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         app._terminal_completion_is_observed.return_value = True
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_recover_active_jobs()
         app._mark_observed_completion.assert_called_once()
@@ -346,7 +352,8 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
             state="docked", last_changed=NOW
         )
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_recover_active_jobs()
         app._set_dock_completion_pending.assert_called_once_with(
@@ -367,7 +374,7 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     )
                 app._set_recovery_waiting = Mock()
                 with patch(
-                    "custom_components.adaptive_robovacs.application._now",
+                    "custom_components.adaptive_robovacs.application.core._now",
                     return_value=NOW,
                 ):
                     await app._async_recover_active_jobs()
@@ -400,11 +407,11 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 )
                 with (
                     patch(
-                        "custom_components.adaptive_robovacs.application._now",
+                        "custom_components.adaptive_robovacs.application.core._now",
                         return_value=NOW,
                     ),
                     patch(
-                        "custom_components.adaptive_robovacs.application_recovery."
+                        "custom_components.adaptive_robovacs.application.recovery."
                         "offline_held_recovery_outcome",
                         return_value="continue",
                     ),
@@ -430,11 +437,11 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
         app._reconcile_robot_hold = Mock(return_value="held")
         with (
             patch(
-                "custom_components.adaptive_robovacs.application._now",
+                "custom_components.adaptive_robovacs.application.core._now",
                 return_value=NOW,
             ),
             patch(
-                "custom_components.adaptive_robovacs.application_recovery."
+                "custom_components.adaptive_robovacs.application.recovery."
                 "offline_held_recovery_outcome",
                 return_value="cancelled",
             ),
@@ -453,7 +460,8 @@ class ActiveJobRecoveryTests(unittest.IsolatedAsyncioTestCase):
             state="docked", last_changed=NOW
         )
         with patch(
-            "custom_components.adaptive_robovacs.application._now", return_value=NOW
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
         ):
             await app._async_recover_active_jobs()
         self.assertIsNone(app.state.active_jobs["registry-alpha"])
@@ -577,7 +585,7 @@ class ActiveJobReconciliationTests(unittest.IsolatedAsyncioTestCase):
             state="cleaning", last_changed=NOW
         )
         with patch(
-            "custom_components.adaptive_robovacs.application_jobs."
+            "custom_components.adaptive_robovacs.application.jobs."
             "should_assume_native_app_clean",
             return_value=True,
         ):

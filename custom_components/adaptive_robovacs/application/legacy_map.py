@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from .adapters.roborock import RoborockMappingError, resolve_roborock_area_mapping
-from .discovery import DiscoveredRobot, DiscoverySnapshot
-from .models import map_recovery_hold_is_manual
-from .repair_service import RepairService
-from .state import SchedulerState
-from .storage import SchedulerStore
+from ..adapters.roborock import RoborockMappingError, resolve_roborock_area_mapping
+from ..discovery import DiscoveredRobot, DiscoverySnapshot
+from ..models import map_recovery_hold_is_manual
+from ..repair_service import RepairService
+from ..state import SchedulerState
+from ..storage import SchedulerStore
 
 
 class ApplicationLegacyMapMixin:
