@@ -29,6 +29,57 @@ entity IDs. A newly supported control therefore appears automatically on its
 existing vacuum or room card. A newly discovered vacuum or room still needs a
 new card to be added and positioned manually.
 
+## Room timestamps and Status (1.15)
+
+Room cards lead with **Status → Next clean → Last clean**, then duration,
+occupancy, and controls. Next clean is a timezone-aware timestamp. Its browser
+row displays `in 1 minute`, `in 2 hours`, `in 3 days`, or **Due now** using the
+existing rounding thresholds. Missing timestamps show **—** and unavailable
+entities show **Unavailable**. Tap the row to inspect its exact timestamp.
+Countdown timers suspend while the page is hidden or the row is disconnected.
+They do not update Home Assistant entities or recorder history. Last clean's
+existing display is unchanged.
+
+The timestamp is conditional eligibility, not a promised start or queue position.
+Occupancy and robot readiness can still prevent dispatch. Status holds activity,
+blocking information, and diagnostics formerly attached to Next clean. Existing
+room cards automatically discover Status; the updated module also supports the
+previous sensor layout during an upgrade.
+
+## Robot popups using Auto-entities and Bubble Card
+
+Use the existing [Auto-entities](https://github.com/thomasloven/lovelace-auto-entities)
+and [Bubble Card text templates](https://github.com/Clooos/Bubble-Card#templates).
+No separate card implementation or fork is required. The tested configuration is
+Auto-entities 1.16.1 and Bubble Card 3.3.0.
+
+Place an Auto-entities card under a **Next possible clean** heading and the text
+“Vacancy checks and robot readiness still apply.” Set `card` to
+`{type: vertical-stack}`, `card_param` to `cards`, and `filter.template` to the
+contents of [`room-schedule-template.jinja`](../dashboard/room-schedule-template.jinja),
+preceded by a Jinja assignment to `robot_entity_id` for that popup's vacuum.
+Keep actual instance identifiers in the live dashboard configuration.
+
+The template joins `room_status` and `room_schedule` by
+`adaptive_robovacs_entry_id` and `area_id`. Status publishes:
+
+| Attribute | Meaning |
+| --- | --- |
+| `enabled` | Whether room scheduling is enabled. |
+| `robot_entity_ids` | Discovered robots assigned through the room's floor. |
+| `robot_previews` | One object per member: `robot_entity_id`, `status` (`conditional` or `blocked`), and nullable `reason`. |
+
+Enabled rooms are selected independently of current dispatch candidates. Shared
+floors appear in each robot's popup with that robot's blockers. Conditional rows
+show **Tomorrow 12:30**, another day/time, or **Now, if unoccupied**. Activity,
+recovery, holds, and robot problems display their reason instead. Time rows sort
+chronologically, then by room name; status-only rows follow by name. Missing data
+and an empty enabled-room list have distinct messages. Tapping a Bubble row opens
+Status details. Rows grow to accommodate wrapped text on narrow displays.
+
+Auto-entities subscribes to its template, including `now()` for day labels. These
+evaluations produce card configuration only, with no entity or Store writes.
+
 ## Floor-plan cards
 
 Add one `custom:adaptive-robovacs-floorplan` card for each Home Assistant floor

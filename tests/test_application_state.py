@@ -189,6 +189,7 @@ def state_application() -> SchedulerApplication:
     app._room_recovery_timers = {}
     app._lock = asyncio.Lock()
     app._notify_listeners = Mock()
+    app._schedule_clock = Mock()
     app.async_evaluate = AsyncMock(return_value={})
     app.async_refresh_discovery = AsyncMock()
     app._async_create_task = Mock()
@@ -399,6 +400,25 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
             "adaptive_robovacs_discovery_updated",
             "entry-1",
         )
+
+    def test_failed_or_closing_projection_cannot_publish_a_stale_clock_snapshot(
+        self,
+    ) -> None:
+        app = state_application()
+        listener = Mock()
+        app._listeners = {listener}
+        error = ValueError("Invalid presentation input")
+        with patch(
+            "custom_components.adaptive_robovacs.application.core.build_snapshot",
+            side_effect=error,
+        ) as build:
+            SchedulerApplication._notify_listeners(app)
+            app._schedule_clock.stop.assert_called_once()
+            app._schedule_clock.update.assert_not_called()
+            listener.assert_called_once_with(error)
+            app._closing = True
+            SchedulerApplication._notify_listeners(app)
+            build.assert_called_once()
 
     def test_identity_resolution_quarantines_and_restores_every_owned_record(
         self,

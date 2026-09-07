@@ -3,6 +3,17 @@ import test from "node:test";
 
 
 class MockElement {
+  constructor() {
+    this.style = {};
+    this.listeners = new Map();
+    this.events = [];
+  }
+  attachShadow() { return new MockElement(); }
+  append(...children) { this.children = children; }
+  setConfig(config) { this.config = config; }
+  setAttribute(name, value) { this[name] = value; }
+  addEventListener(name, listener) { this.listeners.set(name, listener); }
+  dispatchEvent(event) { this.events.push(event); }
   replaceChildren(...children) {
     this.children = children;
   }
@@ -26,6 +37,7 @@ globalThis.customElements = {
   },
 };
 globalThis.document = {
+  createElement() { return new MockElement(); },
   addEventListener(type, listener) {
     visibilityListeners.set(type, listener);
   },
@@ -67,6 +79,7 @@ await import("../custom_components/adaptive_robovacs/frontend/adaptive-robovacs-
 const GlobalCard = elements.get("adaptive-robovacs-global");
 const VacuumCard = elements.get("adaptive-robovacs-vacuum");
 const RoomCard = elements.get("adaptive-robovacs-room");
+const TimestampRow = elements.get("adaptive-robovacs-timestamp-row");
 const FloorPlanCard = elements.get("adaptive-robovacs-floorplan");
 
 const entry = "entry-one";
@@ -254,6 +267,7 @@ function mount(Card, config, states = baseStates()) {
 
 test("registers target-scoped cards and keeps the editor private", () => {
   assert.deepEqual([...elements.keys()], [
+    "adaptive-robovacs-timestamp-row",
     "adaptive-robovacs-global",
     "adaptive-robovacs-vacuum",
     "adaptive-robovacs-room",
@@ -374,8 +388,9 @@ test("room card exposes predicted total and required vacancy from the verified m
   states["sensor.kitchen_next_clean"].attributes.required_vacancy_minutes = 28;
   const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
 
-  assert.deepEqual(configuration.entities.slice(0, 3), [
+  assert.deepEqual(configuration.entities.slice(0, 4), [
     { entity: "sensor.kitchen_next_clean", name: "Next clean" },
+    { type: "attribute", entity: "sensor.kitchen_last_cleaned", attribute: "last_cleaned_display", name: "Last cleaned" },
     {
       type: "attribute",
       entity: "sensor.kitchen_next_clean",
@@ -734,4 +749,74 @@ test("one shared helper load services rapid renders and disconnected cards", asy
   await Promise.resolve();
   assert.equal(detached.children, undefined);
   card.disconnectedCallback();
+});
+
+
+test("timestamp rows retain minute rounding and unit boundaries", () => {
+  const now = Date.parse("2026-09-08T00:00:00Z");
+  for (const [minutes, text, delay] of [
+    [0, "Due now", undefined], [-1, "Due now", undefined],
+    [0.1, "in 1 minute", 6000], [1, "in 1 minute", 60000],
+    [1.01, "in 2 minutes", 600], [59, "in 59 minutes", 60000],
+    [59.01, "in 1 hour", 600], [60, "in 1 hour", 60000],
+    [120, "in 2 hours", 60000], [1439, "in 23 hours", 3600000],
+    [1440, "in 1 day", 60000], [2880, "in 2 days", 60000],
+  ]) {
+    const value = TimestampRow.display({ state: new Date(now + minutes * 60000).toISOString() }, now);
+    assert.equal(value.text, text, `${minutes} minutes`);
+    assert.equal(value.delay, delay, `${minutes} boundary`);
+  }
+  assert.equal(TimestampRow.display({ state: "unavailable" }, now).text, "Unavailable");
+  for (const state of [undefined, { state: "unknown" }, { state: "invalid" }]) {
+    assert.deepEqual(TimestampRow.display(state, now), { text: "\u2014" });
+  }
+});
+
+test("timestamp timers pause while hidden, clean up, and preserve exact-time details", (t) => {
+  const now = Date.parse("2026-09-08T00:00:00Z");
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const row = new TimestampRow();
+  row.setConfig({ entity: "sensor.next", name: "Next clean" });
+  row.hass = { states: { "sensor.next": { state: new Date(now + 61000).toISOString() } } };
+  row.connectedCallback();
+  assert.equal(row._value.textContent, "in 2 minutes");
+  t.mock.timers.tick(1000);
+  assert.equal(row._value.textContent, "in 1 minute");
+  visibilityState = "hidden";
+  visibilityListeners.get("visibilitychange")();
+  assert.equal(row._timer, undefined);
+  t.mock.timers.tick(60000);
+  assert.equal(row._value.textContent, "in 1 minute");
+  visibilityState = "visible";
+  visibilityListeners.get("visibilitychange")();
+  assert.equal(row._value.textContent, "Due now");
+  assert.equal(row._timer, undefined);
+  row.listeners.get("click")();
+  assert.equal(row.events[0].type, "hass-more-info");
+  assert.equal(row.events[0].detail.entityId, "sensor.next");
+  row.hass = { states: { "sensor.next": { state: new Date(Date.now() + 60000).toISOString() } } };
+  assert.notEqual(row._timer, undefined);
+  row.disconnectedCallback();
+  assert.equal(row._timer, undefined);
+  t.mock.timers.tick(60000);
+  row.connectedCallback();
+  assert.equal(row._value.textContent, "Due now");
+  row.disconnectedCallback();
+});
+
+test("new room layout leads with Status, Next clean, Last clean and reads Status diagnostics", () => {
+  const states = baseStates();
+  states["sensor.kitchen_next_clean"].attributes.device_class = "timestamp";
+  states["sensor.kitchen_status"] = adaptiveState("room_status", {
+    area_id: "kitchen", room: "Kitchen", friendly_name: "Kitchen status", duration_model_version: 2,
+    predicted_total_minutes: 24, required_vacancy_minutes: 28,
+  }, "Scheduled");
+  const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
+  assert.deepEqual(configuration.entities.slice(0, 5), [
+    { entity: "sensor.kitchen_status", name: "Status" },
+    { type: "custom:adaptive-robovacs-timestamp-row", entity: "sensor.kitchen_next_clean", name: "Next clean" },
+    { type: "attribute", entity: "sensor.kitchen_last_cleaned", attribute: "last_cleaned_display", name: "Last cleaned" },
+    { type: "attribute", entity: "sensor.kitchen_status", attribute: "predicted_total_minutes", name: "Predicted total (min)" },
+    { type: "attribute", entity: "sensor.kitchen_status", attribute: "required_vacancy_minutes", name: "Required vacancy (min)" },
+  ]);
 });

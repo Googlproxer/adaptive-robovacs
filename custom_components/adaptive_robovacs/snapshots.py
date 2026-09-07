@@ -314,6 +314,15 @@ class EffectiveRobotProfileView:
 
 
 @dataclass(frozen=True, slots=True)
+class RoomRobotPreviewView:
+    """Floor membership and conditional presentation for one robot."""
+
+    robot_entity_id: str
+    status: str
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class RoomView:
     """Typed entity-facing state for one discovered room."""
 
@@ -384,6 +393,10 @@ class RoomView:
     water_notification_episode: WaterNotificationEpisodeView | None
     failure: FaultView | None
     recovery: RoomRecoveryView | None = None
+    next_clean_at: datetime | None = None
+    schedule_due_at: datetime | None = None
+    next_clean_window_end_at: datetime | None = None
+    robot_previews: tuple[RoomRobotPreviewView, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

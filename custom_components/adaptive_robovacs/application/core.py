@@ -70,6 +70,7 @@ from ..projections import (
     build_snapshot,
 )
 from ..repair_service import RepairService
+from ..schedule_clock import SchedulePresentationClock
 from ..snapshots import IntegrationSnapshot
 from ..state import (
     SchedulerState,
@@ -158,6 +159,7 @@ class SchedulerApplication(
         self._lock = asyncio.Lock()
         self._listeners: set[EntityListener] = set()
         self._snapshot: IntegrationSnapshot | None = None
+        self._schedule_clock = SchedulePresentationClock(hass, self._publish_snapshot)
         self._discovery_signal_pending = False
         self._watch_entity_ids: set[str] = set()
         self._recovery_timers: dict[str, Callable[[], None]] = {}
@@ -253,6 +255,7 @@ class SchedulerApplication(
         """Stop callbacks, drain coordinator work, and persist once."""
 
         self._closing = True
+        self._schedule_clock.stop()
         await self.lifecycle.async_stop()
         await self.commands.async_close()
         while self._recovery_timers:
@@ -282,6 +285,7 @@ class SchedulerApplication(
         """Gate callbacks before Home Assistant starts unloading platforms."""
 
         self._closing = True
+        self._schedule_clock.stop()
         self.commands.begin_shutdown()
 
     def cancel_shutdown(self) -> None:
@@ -289,6 +293,8 @@ class SchedulerApplication(
 
         self._closing = False
         self.commands.cancel_shutdown()
+        if self._snapshot is not None:
+            self._schedule_clock.update(self._snapshot)
 
     def _shutdown_started(self) -> bool:
         """Read the shutdown latch again after an await boundary."""
@@ -505,17 +511,19 @@ class SchedulerApplication(
     def _notify_listeners(self) -> None:
         """Build once, then publish one transactionally settled snapshot."""
 
+        if self._closing:
+            return
         self._sync_retired_map_issues()
         try:
             snapshot = build_snapshot(self)
         except Exception as err:
+            self._schedule_clock.stop()
             _LOGGER.exception("Adaptive RoboVacs could not build its snapshot")
             for listener in tuple(self._listeners):
                 listener(err)
             return
-        self._snapshot = snapshot
-        for listener in tuple(self._listeners):
-            listener(snapshot)
+        self._schedule_clock.update(snapshot)
+        self._publish_snapshot(snapshot)
         if self._discovery_signal_pending:
             # Dynamic entity factories read coordinator.data. Application
             # listeners therefore must publish the new snapshot before the
@@ -526,6 +534,16 @@ class SchedulerApplication(
                 SIGNAL_DISCOVERY_UPDATED,
                 self.entry.entry_id,
             )
+
+    @callback
+    def _publish_snapshot(self, snapshot: IntegrationSnapshot) -> None:
+        """Publish settled data, including presentation-only window changes."""
+
+        if self._closing:
+            return
+        self._snapshot = snapshot
+        for listener in tuple(self._listeners):
+            listener(snapshot)
 
     async def _async_save(self) -> None:
         if self._storage_safe_mode:

@@ -30,6 +30,9 @@ automatically on supported versions.
   discovered occupancy sensors, draw direct room links, and display their live
   activity without relying on fixed entity IDs. Every room card includes
   explicit manual clean, vacuum-only, and mop-only override actions.
+- Exposes stable per-room Next clean timestamps and separate Status diagnostics.
+  Room cards render countdowns in the browser; existing Auto-entities and Bubble
+  Card rows can show each robot's next possible room-clean times.
 
 ## Installation
 

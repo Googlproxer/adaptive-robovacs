@@ -10,8 +10,9 @@ import math
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from itertools import pairwise
 from typing import Literal, NewType, Protocol
 
 AreaId = NewType("AreaId", str)
@@ -1506,6 +1507,101 @@ def effective_cadence_anchor(
     """Prefer a real completion while retaining one hidden initial baseline."""
 
     return last_completed or first_scheduler_online
+
+
+def effective_scheduled_due(
+    cadence_due: datetime | None,
+    occurrence_due: datetime | None,
+    deferred_until: datetime | None,
+    *,
+    manual_request: bool = False,
+) -> datetime | None:
+    """Keep pending stages on their persisted occurrence, including cooldowns."""
+
+    if occurrence_due is None:
+        return cadence_due
+    if manual_request or deferred_until is None:
+        return occurrence_due
+    return max(occurrence_due, deferred_until)
+
+
+def next_clean_schedule(
+    due: datetime | None,
+    now: datetime,
+    start: str,
+    end: str,
+    *,
+    enabled: bool = True,
+    active: bool = False,
+    bypass_window: bool = False,
+) -> tuple[datetime | None, datetime | None]:
+    """Return stable eligibility and the next genuine window closing boundary.
+
+    ``now`` supplies the configured local timezone. Conditions such as occupancy
+    and robot readiness deliberately do not predict a future clearing time.
+    Boundaries are compared in UTC, including both folds and offset transitions,
+    so gaps and repeated wall times obey the same half-open daily window rule.
+    """
+
+    if not enabled or active or due is None or due.tzinfo is None or now.tzinfo is None:
+        return None, None
+    if bypass_window:
+        return due, None
+    if not is_valid_daily_time(start) or not is_valid_daily_time(end) or start == end:
+        return None, None
+    reference = max(due.astimezone(UTC), now.astimezone(UTC))
+    local = reference.astimezone(now.tzinfo)
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
+    boundaries: set[datetime] = set()
+    for offset in range(-1, 4):
+        day = midnight + timedelta(days=offset)
+        for wall_time in ("00:00", start, end):
+            hour, minute = map(int, wall_time.split(":"))
+            wall = day.replace(hour=hour, minute=minute)
+            folds = sorted(wall.replace(fold=fold).astimezone(UTC) for fold in (0, 1))
+            boundaries.update(folds)
+            # A nonexistent or repeated boundary straddles a clock change.
+            low, high = folds
+            initial_offset = low.astimezone(now.tzinfo).utcoffset()
+            while high - low > timedelta(minutes=1):
+                middle = low + timedelta(
+                    minutes=int((high - low).total_seconds() / 120)
+                )
+                if middle.astimezone(now.tzinfo).utcoffset() == initial_offset:
+                    low = middle
+                else:
+                    high = middle
+            boundaries.add(high)
+        # A repeated hour can reopen a window even when neither endpoint is
+        # ambiguous (for example 01:00-02:00 across a 02:00 -> 01:00 change).
+        low = day.astimezone(UTC)
+        high = (day + timedelta(days=1)).astimezone(UTC)
+        initial_offset = low.astimezone(now.tzinfo).utcoffset()
+        if initial_offset != high.astimezone(now.tzinfo).utcoffset():
+            while high - low > timedelta(minutes=1):
+                middle = low + timedelta(
+                    minutes=int((high - low).total_seconds() / 120)
+                )
+                if middle.astimezone(now.tzinfo).utcoffset() == initial_offset:
+                    low = middle
+                else:
+                    high = middle
+            boundaries.add(high)
+    ordered = sorted(boundaries)
+    opening: datetime | None = None
+    for left, right in pairwise(ordered):
+        permitted = in_daytime_window(left.astimezone(now.tzinfo), start, end)
+        if permitted:
+            opening = opening or left
+            if right == ordered[-1] or not in_daytime_window(
+                right.astimezone(now.tzinfo), start, end
+            ):
+                if right > reference:
+                    return max(due.astimezone(UTC), opening), right
+                opening = None
+        else:
+            opening = None
+    return None, None
 
 
 def format_time_until(due_at: datetime, now: datetime) -> str:

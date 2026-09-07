@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -17,8 +18,10 @@ from .models import (
     ResolvedDailyWindow,
     cleaning_profile_sources,
     effective_cleaning_program,
+    effective_scheduled_due,
     expand_cleaning_program,
     format_last_cleaned_age,
+    next_clean_schedule,
     next_usable_window_start,
     next_window_start,
     requested_cleaning_profile,
@@ -27,6 +30,7 @@ from .models import (
 )
 from .planner import CandidateRobotDecision, ScheduleCandidate, VacancyDiagnostic
 from .repairs_manager import fault_summary, room_recovery_summary
+from .room_status import room_robot_previews
 from .snapshots import (
     ActiveJobView,
     CandidateView,
@@ -109,6 +113,10 @@ class ProjectionSource(Protocol):
         operation: str,
         now: datetime,
     ) -> datetime: ...
+
+    def _room_deferral(
+        self, room: DiscoveredRoom, operation: str
+    ) -> datetime | None: ...
 
     def _room_candidate(
         self,
@@ -522,6 +530,27 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         duration_estimate.safe_minutes,
     )
     room_fault = source.state.room_faults.get(room.area_id)
+    schedule_due = effective_scheduled_due(
+        next_due
+        if detail.cleaning_completed_at or source.state.first_scheduler_online_at
+        else None,
+        occurrence.scheduled_at if occurrence else None,
+        source._room_deferral(room, "cleaning"),
+        manual_request=bool(occurrence and occurrence.source == "manual_dashboard"),
+    )
+    bypass_window = settings.ignore_desired_window or bool(
+        occurrence and (occurrence.bypass_desired_window or occurrence.manual_override)
+    )
+    next_clean_at, window_end = next_clean_schedule(
+        schedule_due,
+        local_now,
+        desired_window.start,
+        desired_window.end,
+        enabled=settings.enabled
+        and not (source.observe_only or source.party_mode or source.storage_safe_mode),
+        active=active is not None,
+        bypass_window=bypass_window,
+    )
     return RoomView(
         area_id=room.area_id,
         name=room.name,
@@ -564,6 +593,9 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         last_vacuum=detail.vacuum_completed_at,
         last_mop=detail.mop_completed_at,
         next_due=next_due,
+        next_clean_at=next_clean_at,
+        schedule_due_at=schedule_due,
+        next_clean_window_end_at=window_end,
         desired_window_start=desired_window_start,
         next_candidate=(
             _candidate_view(candidate) if candidate and assignment_available else None
@@ -848,7 +880,10 @@ def build_snapshot(source: ProjectionSource) -> IntegrationSnapshot:
     )
     return IntegrationSnapshot(
         scheduler=scheduler,
-        rooms=rooms,
+        rooms=tuple(
+            replace(room, robot_previews=room_robot_previews(room, robots, scheduler))
+            for room in rooms
+        ),
         robots=robots,
         floor_plan=plan,
     )

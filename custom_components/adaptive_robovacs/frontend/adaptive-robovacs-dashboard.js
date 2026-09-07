@@ -16,6 +16,7 @@ const VACUUM_ROLES = new Map([
   ["robot_stop_return_control", 2],
 ]);
 const ROOM_ROLES = new Map([
+  ["room_status", -1],
   ["room_schedule", 0],
   ["room_last_cleaned", 1],
   ["room_occupancy", 2],
@@ -65,6 +66,7 @@ const pendingCards = new Set();
 let pendingAnimationFrame;
 let pendingAnimationFrameKind;
 let cardHelpersPromise;
+const timestampRows = new Set();
 
 function adaptiveEntityIndex(hass) {
   const states = hass?.states;
@@ -165,8 +167,92 @@ function loadCardHelpers() {
 }
 
 if (typeof document !== "undefined") {
-  document.addEventListener("visibilitychange", requestPendingCardFlush);
+  document.addEventListener("visibilitychange", () => {
+    requestPendingCardFlush();
+    for (const row of timestampRows) row._refreshTimestamp();
+  });
 }
+
+class AdaptiveRoboVacsTimestampRow extends HTMLElement {
+  static display(state, now = Date.now()) {
+    if (state?.state === "unavailable") return { text: "Unavailable" };
+    const due = Date.parse(state?.state);
+    if (!Number.isFinite(due)) return { text: "—" };
+    if (due <= now) return { text: "Due now" };
+    const minutes = Math.ceil((due - now) / 60000);
+    const unitMinutes = minutes >= 1440 ? 1440 : minutes >= 60 ? 60 : 1;
+    const count = Math.floor(minutes / unitMinutes);
+    const unit = unitMinutes === 1440 ? "day" : unitMinutes === 60 ? "hour" : "minute";
+    return {
+      text: `in ${count} ${unit}${count === 1 ? "" : "s"}`,
+      delay: due - now - (count * unitMinutes - 1) * 60000,
+    };
+  }
+
+  setConfig(config) {
+    assertString(config, "entity", true);
+    this._config = { ...config };
+    this._refreshTimestamp();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._refreshTimestamp();
+  }
+
+  connectedCallback() {
+    this._connected = true;
+    timestampRows.add(this);
+    if (!this._row) {
+      const root = this.attachShadow({ mode: "open" });
+      const style = document.createElement("style");
+      style.textContent = ":host { display: block; cursor: pointer; }";
+      this._row = document.createElement("hui-generic-entity-row");
+      this._value = document.createElement("span");
+      this._value.style.cssText = "text-align:end;white-space:normal;overflow-wrap:anywhere";
+      this._row.append(this._value);
+      root.append(style, this._row);
+      this.setAttribute("role", "button");
+      this.tabIndex = 0;
+      this.addEventListener("click", () => this._showDetails());
+      this.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          this._showDetails();
+        }
+      });
+    }
+    this._refreshTimestamp();
+  }
+
+  disconnectedCallback() {
+    this._connected = false;
+    timestampRows.delete(this);
+    clearTimeout(this._timer);
+    this._timer = undefined;
+  }
+
+  _showDetails() {
+    this.dispatchEvent(new CustomEvent("hass-more-info", {
+      detail: { entityId: this._config.entity }, bubbles: true, composed: true,
+    }));
+  }
+
+  _refreshTimestamp() {
+    clearTimeout(this._timer);
+    this._timer = undefined;
+    if (!this._connected || !this._hass || !this._config || isDocumentHidden()) return;
+    this._row.setConfig(this._config);
+    this._row.hass = this._hass;
+    const display = AdaptiveRoboVacsTimestampRow.display(this._hass.states[this._config.entity]);
+    this._value.textContent = display.text;
+    if (display.delay !== undefined) {
+      this._timer = setTimeout(() => this._refreshTimestamp(), Math.max(1, display.delay));
+    }
+  }
+}
+
+customElements.define("adaptive-robovacs-timestamp-row", AdaptiveRoboVacsTimestampRow);
 
 const COMMON_FORM_SCHEMA = [
   {
@@ -320,6 +406,9 @@ class AdaptiveRoboVacsCardBase extends HTMLElement {
   _targetEntityRows(items, roleOrder, targetName) {
     return this._orderedEntities(items, roleOrder).map((item) => {
       const name = nameWithoutTargetPrefix(item.attrs.friendly_name, targetName);
+      if (item.attrs[ROLE_ATTRIBUTE] === "room_schedule" && item.attrs.device_class === "timestamp") {
+        return { type: "custom:adaptive-robovacs-timestamp-row", entity: item.entityId, name: "Next clean" };
+      }
       if (item.attrs[ROLE_ATTRIBUTE] === "room_last_cleaned") {
         return {
           type: "attribute",
@@ -590,20 +679,20 @@ class AdaptiveRoboVacsRoomCard extends AdaptiveRoboVacsCardBase {
     });
     const roomName = visibleEntities.find((item) => item.attrs.room)?.attrs.room || this._defaultTitle();
     const entityRows = this._targetEntityRows(visibleEntities, ROOM_ROLES, roomName);
-    const schedule = visibleEntities.find(
-      (item) => item.attrs[ROLE_ATTRIBUTE] === "room_schedule"
-    );
-    if (schedule?.state?.attributes?.duration_model_version === 2) {
-      entityRows.splice(1, 0,
+    const status = visibleEntities.find((item) => item.attrs[ROLE_ATTRIBUTE] === "room_status")
+      || visibleEntities.find((item) => item.attrs[ROLE_ATTRIBUTE] === "room_schedule");
+    if (status?.attrs?.duration_model_version === 2) {
+      const lastCleanIndex = entityRows.findIndex((row) => row.attribute === "last_cleaned_display");
+      entityRows.splice(lastCleanIndex >= 0 ? lastCleanIndex + 1 : 1, 0,
         {
           type: "attribute",
-          entity: schedule.entityId,
+          entity: status.entityId,
           attribute: "predicted_total_minutes",
           name: "Predicted total (min)",
         },
         {
           type: "attribute",
-          entity: schedule.entityId,
+          entity: status.entityId,
           attribute: "required_vacancy_minutes",
           name: "Required vacancy (min)",
         }

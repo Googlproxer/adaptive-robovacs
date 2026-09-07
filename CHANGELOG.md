@@ -5,6 +5,25 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.15.0] - 2026-09-08
+
+### Added
+
+- Per-room Status sensors with activity, diagnostics, enabled state, and
+  independent per-robot membership and conditional preview reasons.
+- Auto-entities/Bubble Card schedule template for robot popups, with chronological
+  day-and-time previews, conditional vacancy wording, and visible blocking reasons.
+
+### Changed
+
+- Next clean keeps its existing identity and now exposes a stable timestamp.
+  Countdown updates run in the browser; window transitions only update presentation.
+- Room cards lead with Status, Next clean, and Last clean. Diagnostics and duration
+  rows use Status, with compatibility for the previous sensor layout.
+
+Detailed notes and migration: [`docs/releases/v1.15.0.md`](docs/releases/v1.15.0.md).
+Home Assistant activation awaits a user-initiated restart.
+
 ## [1.14.1] - 2026-09-08
 
 ### Changed

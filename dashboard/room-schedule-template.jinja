@@ -1,0 +1,77 @@
+{# The containing Auto-entities card supplies robot_entity_id. No room list. #}
+{% set clock = now() %}
+{% set robots = states.sensor
+  | selectattr('attributes.adaptive_robovacs_role', 'defined')
+  | selectattr('attributes.adaptive_robovacs_role', 'eq', 'robot_status')
+  | selectattr('attributes.robot_entity_id', 'eq', robot_entity_id) | list %}
+{% set result = namespace(rows=[]) %}
+{% if robots | count != 1 or robots[0].state in ['unknown', 'unavailable'] %}
+  {% set result.rows = [{'type': 'markdown', 'content': 'Schedule data unavailable.'}] %}
+{% else %}
+  {% set entry = robots[0].attributes.adaptive_robovacs_entry_id %}
+  {% set entities = states.sensor
+    | selectattr('attributes.adaptive_robovacs_entry_id', 'defined')
+    | selectattr('attributes.adaptive_robovacs_entry_id', 'eq', entry) | list %}
+  {% set statuses = entities
+    | selectattr('attributes.adaptive_robovacs_role', 'eq', 'room_status') | list %}
+  {% set schedules = entities
+    | selectattr('attributes.adaptive_robovacs_role', 'eq', 'room_schedule') | list %}
+  {% set sorted_rows = namespace(items=[]) %}
+  {% for room in statuses
+      if room.attributes.enabled | default(false)
+      and robot_entity_id in room.attributes.robot_entity_ids | default([]) %}
+    {% set matches = schedules
+      | selectattr('attributes.area_id', 'eq', room.attributes.area_id) | list %}
+    {% set previews = room.attributes.robot_previews | default([])
+      | selectattr('robot_entity_id', 'eq', robot_entity_id) | list %}
+    {% set name = room.attributes.room | default(room.name) %}
+    {% set row = namespace(text='Schedule data unavailable', timestamp=none) %}
+    {% if room.state not in ['unknown', 'unavailable'] and previews | count == 1 %}
+      {% if previews[0].status == 'blocked' %}
+        {% set row.text = previews[0].reason or room.state %}
+      {% elif matches | count == 1 %}
+        {% set timestamp = as_timestamp(matches[0].state, none) %}
+        {% if timestamp is not none %}
+          {% set row.timestamp = timestamp %}
+          {% set local = as_local(as_datetime(matches[0].state)) %}
+          {% set days = (local.date() - clock.date()).days %}
+          {% if timestamp <= as_timestamp(clock) %}
+            {% set row.text = 'Now, if unoccupied' %}
+          {% else %}
+            {% set day = 'Today' if days == 0 else 'Tomorrow' if days == 1
+                else local.strftime('%a ') ~ local.day ~ local.strftime(' %b') %}
+            {% set row.text = day ~ ' ' ~ local.strftime('%H:%M') %}
+          {% endif %}
+        {% endif %}
+      {% endif %}
+    {% endif %}
+    {% set bubble = {
+      'type': 'custom:bubble-card', 'card_type': 'button', 'button_type': 'state',
+      'entity': room.entity_id, 'name': name, 'icon': 'mdi:calendar-clock',
+      'show_state': false, 'show_attribute': true,
+      'button_action': {'tap_action': {'action': 'more-info'}},
+      'tap_action': {'action': 'more-info'},
+      'styles': '.bubble-button-card-container { height: auto; min-height: 50px; }\n'
+        ~ '.bubble-button-card { position: relative; height: auto; min-height: 50px; }\n'
+        ~ '.bubble-name-container { padding: 8px 0; }\n'
+        ~ '.bubble-button-background { height: 100%; }\n'
+        ~ '.bubble-name, .bubble-state { white-space: normal; overflow-wrap: anywhere; }\n'
+        ~ "${(() => { const text = card.querySelector('.bubble-state'); if (text) text.textContent = "
+        ~ (row.text | to_json) ~ "; return ''; })()}"
+    } %}
+    {% set sorted_rows.items = sorted_rows.items + [{
+      'time': row.timestamp if row.timestamp is not none else 1e20,
+      'name': name, 'card': bubble
+    }] %}
+  {% endfor %}
+  {% for item in sorted_rows.items | sort(attribute='name') | sort(attribute='time') %}
+    {% set result.rows = result.rows + [item.card] %}
+  {% endfor %}
+  {% if not result.rows %}
+    {% set unavailable = statuses | selectattr('state', 'in', ['unknown', 'unavailable']) | list %}
+    {% set result.rows = [{'type': 'markdown', 'content':
+      'Schedule data unavailable.' if (not statuses and schedules) or unavailable
+      else 'No enabled rooms assigned to this robot.'}] %}
+  {% endif %}
+{% endif %}
+{{ result.rows | to_json }}

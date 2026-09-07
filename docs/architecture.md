@@ -33,6 +33,18 @@ command instead of re-entering a transaction.
 
 ## Layers
 
+Room eligibility timestamps use the pure `next_clean_schedule` rule in `models.py`.
+The projection combines cadence, initial baseline, recognised room deferrals, and
+persisted occurrences into an immutable `RoomView.next_clean_at`. `room_status.py`
+derives activity and per-robot preview reasons from immutable views. Occupancy and
+readiness restrictions never predict a time at which they will clear.
+
+`schedule_clock.py` owns one cancellable presentation timer for the next daily
+window closing. It advances only timestamp fields in the last settled snapshot;
+it does not evaluate candidates, dispatch, or write Store data. Normal application
+updates replace and rearm that clock. Relative countdowns live entirely in the
+existing dashboard module and do not create Home Assistant updates.
+
 ### Domain
 
 `models.py`, `planner.py`, `jobs.py`, and `state.py` contain identifiers,

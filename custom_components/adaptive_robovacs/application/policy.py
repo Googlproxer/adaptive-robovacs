@@ -43,6 +43,7 @@ from ..models import (
     due_at,
     effective_cadence_anchor,
     effective_cleaning_program,
+    effective_scheduled_due,
     expand_cleaning_program,
     forecast_vacancy,
     learned_duration_estimate,
@@ -638,24 +639,13 @@ class ApplicationPolicyMixin:
             return None, "room disabled"
         if settle_reason := self._startup_state_settle_reason(now):
             return None, settle_reason
-        if occurrence:
-            if occurrence.source == "manual_dashboard":
-                due = occurrence.scheduled_at
-            else:
-                cleaning_deferral = detail.deferrals.get("cleaning")
-                due = max(
-                    (
-                        value
-                        for value in (
-                            occurrence.scheduled_at,
-                            cleaning_deferral.until if cleaning_deferral else None,
-                        )
-                        if value is not None
-                    ),
-                    default=now,
-                )
-        else:
-            due = self._room_due(room, "cleaning", now)
+        due = effective_scheduled_due(
+            self._room_due(room, "cleaning", now),
+            occurrence.scheduled_at if occurrence else None,
+            self._room_deferral(room, "cleaning"),
+            manual_request=bool(occurrence and occurrence.source == "manual_dashboard"),
+        )
+        assert due is not None
         if due > now:
             return None, "not due"
         if occurrence:

@@ -6,8 +6,9 @@ import importlib.util
 import sys
 import unittest
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 MODULE_PATH = (
     Path(__file__).parents[1] / "custom_components" / "adaptive_robovacs" / "models.py"
@@ -40,6 +41,136 @@ class ProfileSettings:
 
 def settings(**values: object) -> ProfileSettings:
     return ProfileSettings(**values)
+
+
+class NextCleanTimestampTests(unittest.TestCase):
+    def test_stable_overdue_and_future_window_times(self) -> None:
+        due = datetime(2026, 9, 8, 7, tzinfo=UTC)
+        for hour, expected_day, expected_hour in (
+            (6, 8, 8),
+            (9, 8, 8),
+            (16, 8, 8),
+            (18, 9, 8),
+            (23, 9, 8),
+        ):
+            now = due.replace(hour=hour)
+            timestamp, boundary = models.next_clean_schedule(due, now, "08:00", "18:00")
+            self.assertEqual(
+                timestamp, due.replace(day=expected_day, hour=expected_hour)
+            )
+            self.assertEqual(boundary, due.replace(day=expected_day, hour=18))
+        due = due.replace(hour=12, minute=30)
+        self.assertEqual(
+            models.next_clean_schedule(due, due.replace(hour=15), "08:00", "18:00")[0],
+            due,
+        )
+        self.assertEqual(
+            models.next_clean_schedule(due.replace(hour=23), due, "08:00", "18:00")[0],
+            due.replace(day=9, hour=8, minute=0),
+        )
+
+    def test_disabled_missing_naive_and_bypassed_windows(self) -> None:
+        due = datetime(2026, 9, 8, tzinfo=UTC)
+        for options in ({"enabled": False}, {"active": True}):
+            self.assertEqual(
+                models.next_clean_schedule(due, due, "08:00", "18:00", **options),
+                (None, None),
+            )
+        for value in (None, due.replace(tzinfo=None)):
+            self.assertEqual(
+                models.next_clean_schedule(value, due, "08:00", "18:00"), (None, None)
+            )
+        self.assertEqual(
+            models.next_clean_schedule(due, due.replace(tzinfo=None), "08:00", "18:00"),
+            (None, None),
+        )
+        for start, end in (("bad", "18:00"), ("08:00", "bad"), ("08:00", "08:00")):
+            self.assertEqual(
+                models.next_clean_schedule(due, due, start, end), (None, None)
+            )
+            self.assertEqual(
+                models.next_clean_schedule(due, due, start, end, bypass_window=True),
+                (due, None),
+            )
+
+    def test_overnight_window_retains_previous_evening_opening(self) -> None:
+        now = datetime(2026, 9, 8, 2, tzinfo=UTC)
+        due = now - timedelta(days=2)
+        self.assertEqual(
+            models.next_clean_schedule(due, now, "22:00", "06:00"),
+            (now.replace(day=7, hour=22), now.replace(hour=6)),
+        )
+        self.assertEqual(
+            models.next_clean_schedule(due, now.replace(hour=6), "22:00", "06:00")[0],
+            now.replace(hour=22),
+        )
+
+    def test_dst_gap_fold_and_overnight_windows_match_wall_time_policy(self) -> None:
+        zone = ZoneInfo("Australia/Sydney")
+        for date in ((2026, 10, 4), (2026, 4, 5)):
+            anchor = datetime(*date, tzinfo=zone).astimezone(UTC)
+            for start, end in (
+                ("02:30", "04:00"),
+                ("01:00", "02:30"),
+                ("02:15", "02:45"),
+                ("22:00", "06:00"),
+                ("08:00", "18:00"),
+            ):
+                for minutes in range(0, 300, 30):
+                    now = (anchor + timedelta(minutes=minutes)).astimezone(zone)
+                    for due in (
+                        anchor - timedelta(days=1),
+                        anchor + timedelta(hours=3),
+                    ):
+                        with self.subTest(
+                            date=date, start=start, end=end, now=now, due=due
+                        ):
+                            timestamp, boundary = models.next_clean_schedule(
+                                due, now, start, end
+                            )
+                            self.assertIsNotNone(timestamp)
+                            self.assertGreater(boundary, max(due, now.astimezone(UTC)))
+                            self.assertTrue(
+                                models.in_daytime_window(
+                                    timestamp.astimezone(zone), start, end
+                                )
+                            )
+                            self.assertFalse(
+                                models.in_daytime_window(
+                                    boundary.astimezone(zone), start, end
+                                )
+                            )
+                            reference = max(due, now.astimezone(UTC))
+                            if models.in_daytime_window(
+                                reference.astimezone(zone), start, end
+                            ):
+                                opening = reference
+                                while models.in_daytime_window(
+                                    (opening - timedelta(minutes=1)).astimezone(zone),
+                                    start,
+                                    end,
+                                ):
+                                    opening -= timedelta(minutes=1)
+                                self.assertEqual(timestamp, max(due, opening))
+                            else:
+                                opening = reference
+                                while not models.in_daytime_window(
+                                    opening.astimezone(zone), start, end
+                                ):
+                                    opening += timedelta(minutes=1)
+                                self.assertEqual(timestamp, opening)
+
+    def test_persisted_occurrence_and_manual_deferral_contract(self) -> None:
+        due = datetime(2026, 9, 8, tzinfo=UTC)
+        future = due + timedelta(days=1)
+        self.assertEqual(models.effective_scheduled_due(future, due, None), due)
+        self.assertEqual(models.effective_scheduled_due(future, due, future), future)
+        self.assertEqual(
+            models.effective_scheduled_due(future, due, future, manual_request=True),
+            due,
+        )
+        self.assertEqual(models.effective_scheduled_due(future, None, due), future)
+        self.assertIsNone(models.effective_scheduled_due(None, None, None))
 
 
 class OccupancyTests(unittest.TestCase):

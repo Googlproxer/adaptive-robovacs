@@ -8,11 +8,10 @@ from typing import Any
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import dt as dt_util
 
 from .coordinator import AdaptiveRoboVacsCoordinator
 from .entity import AdaptiveEntity, async_setup_dynamic_entities, robot_unique_fragment
-from .models import JobPhase, WaterReadiness, format_time_until
+from .models import WaterReadiness
 from .presentation import (
     active_job_attributes,
     duration_estimate_attributes,
@@ -29,6 +28,7 @@ from .presentation import (
     water_confirmation_attributes,
     water_episode_attributes,
 )
+from .room_status import room_status
 from .runtime_data import AdaptiveRoboVacsConfigEntry
 
 PARALLEL_UPDATES = 0
@@ -177,6 +177,8 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
 
 
 class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
     def __init__(
         self, coordinator: AdaptiveRoboVacsCoordinator, area_id: str, name: str
     ) -> None:
@@ -190,44 +192,44 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
         self.area_id = area_id
 
     @property
+    def native_value(self) -> datetime | None:
+        return self.room_view(self.area_id).next_clean_at
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        room = self.room_view(self.area_id)
+        return {
+            **super().extra_state_attributes,
+            "room": room.name,
+            "floor_id": room.floor_id,
+        }
+
+
+class _RoomStatusSensor(AdaptiveEntity, SensorEntity):
+    def __init__(
+        self, coordinator: AdaptiveRoboVacsCoordinator, area_id: str, name: str
+    ) -> None:
+        super().__init__(
+            coordinator,
+            f"room_{area_id}_status",
+            f"{name} status",
+            "room_status",
+            area_id=area_id,
+        )
+        self.area_id = area_id
+
+    @property
     def native_value(self) -> str:
         room = self.room_view(self.area_id)
-        if room.recovery:
-            return "Room blocked — recovery confirmation required"
-        if room.failure:
-            return "Room blocked"
-        if room.active:
-            if room.active.phase in {
-                JobPhase.RECOVERY_WAITING,
-                JobPhase.COMPLETION_HELD,
-            }:
-                return "Completion pending"
-            if room.active.phase is JobPhase.DOCK_COMPLETION_PENDING:
-                return "Dock servicing"
-            if room.active.phase is JobPhase.CANCELLING:
-                return "Returning to dock"
-            if room.active.phase is JobPhase.ERROR_WAITING:
-                return "Scheduler held"
-            if room.active.phase is JobPhase.PAUSED:
-                return "Paused"
-            if room.active_robot_state == "returning":
-                return "Returning"
-            return "In Progress"
-        if room.next_candidate:
-            return "ready now"
-        if not room.enabled:
-            return "disabled"
-        if room.block_reason == "not due":
-            return format_time_until(room.next_due, dt_util.utcnow())
-        if room.block_reason in {
-            "waiting for desired cleaning window",
-            "unresolved occupancy; waiting for desired cleaning window",
-        }:
-            return format_time_until(
-                room.desired_window_start,
-                dt_util.as_local(dt_util.utcnow()),
-            )
-        return room.block_reason
+        if not (room.active or room.failure or room.recovery):
+            scheduler = self.coordinator.data.scheduler
+            if scheduler.storage_safe_mode:
+                return "Storage recovery required"
+            if scheduler.observe_only:
+                return "Observe-only mode"
+            if scheduler.party_mode:
+                return "Party Mode"
+        return room_status(room)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -241,6 +243,16 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             **super().extra_state_attributes,
             "room": room.name,
             "floor_id": room.floor_id,
+            "enabled": room.enabled,
+            "robot_entity_ids": [item.robot_entity_id for item in room.robot_previews],
+            "robot_previews": [
+                {
+                    "robot_entity_id": item.robot_entity_id,
+                    "status": item.status,
+                    "reason": item.reason,
+                }
+                for item in room.robot_previews
+            ],
             "bedroom": room.bedroom,
             "ignore_desired_window": room.ignore_desired_window,
             "desired_window_configured_start": room.desired_window_configured_start,
@@ -444,6 +456,7 @@ def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
     for room in coordinator.data.rooms:
         entities.extend(
             [
+                _RoomStatusSensor(coordinator, room.area_id, room.name),
                 _RoomScheduleSensor(coordinator, room.area_id, room.name),
                 _RoomLastCleanedSensor(coordinator, room.area_id, room.name),
                 _RoomOccupancySensor(coordinator, room.area_id, room.name),

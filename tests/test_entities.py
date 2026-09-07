@@ -189,6 +189,8 @@ def room_view(area_id: str = "study", name: str = "Study"):
         last_vacuum=WHEN - timedelta(days=2),
         last_mop=WHEN - timedelta(days=3),
         next_due=WHEN,
+        next_clean_at=WHEN,
+        robot_previews=(),
         desired_window_start=WHEN,
         next_candidate=candidate,
         assignment_available=True,
@@ -307,14 +309,14 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
     async def test_values_attributes_and_actions_come_from_typed_snapshot(self) -> None:
         scheduler_entity = sensor._SchedulerSensor(self.coordinator)
         robot_entity = sensor._RobotStatusSensor(self.coordinator, "vacuum.alpha")
-        room_entity = sensor._RoomScheduleSensor(self.coordinator, "study", "Study")
+        room_entity = sensor._RoomStatusSensor(self.coordinator, "study", "Study")
         occupancy = sensor._RoomOccupancySensor(self.coordinator, "study", "Study")
         last_cleaned = sensor._RoomLastCleanedSensor(self.coordinator, "study", "Study")
 
         self.assertEqual(scheduler_entity.native_value, "observe-only")
         self.assertEqual(robot_entity.native_value, "docked")
         self.assertEqual(robot_entity.extra_state_attributes["battery"], 95)
-        self.assertEqual(room_entity.native_value, "ready now")
+        self.assertEqual(room_entity.native_value, "Observe-only mode")
         self.assertEqual(room_entity.extra_state_attributes["operation"], "vacuum")
         self.assertEqual(occupancy.native_value, "unoccupied")
         self.assertEqual(last_cleaned.native_value, WHEN - timedelta(days=2))
@@ -403,7 +405,7 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
             room_view("hall", "Hall"),
         )
         callbacks[0]("entry-1")
-        self.assertEqual(len(added), initial_count + 4)
+        self.assertEqual(len(added), initial_count + 5)
         self.assertEqual(len(unloaders), 1)
 
     async def test_selects_translate_every_option_and_submit_typed_values(self) -> None:
@@ -520,8 +522,11 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scheduler_entity.native_value, "ready")
         self.assertIn("last_evaluation", scheduler_entity.extra_state_attributes)
 
+        self.coordinator.data.scheduler = replace(
+            self.coordinator.data.scheduler, observe_only=False
+        )
         room = self.coordinator.data.rooms[0]
-        room_entity = sensor._RoomScheduleSensor(self.coordinator, "study", "Study")
+        room_entity = sensor._RoomStatusSensor(self.coordinator, "study", "Study")
         room.next_candidate = None
         phases = (
             (JobPhase.RECOVERY_WAITING, "Completion pending"),
@@ -598,7 +603,7 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
                 "Study",
             ),
         )
-        room_entity = sensor._RoomScheduleSensor(self.coordinator, "study", "Study")
+        room_entity = sensor._RoomStatusSensor(self.coordinator, "study", "Study")
         self.assertEqual(
             room_entity.native_value, "Room blocked — recovery confirmation required"
         )
