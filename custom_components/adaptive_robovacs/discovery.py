@@ -17,7 +17,6 @@ from .adapters.base import AdapterEntityEvidence, AdapterMatchContext
 from .adapters.registry import async_resolve_adapter
 from .const import (
     LABEL_BEDROOM,
-    LABEL_BEDROOM_TRANSIT,
     LABEL_EXCLUDE,
     LABEL_EXCLUDE_OCCUPANCY,
     LABEL_RADAR,
@@ -91,10 +90,6 @@ class DiscoveredRoom:
     @property
     def is_bedroom(self) -> bool:
         return LABEL_BEDROOM in self.labels
-
-    @property
-    def is_bedroom_transit(self) -> bool:
-        return LABEL_BEDROOM_TRANSIT in self.labels
 
 
 @dataclass(frozen=True, slots=True)

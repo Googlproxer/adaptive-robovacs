@@ -293,7 +293,7 @@ class CadenceTests(unittest.TestCase):
         )
         self.assertTrue(result.allowed)
 
-    def test_hall_window_is_half_open(self) -> None:
+    def test_daily_window_is_half_open(self) -> None:
         self.assertTrue(models.in_daytime_window(self.now, "09:00", "20:00"))
         self.assertFalse(
             models.in_daytime_window(self.now.replace(hour=20), "09:00", "20:00")
@@ -447,17 +447,17 @@ class CadenceTests(unittest.TestCase):
         desired_window = self.now.replace(hour=12)
         self.assertTrue(
             models.unresolved_occupancy_allowed(
-                "unresolved", False, desired_window, "09:00", "20:00"
+                "unresolved", desired_window, "09:00", "20:00"
             )
         )
         self.assertFalse(
             models.unresolved_occupancy_allowed(
-                "unresolved", True, desired_window, "09:00", "20:00"
+                "unresolved", desired_window.replace(hour=21), "09:00", "20:00"
             )
         )
         self.assertFalse(
             models.unresolved_occupancy_allowed(
-                "occupied", False, desired_window, "09:00", "20:00"
+                "occupied", desired_window, "09:00", "20:00"
             )
         )
 

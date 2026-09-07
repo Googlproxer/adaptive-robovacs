@@ -311,7 +311,6 @@ class RoomView:
     name: str
     floor_id: str | None
     bedroom: bool
-    bedroom_transit: bool
     radar_entity_ids: tuple[str, ...]
     fallback_entity_ids: tuple[str, ...]
     cleaning_period: str
@@ -548,8 +547,6 @@ class SchedulerView:
     scheduler_limited: bool
     storage_safe_mode: bool
     forecast_confidence: float
-    hall_start: str
-    hall_end: str
     unresolved_start: str
     unresolved_end: str
     last_evaluation_at: datetime | None
@@ -568,10 +565,6 @@ class SchedulerView:
             return self.party_mode
         if key == "forecast_confidence":
             return self.forecast_confidence
-        if key == "hall_start":
-            return self.hall_start
-        if key == "hall_end":
-            return self.hall_end
         if key == "unresolved_start":
             return self.unresolved_start
         if key == "unresolved_end":

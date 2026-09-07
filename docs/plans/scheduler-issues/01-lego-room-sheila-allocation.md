@@ -65,8 +65,7 @@ vacuum name.
   state must not be “ready now”.
 - Add a coordinator test using neutral fixture room and robot identifiers that
   verifies the allocator and preview agree.
-- Verify an occupied room and a bedroom-transit room are never relaxed by the
-  fix.
+- Verify an occupied room is never relaxed by the fix.
 - Run the required unit and compilation checks, frontend tests, and the
   byte-for-byte dashboard-copy check.
 

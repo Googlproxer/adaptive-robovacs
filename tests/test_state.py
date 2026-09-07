@@ -29,8 +29,6 @@ models = importlib.import_module(f"{PACKAGE_NAME}.models")
 ENTRY_DATA = {
     "observe_only": False,
     "forecast_confidence": 75,
-    "hall_start": "08:00",
-    "hall_end": "19:00",
     "unresolved_start": "00:00",
     "unresolved_end": "04:00",
 }
@@ -169,6 +167,31 @@ def populated_state():
 
 
 class SchedulerStateTests(unittest.TestCase):
+    def test_retired_settings_are_dropped_without_changing_durable_state(self) -> None:
+        expected = populated_state().encode()
+        for retired in (
+            {"hall_start": "09:00"},
+            {"hall_end": "20:00"},
+            {"hall_start": "invalid", "hall_end": {"unused": True}},
+        ):
+            with self.subTest(retired=retired):
+                payload = deepcopy(expected)
+                payload["global"].update(retired)
+                original_payload = deepcopy(payload)
+                entry_data = {**ENTRY_DATA, **retired}
+
+                restored, migrated = state.SchedulerState.from_store(
+                    payload, entry_data
+                )
+                self.assertTrue(migrated)
+                self.assertEqual(payload, original_payload)
+                self.assertEqual(restored.encode(), expected)
+                again, migrated_again = state.SchedulerState.from_store(
+                    restored.encode(), entry_data
+                )
+                self.assertFalse(migrated_again)
+                self.assertEqual(again.encode(), expected)
+
     def test_schema_16_round_trip_is_lossless_and_idempotent(self) -> None:
         original = populated_state()
 
@@ -368,7 +391,7 @@ class SchedulerStateTests(unittest.TestCase):
     def test_current_schema_rejects_malformed_or_lossy_records(self) -> None:
         mutations = (
             lambda payload: payload.pop("robot_entity_aliases"),
-            lambda payload: payload["global"].__setitem__("hall_start", "9:00"),
+            lambda payload: payload["global"].__setitem__("unresolved_start", "9:00"),
             lambda payload: payload["room_settings"]["study"].__setitem__(
                 "fan_speed", ["max"]
             ),

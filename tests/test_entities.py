@@ -64,8 +64,6 @@ def scheduler_view() -> SchedulerView:
         scheduler_limited=False,
         storage_safe_mode=False,
         forecast_confidence=75,
-        hall_start="08:00",
-        hall_end="19:00",
         unresolved_start="00:00",
         unresolved_end="04:00",
         last_evaluation_at=WHEN,
@@ -168,7 +166,6 @@ def room_view(area_id: str = "study", name: str = "Study"):
         name=name,
         floor_id="ground",
         bedroom=False,
-        bedroom_transit=False,
         radar_entity_ids=("binary_sensor.study_radar",),
         fallback_entity_ids=("binary_sensor.study_motion",),
         cleaning_period="Default",
@@ -323,6 +320,8 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
                 len(group),
             )
         unique_ids = {item.unique_id for item in entities}
+        self.assertNotIn("entry-1_global_hall_start", unique_ids)
+        self.assertNotIn("entry-1_global_hall_end", unique_ids)
         self.assertIn("entry-1_robot_legacy-alpha_status", unique_ids)
         self.assertIn("entry-1_room_study_next_clean", unique_ids)
 
@@ -391,14 +390,14 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.coordinator.commands[-1].value, 85)
 
         global_time = select._TimeSelect(
-            self.coordinator, "hall_start", "Bedroom transit start"
+            self.coordinator, "unresolved_start", "Desired window start"
         )
         room_time = select._RoomTimeSelect(
             self.coordinator, "study", "desired_window_start", "start"
         )
         program = select._RobotProgramSelect(self.coordinator, "vacuum.alpha")
         preview = select._MapRecoveryPreviewSelect(self.coordinator, "vacuum.alpha")
-        self.assertEqual(global_time.current_option, "08:00")
+        self.assertEqual(global_time.current_option, "00:00")
         self.assertEqual(room_time.current_option, "Use global")
         self.assertIn("Mop only", program.options)
         self.assertEqual(program.current_option, "Vacuum then mop")

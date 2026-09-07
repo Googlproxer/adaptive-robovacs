@@ -10,8 +10,6 @@ from custom_components.adaptive_robovacs.storage import SchedulerStore
 ENTRY_DATA = {
     "observe_only": False,
     "forecast_confidence": 75,
-    "hall_start": "08:00",
-    "hall_end": "19:00",
     "unresolved_start": "00:00",
     "unresolved_end": "04:00",
 }
@@ -39,11 +37,24 @@ def scheduler_store(payload):
 
 
 class SchedulerStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_retired_keys_cannot_trigger_a_write_of_malformed_state(self) -> None:
+        payload = SchedulerState.create(ENTRY_DATA).to_store()
+        payload["global"].update(hall_start="09:00", hall_end="20:00")
+        payload["global"]["unresolved_start"] = "bad"
+        store = scheduler_store(payload)
+
+        loaded = await store.async_load(ENTRY_DATA)
+
+        self.assertTrue(loaded.safe_mode)
+        self.assertFalse(loaded.migrated)
+        self.assertEqual(store._store.saved, [])
+        self.assertIs(store._store.payload, payload)
+
     async def test_malformed_current_data_enters_observe_only_without_write(
         self,
     ) -> None:
         payload = SchedulerState.create(ENTRY_DATA).to_store()
-        payload["global"]["hall_start"] = "bad"
+        payload["global"]["unresolved_start"] = "bad"
         store = scheduler_store(payload)
 
         loaded = await store.async_load(ENTRY_DATA)

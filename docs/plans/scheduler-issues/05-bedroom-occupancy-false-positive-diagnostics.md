@@ -12,7 +12,7 @@ false positives.
 
 Determine why Bedroom 3's safe vacancies are rejected and correct only a
 proven false-positive or forecast defect. A person-present signal must remain
-an immediate block; this work must not weaken bedroom or bedroom-transit
+an immediate block; this work must not weaken room-local occupancy
 safety.
 
 ## Design
@@ -51,7 +51,6 @@ safety.
 - Unit-test immediate occupancy, a clear period shorter than required, a
   sufficiently long clear period with too little historical confidence, and a
   successfully forecast safe vacancy.
-- Verify that a bedroom-transit room remains stricter than an ordinary bedroom.
 - Test bounded audit persistence and restart restoration.
 - Test any selected debounce so that occupied blocks immediately and only a
   confirmed clear state is delayed.

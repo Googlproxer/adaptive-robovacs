@@ -41,7 +41,7 @@ automatically on supported versions.
 4. Map the vacuum's native segments to Home Assistant areas using the vacuum
    entity's **Map vacuum segments to areas** action.
 5. Add area labels as needed:
-   `robovac-bedroom`, `robovac-bedroom-transit`, and `robovac-exclude`.
+   `robovac-bedroom` and `robovac-exclude`.
    Label each radar device (recommended) or its occupancy binary sensor
    `robovac-radar`. An entity's direct labels take precedence; only an
    unlabelled entity inherits its device labels. Home Assistant normalizes
@@ -86,9 +86,8 @@ restore their live state before a robot can start.
 The room's **Ignore desired cleaning window** entity remains available for advanced
 Home Assistant use, but is intentionally omitted from the simple room card; it
 can permit an otherwise-safe clean outside those hours. A room with unresolved
-occupancy is retried only in that room's effective window, and bedroom-transit
-rooms remain excluded from that exception. A failed scheduler start holds only
-the affected robot; mapping and saved room-profile failures block only the
+occupancy is retried only in that room's effective window. A failed scheduler
+start holds only the affected robot; mapping and saved room-profile failures block only the
 affected room. Each creates a scoped Home Assistant **Repair** with a safe
 explanation while unaffected compatible work continues. A late robot state
 cannot clear its fault automatically. Resolve the underlying availability or
@@ -204,6 +203,11 @@ Version 1.13.0 advances the internal scheduler Store to schema 16 and replaces
 the monolithic runtime with typed commands, pure planning/recovery reducers,
 independent infrastructure services, immutable snapshots, and a push-only
 coordinator. See the [v1.13 migration guide](docs/migration-v1.13.0.md).
+
+Version 1.14.0 removes bedroom-transit behavior, controls, and metadata while
+retaining schema 16 and ordinary room scheduling. Existing installations clean
+up obsolete settings and selectors on setup. See the
+[v1.14 migration guide](docs/migration-v1.14.0.md) before upgrading.
 
 ## Releases and upgrades
 

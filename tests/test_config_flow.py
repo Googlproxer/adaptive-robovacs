@@ -15,8 +15,6 @@ from custom_components.adaptive_robovacs.config_flow import (
 )
 from custom_components.adaptive_robovacs.const import (
     CONF_FORECAST_CONFIDENCE,
-    CONF_HALL_END,
-    CONF_HALL_START,
     CONF_OBSERVE_ONLY,
     CONF_UNRESOLVED_END,
     CONF_UNRESOLVED_START,
@@ -39,8 +37,6 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             data = {
                 CONF_OBSERVE_ONLY: False,
                 CONF_FORECAST_CONFIDENCE: 75,
-                CONF_HALL_START: "08:00",
-                CONF_HALL_END: "20:00",
                 CONF_UNRESOLVED_START: "01:00",
                 CONF_UNRESOLVED_END: "05:00",
             }
@@ -53,7 +49,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(defaults[CONF_OBSERVE_ONLY])
         self.assertEqual(defaults[CONF_FORECAST_CONFIDENCE], 80)
         with self.assertRaises(MultipleInvalid):
-            form["data_schema"]({CONF_HALL_START: "25:99"})
+            form["data_schema"]({CONF_UNRESOLVED_START: "25:99"})
         with self.assertRaises(MultipleInvalid):
             form["data_schema"]({CONF_FORECAST_CONFIDENCE: 49})
         self.assertEqual(created["type"].value, "create_entry")

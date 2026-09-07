@@ -7,7 +7,7 @@
 - The scheduler is registry-driven. Do not hard-code live entity IDs, room
   names, floor IDs, map segment IDs, device IDs, or credentials.
 - Preserve the safety model: room occupancy blocks new work; Party Mode and
-  observe-only mode never dispatch; bedroom-transit areas have stricter rules.
+  observe-only mode never dispatch.
 - Durable scheduler state is stored through Home Assistant's `Store`. Changes
   to jobs, cadence, duration learning, or recovery must retain restart-safe
   behaviour and keep the robot's observed state authoritative over estimates.

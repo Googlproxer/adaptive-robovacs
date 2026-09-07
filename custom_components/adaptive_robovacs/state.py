@@ -14,8 +14,6 @@ from typing import Any
 
 from .const import (
     CONF_FORECAST_CONFIDENCE,
-    CONF_HALL_END,
-    CONF_HALL_START,
     CONF_OBSERVE_ONLY,
     CONF_UNRESOLVED_END,
     CONF_UNRESOLVED_START,
@@ -23,8 +21,6 @@ from .const import (
     DEFAULT_COMMON_INTERVAL,
     DEFAULT_EXPECTED_MINUTES,
     DEFAULT_FORECAST_CONFIDENCE,
-    DEFAULT_HALL_END,
-    DEFAULT_HALL_START,
     DEFAULT_MINIMUM_BATTERY,
     DEFAULT_UNRESOLVED_END,
     DEFAULT_UNRESOLVED_START,
@@ -49,6 +45,7 @@ from .models import (
 )
 
 SCHEMA_VERSION = 16
+RETIRED_GLOBAL_SETTINGS = frozenset({"hall_start", "hall_end"})
 DAILY_WINDOW_VERSION = 1
 
 
@@ -258,8 +255,6 @@ class GlobalSettings:
     observe_only: bool = True
     party_mode: bool = False
     forecast_confidence: float = DEFAULT_FORECAST_CONFIDENCE
-    hall_start: str = DEFAULT_HALL_START
-    hall_end: str = DEFAULT_HALL_END
     unresolved_start: str = DEFAULT_UNRESOLVED_START
     unresolved_end: str = DEFAULT_UNRESOLVED_END
 
@@ -270,8 +265,6 @@ class GlobalSettings:
             forecast_confidence=_number(
                 entry_data.get(CONF_FORECAST_CONFIDENCE), DEFAULT_FORECAST_CONFIDENCE
             ),
-            hall_start=str(entry_data.get(CONF_HALL_START, DEFAULT_HALL_START)),
-            hall_end=str(entry_data.get(CONF_HALL_END, DEFAULT_HALL_END)),
             unresolved_start=str(
                 entry_data.get(CONF_UNRESOLVED_START, DEFAULT_UNRESOLVED_START)
             ),
@@ -284,12 +277,6 @@ class GlobalSettings:
     def from_mapping(
         cls, value: Mapping[str, object], defaults: GlobalSettings
     ) -> GlobalSettings:
-        hall_start = _daily_time(
-            value.get("hall_start"), defaults.hall_start, "global hall_start"
-        )
-        hall_end = _daily_time(
-            value.get("hall_end"), defaults.hall_end, "global hall_end"
-        )
         unresolved_start = _daily_time(
             value.get("unresolved_start"),
             defaults.unresolved_start,
@@ -310,8 +297,6 @@ class GlobalSettings:
                 50,
                 95,
             ),
-            hall_start=hall_start,
-            hall_end=hall_end,
             unresolved_start=unresolved_start,
             unresolved_end=unresolved_end,
         )
@@ -1889,7 +1874,10 @@ class SchedulerState:
                 f"unsupported scheduler state schema: {schema_version!r}"
             )
         cls._validate_current_schema(data)
-        return cls._from_versioned(data, entry_data), False
+        retired_settings = RETIRED_GLOBAL_SETTINGS.intersection(
+            _mapping(data.get("global"), "global")
+        )
+        return cls._from_versioned(data, entry_data), bool(retired_settings)
 
     @classmethod
     def _validate_current_schema(cls, data: Mapping[str, object]) -> None:

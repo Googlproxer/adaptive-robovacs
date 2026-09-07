@@ -15,7 +15,6 @@ class LabelContractTests(unittest.TestCase):
         source = CONST_PATH.read_text(encoding="utf-8")
         for label_id in (
             "robovac_bedroom",
-            "robovac_bedroom_transit",
             "robovac_exclude",
             "robovac_radar",
         ):

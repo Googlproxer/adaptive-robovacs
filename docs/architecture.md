@@ -111,7 +111,7 @@ observe-only mode and publishes its diagnostic state.
 
 ## Dispatch invariants
 
-- Occupancy blocks new scheduled work. Bedroom-transit rules remain stricter.
+- Room-local occupancy blocks new scheduled work.
 - Party Mode, observe-only mode, storage-safe mode, startup settling, and
   shutdown are non-dispatching.
 - Every physical stage uses a fresh observation and complete revalidation.
@@ -125,7 +125,7 @@ observe-only mode and publishes its diagnostic state.
   resolved.
 
 Manual room actions bypass scheduler policy gates—cadence, windows, occupancy,
-transit, configured enablement, battery thresholds, scheduler holds, and the
+configured enablement, battery thresholds, scheduler holds, and the
 legacy global halt—but still require a physically docked compatible same-floor
 robot, valid mapping/profile/preflight, any required water approval, start
 confirmation, and every non-bypassable global mode.

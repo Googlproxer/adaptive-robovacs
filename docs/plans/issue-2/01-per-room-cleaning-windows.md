@@ -6,7 +6,7 @@
 
 Allow every discovered room to inherit the scheduler's existing daily desired
 cleaning window or provide its own daily start and end times. Preserve
-overnight-window behavior, occupancy safeguards, bedroom-transit restrictions,
+overnight-window behavior, occupancy safeguards,
 and the per-room **Ignore desired cleaning window** override.
 
 ## Product decision
@@ -31,7 +31,7 @@ bounds without renaming existing global entities or weakening that safety rule.
 - Treat the daily window as a half-open interval and allow it to cross
   midnight. Equal start/end values are invalid rather than all day.
 - Keep `ignore_desired_window` as a preference bypass for known-vacant rooms.
-  It does not bypass unresolved occupancy or bedroom-transit restrictions.
+  It does not bypass unresolved occupancy restrictions.
 - Show configured and effective bounds, inheritance, and the next effective
   start in room schedule attributes and the dashboard.
 - Keep all existing global select and room switch entity IDs stable.
@@ -68,7 +68,7 @@ bounds without renaming existing global entities or weakening that safety rule.
   pair and that overrides survive restart.
 - Verify one room's override does not affect another room's preview.
 - Verify **Ignore desired cleaning window** cannot bypass unresolved occupancy,
-  Party Mode, observe-only mode, or bedroom-transit safety.
+  Party Mode, or observe-only mode.
 - Run the repository unit tests and compile every integration Python module.
 
 ## Acceptance criteria

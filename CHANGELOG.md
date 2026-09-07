@@ -5,6 +5,21 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.14.0] - Unreleased
+
+### Removed
+
+- Removed bedroom-transit label handling, the aggregate bedroom occupancy gate,
+  the separate daytime restriction, and the special unresolved-occupancy rule.
+- Removed the transit time selectors, configuration fields, and room attribute.
+  Existing installations discard obsolete settings and retire only their own
+  obsolete selectors on setup, preserving scheduler state and ordinary bedrooms.
+- Adjacency remains separate future work. Previously labeled rooms follow
+  ordinary room-local occupancy and desired-window rules.
+
+Detailed notes: [`docs/releases/v1.14.0.md`](docs/releases/v1.14.0.md).
+Migration: [`docs/migration-v1.14.0.md`](docs/migration-v1.14.0.md).
+
 ## [1.13.0] - 2026-09-06
 
 ### Changed

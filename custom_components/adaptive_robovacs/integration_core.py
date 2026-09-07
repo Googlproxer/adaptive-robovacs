@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 
@@ -26,6 +27,39 @@ from .repairs_manager import (
 )
 from .runtime_data import AdaptiveRoboVacsConfigEntry, AdaptiveRoboVacsRuntimeData
 from .services import async_register_services, async_unregister_services
+from .state import RETIRED_GLOBAL_SETTINGS
+
+
+@callback
+def _async_retire_controls(
+    hass: HomeAssistant, entry: AdaptiveRoboVacsConfigEntry
+) -> None:
+    """Remove only this entry's obsolete settings and owned select records."""
+
+    data = {
+        key: value
+        for key, value in entry.data.items()
+        if key not in RETIRED_GLOBAL_SETTINGS
+    }
+    options = {
+        key: value
+        for key, value in entry.options.items()
+        if key not in RETIRED_GLOBAL_SETTINGS
+    }
+    if data != entry.data or options != entry.options:
+        hass.config_entries.async_update_entry(entry, data=data, options=options)
+
+    registry = er.async_get(hass)
+    for key in RETIRED_GLOBAL_SETTINGS:
+        entity_id = registry.async_get_entity_id(
+            "select", DOMAIN, f"{entry.entry_id}_global_{key}"
+        )
+        if (
+            entity_id is not None
+            and (entity := registry.async_get(entity_id)) is not None
+            and entity.config_entry_id == entry.entry_id
+        ):
+            registry.async_remove(entity_id)
 
 
 async def async_setup_entry(
@@ -35,6 +69,7 @@ async def async_setup_entry(
 
     application = SchedulerApplication(hass, entry)
     await application.async_initialize()
+    _async_retire_controls(hass, entry)
     coordinator = AdaptiveRoboVacsCoordinator(application)
     entry.runtime_data = AdaptiveRoboVacsRuntimeData(
         coordinator=coordinator,

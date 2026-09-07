@@ -122,7 +122,7 @@ class AssignmentPlannerTests(unittest.TestCase):
                             "registry-a",
                             100,
                             False,
-                            "bedroom transit occupied",
+                            "occupancy occupied",
                         ),
                     ),
                 ),
@@ -132,7 +132,7 @@ class AssignmentPlannerTests(unittest.TestCase):
         self.assertEqual(plan.assignments, ())
         self.assertEqual(
             plan.blocks,
-            (("bedroom", "bedroom transit occupied"),),
+            (("bedroom", "occupancy occupied"),),
         )
 
 

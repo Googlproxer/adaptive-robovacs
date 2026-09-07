@@ -44,8 +44,6 @@ from custom_components.adaptive_robovacs.state import (
 ENTRY_DATA = {
     "observe_only": True,
     "forecast_confidence": 75,
-    "hall_start": "08:00",
-    "hall_end": "19:00",
     "unresolved_start": "00:00",
     "unresolved_end": "04:00",
 }
@@ -251,8 +249,6 @@ class SnapshotTests(unittest.TestCase):
             "observe_only": True,
             "party_mode": False,
             "forecast_confidence": 75,
-            "hall_start": "08:00",
-            "hall_end": "19:00",
             "unresolved_start": "00:00",
             "unresolved_end": "04:00",
         }

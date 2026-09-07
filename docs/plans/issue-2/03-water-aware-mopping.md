@@ -33,7 +33,7 @@ stage to proceed when water is unavailable or unobservable.
   stages into a simultaneous vacuum-and-mop command because that changes the
   requested order.
 - Every later stage repeats all normal scheduler safety checks. If the room or
-  an adjacent/transit room becomes occupied, persist the remaining stage and
+  an adjacent room becomes occupied, persist the remaining stage and
   wait for a newly valid safe window rather than continuing under the first
   stage's eligibility.
 - Water unavailability skips the mop stage for that occurrence. It never
@@ -146,7 +146,7 @@ transient water entity IDs.
 
 1. Resolve a compatible robot and immutable ordered stages for the due room.
 2. Before the first stage, evaluate all global, time-window, occupancy,
-   adjacency, bedroom-transit, battery, capability, approval, profile, and
+   adjacency, battery, capability, approval, profile, and
    mapping gates.
 3. Run normalized water readiness only when a mop stage reaches the front of
    the sequence and every preceding stage is terminal. For **Mop only** or
@@ -376,7 +376,7 @@ complete and mop is the current stage.
   just-in-time initial preflight and vacuum remains eligible.
 - Test **Mop only** with no water sends no clean command but advances the
   occurrence with `skipped_no_water`.
-- Test occupancy/adjacency/transit changes between stages, later same-window
+- Test occupancy/adjacency changes between stages, later same-window
   recovery, next-window recovery, restart, robot removal, and that completed
   stages never replay.
 - Test profile, adapter command, and start-confirmation failures on either stage

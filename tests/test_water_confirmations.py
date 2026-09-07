@@ -23,8 +23,6 @@ NOW = datetime(2026, 9, 5, 10, 0, tzinfo=UTC)
 ENTRY_DATA = {
     "observe_only": False,
     "forecast_confidence": 75,
-    "hall_start": "08:00",
-    "hall_end": "20:00",
     "unresolved_start": "01:00",
     "unresolved_end": "05:00",
 }

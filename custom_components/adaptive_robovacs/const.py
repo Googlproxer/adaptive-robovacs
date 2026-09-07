@@ -30,7 +30,6 @@ STARTUP_STATE_SETTLE_DELAY: Final = timedelta(minutes=1)
 # The documented labels may be shown as ``robovac-bedroom`` in the UI, but
 # their registry IDs are ``robovac_bedroom`` and so on.
 LABEL_BEDROOM: Final = "robovac_bedroom"
-LABEL_BEDROOM_TRANSIT: Final = "robovac_bedroom_transit"
 LABEL_EXCLUDE: Final = "robovac_exclude"
 LABEL_RADAR: Final = "robovac_radar"
 LABEL_EXCLUDE_OCCUPANCY: Final = "robovac_exclude_occupancy"
@@ -41,8 +40,6 @@ DEFAULT_MOP_INTERVAL: Final = 168
 DEFAULT_EXPECTED_MINUTES: Final = 30
 DEFAULT_MINIMUM_BATTERY: Final = 80
 DEFAULT_FORECAST_CONFIDENCE: Final = 80
-DEFAULT_HALL_START: Final = "09:00"
-DEFAULT_HALL_END: Final = "20:00"
 DEFAULT_UNRESOLVED_START: Final = "01:00"
 DEFAULT_UNRESOLVED_END: Final = "05:00"
 
@@ -62,8 +59,6 @@ SIGNAL_DISCOVERY_UPDATED: Final = f"{DOMAIN}_discovery_updated"
 
 CONF_OBSERVE_ONLY: Final = "observe_only"
 CONF_FORECAST_CONFIDENCE: Final = "forecast_confidence"
-CONF_HALL_START: Final = "hall_start"
-CONF_HALL_END: Final = "hall_end"
 CONF_UNRESOLVED_START: Final = "unresolved_start"
 CONF_UNRESOLVED_END: Final = "unresolved_end"
 

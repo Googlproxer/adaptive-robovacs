@@ -38,7 +38,7 @@ The work covers:
 
 ## Safety and migration constraints
 
-- Keep room occupancy, adjacency, bedroom-transit, Party Mode, and observe-only
+- Keep room occupancy, adjacency, Party Mode, and observe-only
   gates authoritative and repeat them immediately before every physical stage.
 - Keep observed robot state authoritative over persisted estimates after
   restart. Recovery must never replay a command merely because Store says a
@@ -116,7 +116,7 @@ entity, discovery, and integration lifecycle tests at their actual boundaries.
   robot is known before duration-dependent forecasting.
 - Calculate learned duration with the selected robot's stable identity and the
   exact operation/pass count.
-- Rerun window, vacancy, occupancy, adjacency, transit, readiness, and profile
+- Rerun window, vacancy, occupancy, adjacency, readiness, and profile
   compatibility immediately before preparation and again before dispatch where
   current architecture requires it.
 - Ensure occurrence previews and physical dispatch use the same resolved

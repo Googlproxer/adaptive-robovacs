@@ -125,7 +125,7 @@ only as a compatibility hint. Re-resolve and validate it on every send.
   current safe window.
 - Every normal gate is rechecked before the first stage and every later stage:
   scheduler halt, Party Mode, observe-only, daily window,
-  local/adjacent/bedroom-transit occupancy, robot readiness, telemetry-backed
+  local/adjacent occupancy, robot readiness, telemetry-backed
   water readiness or explicit water confirmation when the current stage is mop,
   profile compatibility, operation-specific pass support, and current Home
   Assistant area mapping/preflight.
@@ -338,7 +338,7 @@ profile, or clean merely because Store says authorization was active.
   dashboard press is a request, not authorization.
 - An unassigned, stale, or undeliverable bedroom fails closed with actionable
   room-card and Repairs guidance while unrelated rooms remain schedulable.
-- Approval cannot bypass scheduler halt, windows, local/adjacent/transit
+- Approval cannot bypass scheduler halt, windows, local/adjacent
   occupancy, robot readiness, water, profile, operation-specific passes, or
   final area-mapping preflight.
 - Restart neither duplicates nor forgets a request, and no active action token

@@ -488,8 +488,6 @@ class _RoomProfileSelect(AdaptiveEntity, SelectEntity):
 
 def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
     entities: list[AdaptiveEntity] = [
-        _TimeSelect(coordinator, "hall_start", "Bedroom-transit start"),
-        _TimeSelect(coordinator, "hall_end", "Bedroom-transit end"),
         _TimeSelect(coordinator, "unresolved_start", "Desired cleaning start"),
         _TimeSelect(coordinator, "unresolved_end", "Desired cleaning end"),
     ]

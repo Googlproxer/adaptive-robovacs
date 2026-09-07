@@ -26,8 +26,6 @@ from custom_components.adaptive_robovacs.state import (
 ENTRY_DATA = {
     "observe_only": False,
     "forecast_confidence": 75,
-    "hall_start": "08:00",
-    "hall_end": "19:00",
     "unresolved_start": "00:00",
     "unresolved_end": "04:00",
 }
@@ -79,7 +77,7 @@ def application() -> tuple[SchedulerApplication, _States]:
         "study",
         "Study",
         "ground",
-        frozenset({"robovac_bedroom_transit"}),
+        frozenset(),
     )
     robot = discovered_robot()
     app.discovery = DiscoverySnapshot(

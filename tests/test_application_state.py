@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -47,8 +48,6 @@ NOW = datetime(2026, 9, 5, 10, 0, tzinfo=UTC)
 ENTRY_DATA = {
     "observe_only": False,
     "forecast_confidence": 75,
-    "hall_start": "08:00",
-    "hall_end": "20:00",
     "unresolved_start": "01:00",
     "unresolved_end": "05:00",
 }
@@ -203,6 +202,87 @@ def active_job(*, occurrence_id: str | None = None) -> ActiveJob:
 
 
 class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
+    def test_retired_label_does_not_add_cross_room_or_daytime_gates(self) -> None:
+        app = state_application()
+        target = replace(room(), labels=frozenset({"robovac_bedroom_transit"}))
+        bedroom = replace(room("bedroom"), labels=frozenset({"robovac_bedroom"}))
+        app.discovery = DiscoverySnapshot(
+            app.discovery.robots,
+            MappingProxyType({target.area_id: target, bedroom.area_id: bedroom}),
+        )
+        bedroom_settings, bedroom_history = app.state.ensure_room(
+            bedroom.area_id, is_bedroom=bedroom.is_bedroom
+        )
+        self.assertFalse(bedroom_settings.enabled)
+        self.assertEqual(bedroom_settings.cleaning_interval, 168)
+        bedroom_history.occupancy = "occupied"
+        history = app.state.room_history[target.area_id]
+        history.occupancy = "unoccupied"
+        settings = app.state.room_settings[target.area_id]
+        settings.desired_window_start = "22:00"
+        settings.desired_window_end = "05:00"
+
+        with patch(
+            "custom_components.adaptive_robovacs.application_policy._local",
+            side_effect=lambda value: value,
+        ):
+            for hour in (23, 2):
+                with self.subTest(hour=hour):
+                    candidate, reason = app._room_candidate(
+                        target, NOW.replace(hour=hour)
+                    )
+                    self.assertIsNotNone(candidate, reason)
+                    self.assertEqual(reason, "ready")
+            history.occupancy = "occupied"
+            candidate, reason = app._room_candidate(target, NOW.replace(hour=2))
+            self.assertIsNone(candidate)
+            self.assertIn("occupancy occupied", reason)
+
+    def test_retired_label_uses_ordinary_unresolved_window_and_startup_policy(
+        self,
+    ) -> None:
+        app = state_application()
+        target = replace(room(), labels=frozenset({"robovac_bedroom_transit"}))
+        settings = app.state.room_settings[target.area_id]
+        settings.ignore_desired_window = True
+        settings.desired_window_start = "22:00"
+        settings.desired_window_end = "05:00"
+        app.state.room_history[target.area_id].occupancy = "unresolved"
+
+        with patch(
+            "custom_components.adaptive_robovacs.application_policy._local",
+            side_effect=lambda value: value,
+        ):
+            for hour, allowed in ((22, True), (2, True), (5, False), (12, False)):
+                with self.subTest(hour=hour):
+                    candidate, reason = app._room_candidate(
+                        target, NOW.replace(hour=hour)
+                    )
+                    self.assertEqual(candidate is not None, allowed, reason)
+                    if candidate is not None:
+                        self.assertTrue(candidate.unresolved_window_allowed)
+                    else:
+                        self.assertEqual(
+                            reason,
+                            "unresolved occupancy; waiting for desired cleaning window",
+                        )
+            app._startup_state_settle_until = NOW + timedelta(days=1)
+            candidate, reason = app._room_candidate(target, NOW.replace(hour=2))
+            self.assertIsNone(candidate)
+            self.assertEqual(reason, "awaiting Home Assistant state restoration")
+
+    async def test_retired_global_setting_commands_are_rejected_without_saving(
+        self,
+    ) -> None:
+        app = state_application()
+        for key in ("hall_start", "hall_end"):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValueError, "Unknown global setting"):
+                    await app.async_set_global(key, "12:00")
+                with self.assertRaisesRegex(ValueError, "Unknown global setting"):
+                    app.get_global_setting(key)
+        app.storage.async_save.assert_not_awaited()
+
     async def test_save_is_disabled_only_in_storage_safe_mode(self) -> None:
         app = state_application()
         await app._async_save()

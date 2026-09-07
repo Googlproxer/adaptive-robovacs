@@ -45,7 +45,6 @@ from .models import (
     effective_cleaning_program,
     expand_cleaning_program,
     forecast_vacancy,
-    in_daytime_window,
     learned_duration_estimate,
     manual_clean_robot_is_docked,
     map_recovery_hold_is_manual,
@@ -526,25 +525,6 @@ class ApplicationPolicyMixin:
         decisions.append(event)
         self.state.audit.room_decisions = decisions[-ROOM_DECISION_LIMIT:]
 
-    def _hall_allowed(self, now: datetime) -> tuple[bool, str]:
-        if not in_daytime_window(
-            _local(now),
-            self.state.global_settings.hall_start,
-            self.state.global_settings.hall_end,
-        ):
-            return False, "outside daytime window"
-        blocked = [
-            room.name
-            for room in self.discovery.rooms.values()
-            if room.is_bedroom
-            and self._room_data(room.area_id).occupancy != "unoccupied"
-        ]
-        return (
-            (False, "bedrooms not clear: " + ", ".join(blocked))
-            if blocked
-            else (True, "bedrooms clear")
-        )
-
     def _desired_window_allows(self, room: DiscoveredRoom, now: datetime) -> bool:
         """Apply the room's effective window unless it explicitly ignores it."""
 
@@ -562,7 +542,6 @@ class ApplicationPolicyMixin:
         window = self._desired_window(room)
         return unresolved_occupancy_allowed(
             self._room_data(room.area_id).occupancy,
-            room.is_bedroom_transit,
             _local(now),
             window.start,
             window.end,
@@ -701,14 +680,8 @@ class ApplicationPolicyMixin:
             and not unresolved_window_allowed
         ):
             if detail.occupancy == "unresolved":
-                if room.is_bedroom_transit:
-                    return None, "unresolved occupancy; bedroom-transit excluded"
                 return None, "unresolved occupancy; waiting for desired cleaning window"
             return None, (f"occupancy {detail.occupancy} ({detail.occupancy_source})")
-        if room.is_bedroom_transit and not manual_override:
-            allowed, reason = self._hall_allowed(now)
-            if not allowed:
-                return None, reason
         operation = CleaningOperation.VACUUM
         passes = 1
         if occurrence:

@@ -8,7 +8,6 @@ floor as a room. Use labels instead of editing configuration files:
 | Label | Apply to | Effect |
 | --- | --- | --- |
 | `robovac-bedroom` | Area | Defaults to disabled, weekly cleaning cadence. |
-| `robovac-bedroom-transit` | Area | Daytime-only; blocks while any bedroom is occupied. |
 | `robovac-exclude` | Area | Never scheduled. |
 | `robovac-radar` | Radar device (recommended) or occupancy binary sensor | Preferred over older occupancy/motion sensors. |
 | `robovac-exclude-occupancy` | Device | Never use any of that device's motion/occupancy sources when determining a room's occupancy. |
@@ -100,10 +99,8 @@ room **Ignore desired cleaning window** entity remains available for advanced
 Home Assistant use, although it is not shown on the simple room card; it lets
 an otherwise-safe clean run outside that window. A room with unresolved
 occupancy is eligible only inside its own effective desired window, even when
-that room ignores the usual timing preference. Bedroom-transit areas are never
-included in that unresolved exception: they retain their separate daytime-only
-and every-bedroom-clear rules. Party Mode and observe-only mode remain
-non-dispatching regardless of any room window setting.
+that room ignores the usual timing preference. Party Mode and observe-only
+mode remain non-dispatching regardless of any room window setting.
 
 Each vacuum has a default **Cleaning program** and each room can inherit it or
 override it with **Vacuum only**, **Mop only**, **Vacuum then mop**, or **Mop
@@ -134,7 +131,7 @@ Every discovered room has three integration-owned buttons:
   profile.
 
 These actions are explicit user overrides. They bypass the room cadence,
-desired window, occupancy and vacancy forecast, bedroom-transit rules,
+desired window, occupancy and vacancy forecast,
 configured room/robot enablement, battery threshold, scheduler holds, and the
 global scheduler halt. A discovered compatible robot on the room's floor must
 be physically docked. Party Mode, observe-only mode, storage-safe mode, startup

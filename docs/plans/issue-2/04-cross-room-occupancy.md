@@ -12,16 +12,16 @@ occupied blocks B and B being occupied blocks A. Only direct, single-hop
 neighbors are evaluated; adjacency is not transitively expanded. The first
 release includes an editor launched from each target room card.
 
-## v1.4.4 baseline and gap
+## Baseline and gap
 
-Ordinary rooms evaluate only their own radar/fallback sources. Bedroom-transit
-rooms additionally require every labeled bedroom to be clear. There is no
-durable room-adjacency graph or diagnostic that distinguishes local occupancy
-from an adjacent-room block.
+Rooms evaluate only their own radar/fallback sources. There is no scheduling
+adjacency graph or diagnostic that distinguishes local occupancy from an
+adjacent-room block. Existing floor-plan links are presentation data and do not
+add occupancy gates.
 
-The scheduler now loads through the typed schema-v6 `SchedulerState` codec,
+The scheduler now loads through the typed schema-16 `SchedulerState` codec,
 uses registry identity for durable robot-owned data, selects a robot before its
-duration-dependent vacancy forecast, and gates/drains coordinator-owned tasks
+duration-dependent vacancy forecast, and gates/drains application-owned tasks
 during config-entry unload. Adjacency is a room-level gate and does not depend
 on robot identity, but it must participate in both the pre-assignment candidate
 decision and every post-assignment safety recheck. Its state, services,
@@ -38,11 +38,9 @@ single-choice select merely to fit the existing renderer.
 
 - Store a canonical undirected graph as sorted area-ID pairs, not duplicated
   one-way settings. Area IDs come from Home Assistant's area registry.
-- A room's mandatory occupancy scope is itself, its direct neighbors, and, for
-  bedroom-transit areas, the existing all-bedroom scope.
+- A room's mandatory occupancy scope is itself and its direct neighbors.
 - Any observed occupied room blocks a new clean and identifies the blocker in
-  safe status data. A custom adjacency cannot weaken local or bedroom-transit
-  rules.
+  safe status data. A custom adjacency cannot weaken local occupancy rules.
 - Reuse the scheduler's existing unresolved/no-sensor policy for a discovered
   adjacent room. A saved reference that no longer resolves to a discovered
   scheduler room fails closed until discovery recovers or the edge is removed.
@@ -73,8 +71,8 @@ single-choice select merely to fit the existing renderer.
 
 1. Add pure graph normalization and occupancy-scope decisions in `models.py`.
    Return `allowed`, conservative confidence, stable reason codes, and direct
-   blocking area IDs. Cover local, neighbor, unresolved, missing-reference,
-   and bedroom-transit combinations in `tests/test_models.py`.
+   blocking area IDs. Cover local, neighbor, unresolved, and missing-reference
+   combinations in `tests/test_models.py`.
 2. Extend typed `SchedulerState` with canonical adjacency edges and strict
    decoding. Normalize each edge lexically, deduplicate it, reject self-edges,
    and retain temporarily missing area IDs for diagnosis. Bump from the Store
@@ -100,7 +98,7 @@ single-choice select merely to fit the existing renderer.
    then repeat it after robot-specific duration resolution and immediately
    before profile application/dispatch. Use the same path for scheduled and
    `manual_dashboard` occurrences.
-6. Include blocker kind (`local`, `adjacent`, or `bedroom_transit`), adjacent
+6. Include blocker kind (`local` or `adjacent`), adjacent
    room names, missing references, and confidence in room status and schedule
    preview data produced by `projections.py`. Add stable room-owned entity roles
    so only the selected room card receives them. Keep names presentation-only
@@ -130,7 +128,7 @@ single-choice select merely to fit the existing renderer.
   safe mode without overwriting the saved payload, while an older valid payload
   migrates exactly once.
 - Test interactions with desired windows, unresolved occupancy, Party Mode,
-  observe-only mode, and the stricter bedroom-transit aggregate.
+  and observe-only mode.
 - Test adjacency becoming occupied between ordered vacuum/mop stages: the
   running stage is not stopped, the remaining stage does not start, and it
   resumes only through a fresh safe-window evaluation.

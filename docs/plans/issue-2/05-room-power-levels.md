@@ -142,7 +142,7 @@ is not reclassified as a dashboard request.
   resolves it only when mop is current.
 - Once a compatible robot is chosen, calculate forecast eligibility with its
   registry-keyed duration samples for the exact operation and pass count.
-  Repeat current window, occupancy/adjacency/transit, readiness, capability,
+  Repeat current window, occupancy/adjacency, readiness, capability,
   and profile checks before preparation and physical dispatch; the room-level
   estimate must never be the final approval to start.
 - The robot chosen for an occurrence supplies all inherited defaults and remains
@@ -157,7 +157,7 @@ is not reclassified as a dashboard request.
   saved cadence, program, profile, pass overrides, or robot defaults.
 - Manual authority is not a general safety bypass. Storage safe mode, config
   entry shutdown, the durable scheduler halt, Party Mode, observe-only mode,
-  local occupancy, unresolved occupancy, bedroom-transit restrictions, robot
+  local occupancy, unresolved occupancy, robot
   activity/readiness/battery, adapter compatibility, carpet exclusion, water
   preflight/confirmation, and current Home Assistant area mapping remain
   mandatory. After plan 4, adjacent-room occupancy automatically joins this
@@ -286,7 +286,7 @@ than adding vendor branches to orchestration.
   skips that stage. A no-sensor robot requires an unexpired explicit user
   confirmation instead. Both paths leave vacuum stages eligible regardless of
   ordering.
-- Completed stages remain completed. Occupancy, adjacency, transit, battery, or
+- Completed stages remain completed. Occupancy, adjacency, battery, or
   window changes between stages persist the remaining sequence and return it
   through normal candidate evaluation.
 - Profile/program/capability changes during a pending occurrence invalidate its
@@ -417,7 +417,7 @@ live discovery.
   override only the program and never mutate saved settings.
 - Test that a safe press bypasses due time and the room desired window, while
   Party Mode, observe-only/storage-safe/closing/halted states, occupancy,
-  unresolved occupancy, bedroom-transit policy, busy robots, battery,
+  unresolved occupancy, busy robots, battery,
   capability, carpet, water, mapping, and profile checks still reject it.
 - Test an initially blocked/duplicate press records one bounded visible outcome
   but creates no occurrence, delayed evaluation, cadence change, Repair, or

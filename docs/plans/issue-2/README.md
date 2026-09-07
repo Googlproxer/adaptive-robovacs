@@ -132,9 +132,8 @@ Every implementation must retain these repository contracts:
   may use native commands only after resolving the requested area through the
   selected vacuum's current Home Assistant area mapping. Native target IDs are
   transient and must never be hard-coded, persisted, logged, or projected.
-- Keep Party Mode and observe-only mode non-dispatching. Occupancy and
-  bedroom-transit rules remain mandatory and are rechecked immediately before
-  dispatch.
+- Keep Party Mode and observe-only mode non-dispatching. Room-local occupancy
+  rules remain mandatory and are rechecked immediately before dispatch.
 - Persist scheduler-owned settings, pending work, and migrations through Home
   Assistant `Store`. Robot observations remain authoritative over saved
   estimates after a restart.
@@ -197,7 +196,7 @@ Every implementation must retain these repository contracts:
   clean after config-entry unload begins.
 - Treat dashboard manual room actions as integration-owned occurrences, not as
   observed external service calls. They may bypass cadence and the room desired
-  window, but never occupancy/transit, Party Mode, observe-only/storage-safe/
+  window, but never occupancy, Party Mode, observe-only/storage-safe/
   halted/closing state, readiness, water/approval, profile, mapping, or
   start-confirmation gates.
 - Treat each shipped item as an integration release: bump `manifest.json`, run

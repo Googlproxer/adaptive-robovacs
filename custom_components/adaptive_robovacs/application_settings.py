@@ -224,8 +224,6 @@ class ApplicationSettingsMixin:
             "observe_only",
             "party_mode",
             "forecast_confidence",
-            "hall_start",
-            "hall_end",
             "unresolved_start",
             "unresolved_end",
         }:
@@ -410,8 +408,6 @@ class ApplicationSettingsMixin:
             "observe_only",
             "party_mode",
             "forecast_confidence",
-            "hall_start",
-            "hall_end",
             "unresolved_start",
             "unresolved_end",
         }:

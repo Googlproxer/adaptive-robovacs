@@ -1692,9 +1692,8 @@ def resolve_daily_window(
 def in_daytime_window(now: datetime, start: str, end: str) -> bool:
     """Return whether a local time is in a configured half-open time range.
 
-    The scheduler uses the same helper for the daytime bedroom-transit policy
-    and the overnight unresolved-occupancy policy.  Supporting windows that
-    cross midnight avoids treating a valid night range as empty.
+    Supporting windows that cross midnight avoids treating a valid night
+    range as empty.
     """
 
     if not is_valid_daily_time(start) or not is_valid_daily_time(end) or start == end:
@@ -1733,18 +1732,13 @@ def desired_window_allows(
 
 def unresolved_occupancy_allowed(
     occupancy: str,
-    is_bedroom_transit: bool,
     now: datetime,
     start: str,
     end: str,
 ) -> bool:
-    """Allow only ordinary unresolved rooms in the desired cleaning window."""
+    """Allow unresolved occupancy only in the desired cleaning window."""
 
-    return (
-        occupancy == "unresolved"
-        and not is_bedroom_transit
-        and in_daytime_window(now, start, end)
-    )
+    return occupancy == "unresolved" and in_daytime_window(now, start, end)
 
 
 def select_operation(

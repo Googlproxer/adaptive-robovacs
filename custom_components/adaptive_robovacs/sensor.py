@@ -265,7 +265,6 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
             "room": room.name,
             "floor_id": room.floor_id,
             "bedroom": room.bedroom,
-            "bedroom_transit": room.bedroom_transit,
             "ignore_desired_window": room.ignore_desired_window,
             "desired_window_configured_start": room.desired_window_configured_start,
             "desired_window_configured_end": room.desired_window_configured_end,

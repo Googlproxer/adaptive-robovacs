@@ -68,7 +68,7 @@ command order and the resulting clean behavior.
   transient: do not persist, log, project, or hard-code them.
 - Scheduled work preserves all eligibility gates. Dashboard manual cleans are
   an explicit user override: they bypass room enablement, cadence, desired
-  windows, occupancy, vacancy forecasting, bedroom-transit checks, battery
+  windows, occupancy, vacancy forecasting, battery
   thresholds, scheduler holds, and a scheduler halt. They still require a
   discovered same-floor robot that is physically docked and can address the
   selected room, plus a dispatchable profile. Party Mode and observe-only

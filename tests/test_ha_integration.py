@@ -69,8 +69,6 @@ def empty_snapshot() -> IntegrationSnapshot:
         scheduler_limited=False,
         storage_safe_mode=False,
         forecast_confidence=75,
-        hall_start="08:00",
-        hall_end="19:00",
         unresolved_start="00:00",
         unresolved_end="04:00",
         last_evaluation_at=None,
@@ -200,6 +198,108 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime.application.shutdown_cancelled)
         self.assertTrue(runtime.application.listener_removed)
 
+    async def test_setup_retires_only_owned_controls_once_before_platform_setup(
+        self,
+    ) -> None:
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            entry_id="entry-retire",
+            data={"observe_only": True, "hall_start": "invalid", "hall_end": "20:00"},
+            options={"hall_start": "08:00", "retained": "value"},
+        )
+        other = MockConfigEntry(domain=DOMAIN, entry_id="entry-other")
+        entry.add_to_hass(self.hass)
+        other.add_to_hass(self.hass)
+        registry = er.async_get(self.hass)
+        retired = [
+            registry.async_get_or_create(
+                "select", DOMAIN, f"{entry.entry_id}_global_{key}", config_entry=entry
+            ).entity_id
+            for key in ("hall_start", "hall_end")
+        ]
+        retired[0] = registry.async_update_entity(
+            retired[0], new_entity_id="select.user_renamed_control"
+        ).entity_id
+        retained = [
+            registry.async_get_or_create(
+                domain, platform, unique_id, config_entry=owner
+            ).entity_id
+            for domain, platform, unique_id, owner in (
+                ("select", DOMAIN, f"{entry.entry_id}_global_unresolved_start", entry),
+                ("sensor", DOMAIN, f"{entry.entry_id}_global_hall_start", entry),
+                (
+                    "select",
+                    "another_platform",
+                    f"{entry.entry_id}_global_hall_start",
+                    entry,
+                ),
+                ("select", DOMAIN, f"{other.entry_id}_global_hall_start", other),
+            )
+        ]
+
+        async def forward(*_args):
+            self.assertEqual(entry.data, {"observe_only": True})
+            self.assertEqual(entry.options, {"retained": "value"})
+            self.assertTrue(
+                all(registry.async_get(entity_id) is None for entity_id in retired)
+            )
+            self.assertTrue(
+                all(registry.async_get(entity_id) is not None for entity_id in retained)
+            )
+
+        with (
+            patch(
+                "custom_components.adaptive_robovacs.integration_core.SchedulerApplication",
+                _FakeApplication,
+            ),
+            patch.object(
+                self.hass.config_entries,
+                "async_forward_entry_setups",
+                AsyncMock(side_effect=forward),
+            ),
+            patch.object(
+                self.hass.config_entries,
+                "async_unload_platforms",
+                AsyncMock(return_value=True),
+            ),
+            patch.object(
+                self.hass.config_entries,
+                "async_update_entry",
+                wraps=self.hass.config_entries.async_update_entry,
+            ) as update,
+        ):
+            for _ in range(2):
+                self.assertTrue(await async_setup_entry(self.hass, entry))
+                self.assertTrue(await async_unload_entry(self.hass, entry))
+            update.assert_called_once()
+
+    async def test_retired_unique_id_owned_by_another_entry_is_preserved(self) -> None:
+        entry = MockConfigEntry(domain=DOMAIN, entry_id="entry-retire")
+        other = MockConfigEntry(domain=DOMAIN, entry_id="entry-other")
+        entry.add_to_hass(self.hass)
+        other.add_to_hass(self.hass)
+        registry = er.async_get(self.hass)
+        mismatched = registry.async_get_or_create(
+            "select", DOMAIN, f"{entry.entry_id}_global_hall_start", config_entry=other
+        )
+        with (
+            patch(
+                "custom_components.adaptive_robovacs.integration_core.SchedulerApplication",
+                _FakeApplication,
+            ),
+            patch.object(
+                self.hass.config_entries, "async_forward_entry_setups", AsyncMock()
+            ),
+            patch.object(
+                self.hass.config_entries,
+                "async_unload_platforms",
+                AsyncMock(return_value=True),
+            ),
+        ):
+            self.assertTrue(await async_setup_entry(self.hass, entry))
+            self.assertIsNotNone(registry.async_get(mismatched.entity_id))
+            self.assertTrue(await async_unload_entry(self.hass, entry))
+
     async def test_rejected_platform_unload_reopens_the_application(self) -> None:
         entry = MockConfigEntry(domain=DOMAIN, entry_id="entry-rejected")
         application = _FakeApplication(self.hass, entry)
@@ -294,8 +394,6 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
             data={
                 "observe_only": True,
                 "forecast_confidence": 75,
-                "hall_start": "08:00",
-                "hall_end": "19:00",
                 "unresolved_start": "00:00",
                 "unresolved_end": "04:00",
             },
@@ -329,8 +427,6 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
             data={
                 "observe_only": True,
                 "forecast_confidence": 75,
-                "hall_start": "00:00",
-                "hall_end": "23:45",
                 "unresolved_start": "00:00",
                 "unresolved_end": "23:45",
             },
