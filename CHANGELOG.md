@@ -7,6 +7,22 @@ v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
 ## [1.14.0] - Unreleased
 
+### Added
+
+- Room-scoped recovery for errors during scheduler or dashboard single-room
+  cleans. A persistent Repair blocks the interrupted room while a safely docked,
+  recovered robot can clean other eligible rooms.
+- Repair confirmation permits a scheduled retry of only the unfinished stage,
+  retaining completed work and clearing saved manual bypasses. Confirmation
+  sends no physical command and cannot acknowledge a newer interruption.
+- Schema 17 stores recovery episodes separately from mapping/profile faults and
+  reconstructs matching legacy error holds from fresh observations on startup.
+
+### Changed
+
+- Updated the Home Assistant requirement and test environment to 2026.9.1,
+  pytest-homeassistant-custom-component to 0.13.364, and CI Python to 3.14.7.
+
 ### Removed
 
 - Removed bedroom-transit label handling, the aggregate bedroom occupancy gate,

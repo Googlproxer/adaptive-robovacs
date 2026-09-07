@@ -23,10 +23,13 @@ from .application_faults import ApplicationFaultMixin
 from .application_jobs import ApplicationJobsMixin
 from .application_policy import ApplicationPolicyMixin
 from .application_recovery import ApplicationRecoveryMixin
+from .application_room_recovery import ApplicationRoomRecoveryMixin
 from .application_settings import ApplicationSettingsMixin
 from .application_water import ApplicationWaterMixin
 from .command_queue import ApplicationCommandQueue
 from .commands import (
+    AcknowledgeRobotErrorCommand,
+    AcknowledgeRoomRecoveryCommand,
     ActivateRetainedMapCommand,
     CaptureMapSnapshotCommand,
     ClearLegacyDeferralsCommand,
@@ -142,6 +145,7 @@ class SchedulerApplication(
     ApplicationPolicyMixin,
     ApplicationFaultMixin,
     ApplicationRecoveryMixin,
+    ApplicationRoomRecoveryMixin,
     ApplicationJobsMixin,
     ApplicationWaterMixin,
 ):
@@ -164,6 +168,8 @@ class SchedulerApplication(
         self._start_confirmation_timers: dict[str, Callable[[], None]] = {}
         self._ready_confirmation_timers: dict[str, Callable[[], None]] = {}
         self._ready_since: dict[str, datetime] = {}
+        self._room_recovery_since: dict[str, datetime] = {}
+        self._room_recovery_timers: dict[str, Callable[[], None]] = {}
         self._water_confirmation_timers: dict[str, Callable[[], None]] = {}
         self._startup_state_settle_until: datetime | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -257,6 +263,7 @@ class SchedulerApplication(
         if self.state.robot_faults or self.state.room_faults:
             self._sync_dispatch_fault_issues()
         await self._async_recover_active_jobs()
+        self._sync_room_recovery_issues()
         await self._async_restore_water_confirmations()
         await self.async_execute(
             EvaluateCommand(
@@ -280,6 +287,8 @@ class SchedulerApplication(
             self._start_confirmation_timers.popitem()[1]()
         while self._ready_confirmation_timers:
             self._ready_confirmation_timers.popitem()[1]()
+        while self._room_recovery_timers:
+            self._room_recovery_timers.popitem()[1]()
         while self._water_confirmation_timers:
             self._water_confirmation_timers.popitem()[1]()
         current = asyncio.current_task()
@@ -335,6 +344,16 @@ class SchedulerApplication(
                 old_state=old_state,
                 new_state=new_state,
             ):
+                if old_state != new_state:
+                    for robot in self.discovery.robots.values():
+                        capabilities = robot.adapter_capabilities
+                        if entity_id in {
+                            robot.entity_id,
+                            capabilities.readiness_entity_id,
+                            capabilities.completion_status_entity_id,
+                            *capabilities.error_entity_ids,
+                        }:
+                            self._reset_room_recovery_dock(robot.registry_id)
                 if entity_id in self.discovery.robots:
                     self.map_recovery.handle_state_transition(
                         entity_id,
@@ -422,6 +441,18 @@ class SchedulerApplication(
             case RecheckRoomFaultCommand(area_id=area_id):
                 return CommandResult.from_mapping(
                     {"cleared": await self.async_recheck_room_fault(area_id)}
+                )
+            case AcknowledgeRoomRecoveryCommand(
+                area_id=area_id, recovery_id=recovery_id
+            ):
+                return CommandResult.from_mapping(
+                    await self.async_acknowledge_room_recovery(area_id, recovery_id)
+                )
+            case AcknowledgeRobotErrorCommand(
+                robot_registry_id=registry_id, held_at=held_at
+            ):
+                return CommandResult.from_mapping(
+                    await self.async_acknowledge_robot_error(registry_id, held_at)
                 )
             case RecheckTwoPassCompatibilityCommand(area_id=area_id):
                 return CommandResult.from_mapping(

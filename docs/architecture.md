@@ -37,7 +37,7 @@ command instead of re-entering a transaction.
 
 `models.py`, `planner.py`, `jobs.py`, and `state.py` contain identifiers,
 enums, typed values, pure scheduling rules, whole-plan allocation, lifecycle
-reducers, and the schema-16 Store model. They do not import Home Assistant.
+reducers, and the schema-17 Store model. They do not import Home Assistant.
 The reducers return transitions and effects; they do not call services or
 mutate a coordinator.
 
@@ -54,6 +54,9 @@ without rebuilding a second god file:
 - `application_recovery.py` restores checkpoints and owns recovery timers,
   while `application_jobs.py` applies pure lifecycle reducers to observed
   robot state.
+- `application_room_recovery.py` shares live/startup error recovery and serialized
+  Repair acknowledgement. It persists room blocks, interrupted occurrences, and
+  robot/job detachment together before exposing a released robot to scheduling.
 - `application_policy.py` supplies observations and pure scheduling inputs.
 - `application_settings.py` owns typed configuration and floor-plan changes.
 - `application_faults.py` and `application_water.py` own their scoped workflows.
@@ -103,11 +106,19 @@ action. A retained alias preserves existing Adaptive RoboVacs unique IDs after
 a vacuum entity rename.
 
 The scheduler Store keeps its existing key and envelope version. Internal
-schemas 1 through 15 migrate to schema 16 only after the entire payload parses
+schemas 1 through 16 migrate to schema 17 only after the entire payload parses
 and validates. An unresolved legacy identity is retained as a typed unresolved
-reference, cannot dispatch, and creates a Repair. Malformed schema-16 data or a
+reference, cannot dispatch, and creates a Repair. Malformed retained data or a
 newer schema is never overwritten; the entry starts in storage-safe,
 observe-only mode and publishes its diagnostic state.
+
+Room recovery records are separate from mapping/profile faults and carry stable
+room, robot, occurrence, stage, and episode identities. Ten continuous seconds
+of fresh, docked, terminal-ready, error-free observations permit detachment;
+restart settling and unsafe or missing evidence reset the interval. Repair
+confirmation clears only the matching detached episode and manual bypasses.
+It does not dispatch. Error-interrupted work earns no completion or duration
+credit; only the retained unfinished stage becomes eligible after confirmation.
 
 ## Dispatch invariants
 

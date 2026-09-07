@@ -1,7 +1,8 @@
 # Migrating to Adaptive RoboVacs 1.14.0
 
-Version 1.14.0 removes bedroom-transit handling. Home Assistant 2026.9 and
-Python 3.14.2 remain the minimum supported versions. This is a breaking release
+Version 1.14.0 adds room-scoped robot-error recovery and removes bedroom-transit
+handling. Home Assistant 2026.9.1 and Python 3.14.2 are the minimum supported
+versions; the pinned CI interpreter is Python 3.14.7. This is a breaking release
 because it removes supported controls and a room attribute.
 
 ## Removed behavior and interfaces
@@ -29,7 +30,9 @@ release does not use floor-plan links for scheduling decisions.
 
 ## Automatic cleanup and durable state
 
-The scheduler keeps its Store key, Store envelope version, and schema 16.
+The scheduler keeps its Store key and Store envelope version, and advances the
+internal payload from schema 16 to schema 17. Schema-16 data is validated before
+migration; schema 17 adds a dedicated collection of room recovery episodes.
 Obsolete global settings are ignored, even if their retired values are invalid.
 An otherwise-valid payload containing them is marked for a validated rewrite
 without those keys. All other durable state is preserved, including active jobs,
@@ -43,6 +46,42 @@ data and options and removes only that entry's obsolete select registry records.
 Matching uses domain, integration platform, stable unique ID, and config-entry
 ownership, so renamed controls are retired without changing unrelated entities.
 Other entities keep their IDs and histories. Cleanup does not purge recorder data.
+
+## Recovering interrupted rooms
+
+An error during an integration-owned, single-room scheduled or dashboard clean
+creates a persistent, fixable room Repair. The room schedule displays
+**Room blocked — recovery confirmation required** with a safe reason. Mapping
+and profile faults remain separate and require their own resolution.
+
+The original job and robot hold remain until fresh observations show ten
+continuous seconds docked, terminal-ready, and free of robot errors. Startup
+settling, unavailable or ambiguous configured diagnostics, and readiness flaps
+reset this interval. Adapters without separate error diagnostics use their
+existing vacuum and readiness observations. Dock servicing and water readiness
+remain subject to normal operation-specific rules.
+
+After that interval, one saved transition detaches the job, releases its robot
+hold, retains the occurrence, and resets only its interrupted stage to pending.
+The room remains blocked, while the robot can clean other eligible rooms.
+Returning to dock after an unresolved error does not count as successful
+cleaning, advance cadence, or produce a duration sample. A physical resume
+observed before detachment instead resumes tracking and removes that episode's
+Repair.
+
+Submit the room Repair to permit the unfinished stage to retry later. Opening
+or dismissing it does not acknowledge the interruption. Confirmation verifies
+the current episode, detached job, room, and occurrence, clears saved manual
+bypasses, and sends no physical command. It can be accepted while the robot
+cleans elsewhere. The subsequent scheduler evaluation still checks occupancy,
+battery, cleaning windows, water, mapping, profiles, Party Mode, and observe-only
+mode. Completed stages, passes, profiles, and the assigned robot are retained.
+
+Existing matching `robot_error` checkpoints are reconstructed on startup using
+fresh observations, including errors saved by schema 16. No elapsed-time
+estimate establishes completion. An ambiguous association retains its robot
+hold and gets a robot Repair requiring safe docking and explicit abandonment
+of the old checkpoint. No cleaning is credited by that confirmation.
 
 ## Deployment
 

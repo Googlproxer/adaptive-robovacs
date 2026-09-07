@@ -27,7 +27,7 @@ from .models import (
     stage_pass_count,
 )
 from .planner import CandidateRobotDecision, ScheduleCandidate, VacancyDiagnostic
-from .repairs_manager import fault_summary
+from .repairs_manager import fault_summary, room_recovery_summary
 from .snapshots import (
     ActiveJobView,
     CandidateView,
@@ -51,6 +51,7 @@ from .snapshots import (
     RobotSettingsView,
     RobotView,
     RoomDecisionView,
+    RoomRecoveryView,
     RoomView,
     SchedulerView,
     WaterConfirmationView,
@@ -65,6 +66,7 @@ from .state import (
     RobotSettings,
     RoomDecisionRecord,
     RoomHistory,
+    RoomRecovery,
     RoomSettings,
     SchedulerFault,
     SchedulerState,
@@ -348,6 +350,28 @@ def _fault_view(source: ProjectionSource, fault: SchedulerFault) -> FaultView:
     )
 
 
+def room_recovery_view(
+    source: ProjectionSource, recovery: RoomRecovery
+) -> RoomRecoveryView:
+    robot = source.robot_for_registry_id(recovery.robot_registry_id)
+    room = source.discovery.rooms.get(recovery.room_area_id)
+    return RoomRecoveryView(
+        recovery.recovery_id,
+        recovery.occurrence_id,
+        recovery.stage_index,
+        recovery.operation,
+        recovery.detached_at,
+        FaultView(
+            "room_error_recovery",
+            room_recovery_summary(recovery.error_category),
+            recovery.interrupted_at,
+            "awaiting_confirmation" if recovery.detached_at else "awaiting_safe_dock",
+            robot.name if robot else None,
+            room.name if room else None,
+        ),
+    )
+
+
 def room_view(source: ProjectionSource, area_id: str) -> RoomView:
     """Build typed, immutable state for one discovered area."""
 
@@ -612,6 +636,11 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
             else None
         ),
         failure=_fault_view(source, room_fault) if room_fault else None,
+        recovery=(
+            room_recovery_view(source, recovery)
+            if (recovery := source.state.room_recoveries.get(area_id))
+            else None
+        ),
     )
 
 
@@ -791,7 +820,15 @@ def build_snapshot(source: ProjectionSource) -> IntegrationSnapshot:
         _fault_view(source, fault)
         for _key, fault in sorted(source.state.room_faults.items())
     )
-    all_faults = (*robot_faults, *room_faults)
+    recoveries = tuple(
+        room_recovery_view(source, recovery)
+        for _, recovery in sorted(source.state.room_recoveries.items())
+    )
+    all_faults = (
+        *robot_faults,
+        *room_faults,
+        *(recovery.failure for recovery in recoveries),
+    )
     singular_fault = all_faults[0] if len(all_faults) == 1 else None
     robots = tuple(
         robot_view(source, robot.entity_id)
@@ -847,6 +884,7 @@ def build_snapshot(source: ProjectionSource) -> IntegrationSnapshot:
         ),
         robot_faults=robot_faults,
         room_faults=room_faults,
+        room_recoveries=recoveries,
         floor_plan=plan,
         failure=singular_fault,
     )

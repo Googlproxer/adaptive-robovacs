@@ -238,6 +238,22 @@ def reduce_job_cancellation(
     )
 
 
+def interrupted_occurrence(
+    occurrence: CleaningOccurrence, stage_index: int
+) -> CleaningOccurrence:
+    """Retain completed work and reset exactly one abandoned physical attempt."""
+
+    stages = list(occurrence.stages)
+    stages[stage_index] = replace(
+        stages[stage_index],
+        status=StageStatus.PENDING,
+        started_at=None,
+        completed_at=None,
+        reason="robot_error_recovery",
+    )
+    return replace(occurrence, stages=stages)
+
+
 def reduce_job_completion(
     robot_entity_id: str,
     robot_registry_id: str,

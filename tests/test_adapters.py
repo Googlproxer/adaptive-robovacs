@@ -931,6 +931,33 @@ class RoborockReadinessTests(unittest.TestCase):
 
 
 class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_robot_error_discovery_excludes_dock_errors_and_keeps_ambiguity(self):
+        error = base.AdapterEntityEvidence(
+            "sensor.native_error",
+            "sensor",
+            "roborock",
+            "vacuum_error",
+            "enum",
+            "robot_trapped",
+        )
+        dock_error = replace(
+            error, entity_id="sensor.dock_error", translation_key="dock_error"
+        )
+        context = replace(
+            self._context("roborock", send_command=True), entities=(dock_error, error)
+        )
+        _, capabilities, _ = await registry.async_resolve_adapter(None, context)
+        self.assertEqual(capabilities.error_entity_ids, (error.entity_id,))
+        self.assertIn(error.entity_id, capabilities.watched_entity_ids)
+        self.assertNotIn(dock_error.entity_id, capabilities.error_entity_ids)
+        duplicate = replace(error, entity_id="sensor.second_error")
+        _, capabilities, _ = await registry.async_resolve_adapter(
+            None, replace(context, entities=(error, duplicate))
+        )
+        self.assertEqual(
+            capabilities.error_entity_ids, (error.entity_id, duplicate.entity_id)
+        )
+
     def setUp(self) -> None:
         original_async_get = roborock.er.async_get
         roborock.er.async_get = lambda _hass: types.SimpleNamespace(

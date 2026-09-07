@@ -49,6 +49,7 @@ from custom_components.adaptive_robovacs.snapshots import (
     MapView,
     ObservedProfileView,
     RobotSettingsView,
+    RoomRecoveryView,
     SchedulerView,
 )
 
@@ -72,6 +73,7 @@ def scheduler_view() -> SchedulerView:
         room_faults=(),
         floor_plan=plan,
         failure=None,
+        room_recoveries=(),
     )
 
 
@@ -230,6 +232,7 @@ def room_view(area_id: str = "study", name: str = "Study"):
         last_stage_summary="Vacuum completed",
         water_notification_episode=None,
         failure=None,
+        recovery=None,
     )
 
 
@@ -632,6 +635,50 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manual.native_value, "never requested")
         room.latest_manual_request = SimpleNamespace(outcome="awaiting_confirmation")
         self.assertEqual(manual.native_value, "awaiting confirmation")
+
+    def test_room_recovery_presentation_preserves_independent_mapping_fault(
+        self,
+    ) -> None:
+        room = self.coordinator.data.rooms[0]
+        room.recovery = RoomRecoveryView(
+            "episode",
+            "occurrence",
+            1,
+            CleaningOperation.MOP,
+            WHEN,
+            FaultView(
+                "room_error_recovery",
+                "The robot became trapped.",
+                WHEN,
+                "awaiting_confirmation",
+                "Alpha",
+                "Study",
+            ),
+        )
+        room_entity = sensor._RoomScheduleSensor(self.coordinator, "study", "Study")
+        self.assertEqual(
+            room_entity.native_value, "Room blocked — recovery confirmation required"
+        )
+        attributes = room_entity.extra_state_attributes
+        self.assertTrue(attributes["repair_active"])
+        self.assertEqual(
+            attributes["room_recovery"]["failure"]["failure_phase"],
+            "awaiting_confirmation",
+        )
+        room.failure = FaultView(
+            "area_mapping_stale",
+            "Check the mapping.",
+            WHEN,
+            "mapping",
+            "Alpha",
+            "Study",
+        )
+        attributes = room_entity.extra_state_attributes
+        self.assertEqual(attributes["failure_code"], "area_mapping_stale")
+        self.assertEqual(
+            attributes["room_recovery"]["failure"]["failure_code"],
+            "room_error_recovery",
+        )
 
     async def test_each_platform_setup_uses_runtime_coordinator(self) -> None:
         entry = SimpleNamespace(

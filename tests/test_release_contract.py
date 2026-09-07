@@ -17,7 +17,7 @@ class ReleaseContractTests(unittest.TestCase):
         )
         self.assertEqual(hacs["name"], manifest["name"])
         self.assertEqual(manifest["version"], "1.14.0")
-        self.assertEqual(hacs["homeassistant"], "2026.9.0")
+        self.assertEqual(hacs["homeassistant"], "2026.9.1")
 
     def test_dashboard_sources_are_byte_identical(self) -> None:
         integration_dashboard = (

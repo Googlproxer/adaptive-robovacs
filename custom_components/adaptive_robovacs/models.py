@@ -248,6 +248,57 @@ class RobotObservation:
     state: str | None
     battery: float | None
     cleaning_timer_minutes: float | None = None
+    error: RobotErrorObservation = field(
+        default_factory=lambda: RobotErrorObservation()
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RobotErrorObservation:
+    """Normalized diagnostic evidence; raw vendor text never leaves the adapter."""
+
+    status: Literal["unsupported", "clear", "error", "unknown"] = "unsupported"
+    category: str = "robot_error"
+
+
+ROBOT_ERROR_CATEGORIES = frozenset(
+    {"robot_error", "robot_trapped", "brush_jammed", "wheels_jammed", "sensor_error"}
+)
+
+
+def normalize_robot_error(value: str | None) -> RobotErrorObservation:
+    """Normalize a registry-identified robot error sensor conservatively."""
+
+    if value in {None, "unknown", "unavailable"}:
+        return RobotErrorObservation("unknown")
+    if value in {"none", "ok", "no_error"}:
+        return RobotErrorObservation("clear")
+    categories = {
+        "robot_trapped": "robot_trapped",
+        "main_brush_jammed": "brush_jammed",
+        "side_brush_jammed": "brush_jammed",
+        "wheels_jammed": "wheels_jammed",
+        "cliff_sensor_error": "sensor_error",
+        "lidar_blocked": "sensor_error",
+    }
+    return RobotErrorObservation("error", categories.get(value, "robot_error"))
+
+
+def room_recovery_dock_is_safe(
+    robot_state: str | None,
+    error: RobotErrorObservation,
+    *,
+    terminal_ready: bool,
+    startup_settling: bool,
+) -> bool:
+    """Docking permits abandoning an interrupted attempt, never crediting it."""
+
+    return (
+        robot_state == "docked"
+        and terminal_ready
+        and error.status in {"unsupported", "clear"}
+        and not startup_settling
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,6 +414,7 @@ class AdapterCapabilities:
     mop_start_states: frozenset[str] = frozenset()
     completion_status_entity_id: str | None = None
     terminal_completion_states: frozenset[str] = frozenset()
+    error_entity_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Normalize schema-one adapter snapshots during a rolling upgrade."""

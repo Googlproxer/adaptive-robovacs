@@ -111,6 +111,40 @@
     "unresolved_robot_reference": {
       "title": "Adaptive RoboVacs cannot identify a saved vacuum",
       "description": "Saved scheduler records for {legacy_key} cannot be matched safely to a current vacuum registry entry. They have been retained but cannot dispatch. Restore the original entity/registry association or re-add that vacuum, then reload the integration."
+    },
+    "room_error_recovery": {
+      "title": "Adaptive RoboVacs room needs recovery confirmation",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Allow the unfinished room stage to retry",
+            "description": "The {operation} stage in {room} was interrupted on {robot}. {reason}\n\nCheck the room and resolve the obstruction or error. Once the vacuum has safely docked, it can clean other eligible rooms while this Repair remains open.\n\nSubmitting this Repair allows the unfinished stage to retry through normal scheduling. Previously completed stages stay completed. Confirmation sends no cleaning command and does not override occupancy, cleaning windows, battery, or water checks."
+          }
+        },
+        "error": {
+          "awaiting_safe_dock": "Resolve the vacuum error and dock it. Wait for stable dock confirmation, then try again.",
+          "recovery_changed": "This interruption has changed. Close this Repair and open the current one.",
+          "recovery_target_unavailable": "The saved room, vacuum, or cleaning stage cannot be matched. Restore the original room and vacuum configuration, then try again.",
+          "recovery_unavailable": "Recovery is unavailable while the integration is stopping or its saved state needs repair."
+        }
+      }
+    },
+    "robot_error_recovery": {
+      "title": "Adaptive RoboVacs interrupted vacuum needs review",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Abandon an unassociated interrupted clean",
+            "description": "A saved error on {robot} cannot be safely associated with one room stage. Resolve the physical error and dock the vacuum.\n\nSubmitting this Repair abandons that saved attempt without marking a room cleaned or sending a cleaning command. An identified obsolete occurrence is discarded; normal room scheduling may create a fresh clean later. Other independent faults remain in place."
+          }
+        },
+        "error": {
+          "awaiting_safe_dock": "Resolve the vacuum error and dock it. Wait for stable dock confirmation, then try again.",
+          "recovery_changed": "This interruption has changed. Close this Repair and open the current one.",
+          "recovery_target_unavailable": "The saved room, vacuum, or cleaning stage cannot be matched. Restore the original room and vacuum configuration, then try again.",
+          "recovery_unavailable": "Recovery is unavailable while the integration is stopping or its saved state needs repair."
+        }
+      }
     }
   }
 }

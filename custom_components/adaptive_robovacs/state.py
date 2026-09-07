@@ -28,6 +28,7 @@ from .const import (
 from .models import (
     FLOOR_PLAN_MAX_GRID_COORDINATE,
     FLOOR_PLAN_MIN_ROOM_SPAN,
+    ROBOT_ERROR_CATEGORIES,
     ROOM_PROFILE_OVERRIDE_KEYS,
     CleaningOperation,
     CleaningProgram,
@@ -44,7 +45,7 @@ from .models import (
     room_cleaning_profile_is_custom,
 )
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 RETIRED_GLOBAL_SETTINGS = frozenset({"hall_start", "hall_end"})
 DAILY_WINDOW_VERSION = 1
 
@@ -1303,6 +1304,72 @@ class SchedulerFault:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class RoomRecovery:
+    """One interrupted room attempt awaiting explicit retry acknowledgement."""
+
+    recovery_id: str
+    room_area_id: str
+    robot_registry_id: str
+    occurrence_id: str
+    stage_index: int
+    operation: CleaningOperation
+    interrupted_at: datetime
+    error_category: str = "robot_error"
+    detached_at: datetime | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> RoomRecovery:
+        identifiers = {}
+        for key in (
+            "recovery_id",
+            "room_area_id",
+            "robot_registry_id",
+            "occurrence_id",
+        ):
+            item = value.get(key)
+            if not isinstance(item, str) or not item:
+                raise StateSchemaError(f"room recovery {key} is invalid")
+            identifiers[key] = item
+        index = value.get("stage_index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise StateSchemaError("room recovery stage_index is invalid")
+        interrupted = _timestamp(value.get("interrupted_at"))
+        detached = _timestamp(value.get("detached_at"))
+        if interrupted is None or (
+            value.get("detached_at") is not None and detached is None
+        ):
+            raise StateSchemaError("room recovery timestamp is invalid")
+        category = value.get("error_category")
+        if not isinstance(category, str) or category not in ROBOT_ERROR_CATEGORIES:
+            raise StateSchemaError("room recovery error_category is invalid")
+        try:
+            operation = CleaningOperation(str(value.get("operation")))
+        except ValueError as err:
+            raise StateSchemaError("room recovery operation is invalid") from err
+        return cls(
+            **identifiers,
+            stage_index=index,
+            operation=operation,
+            interrupted_at=interrupted,
+            error_category=category,
+            detached_at=detached,
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "recovery_id": self.recovery_id,
+            "room_area_id": self.room_area_id,
+            "robot_registry_id": self.robot_registry_id,
+            "occurrence_id": self.occurrence_id,
+            "stage_index": self.stage_index,
+            "operation": str(self.operation),
+            "interrupted_at": _iso(self.interrupted_at),
+            "error_category": self.error_category,
+            "detached_at": _iso(self.detached_at),
+        }
+
+
 @dataclass(slots=True)
 class RobotHold:
     reason: str
@@ -1826,6 +1893,7 @@ class SchedulerState:
     evaluation: EvaluationState = field(default_factory=EvaluationState)
     robot_faults: dict[str, SchedulerFault] = field(default_factory=dict)
     room_faults: dict[str, SchedulerFault] = field(default_factory=dict)
+    room_recoveries: dict[str, RoomRecovery] = field(default_factory=dict)
     occurrences: dict[str, CleaningOccurrence] = field(default_factory=dict)
     water_confirmations: dict[str, WaterConfirmation] = field(default_factory=dict)
     water_notification_episodes: dict[str, WaterNotificationEpisode] = field(
@@ -1844,12 +1912,18 @@ class SchedulerState:
     def from_store(
         cls, payload: object, entry_data: Mapping[str, object]
     ) -> tuple[SchedulerState, bool]:
-        """Load v16 or convert older shapes, returning whether a save is required."""
+        """Load current or convert older shapes after validating retained data."""
 
         if payload is None:
             return cls.create(entry_data), False
         data = _mapping(payload, "stored scheduler state")
         schema_version = data.get("schema_version")
+        if schema_version == 16:
+            # Validate the full former current schema before any permissive
+            # legacy parsing. Retired settings remain ignored by that validator.
+            upgraded = {**data, "schema_version": SCHEMA_VERSION, "room_recoveries": {}}
+            cls._validate_current_schema(upgraded)
+            return cls._from_versioned(upgraded, entry_data), True
         if schema_version is None or schema_version == 1:
             return cls._from_v1(data, entry_data), True
         if schema_version in {
@@ -1881,10 +1955,10 @@ class SchedulerState:
 
     @classmethod
     def _validate_current_schema(cls, data: Mapping[str, object]) -> None:
-        """Reject malformed schema-16 records instead of silently dropping them."""
+        """Reject malformed current records instead of silently dropping them."""
 
         if data.get("schema_version") != SCHEMA_VERSION:
-            raise StateSchemaError("schema_version must be 16")
+            raise StateSchemaError("schema_version must be 17")
 
         room_settings = _mapping(data.get("room_settings"), "room_settings")
         robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
@@ -1894,6 +1968,7 @@ class SchedulerState:
         robot_cooldowns = _mapping(data.get("robot_cooldowns"), "robot_cooldowns")
         robot_faults = _mapping(data.get("robot_faults"), "robot_faults")
         room_faults = _mapping(data.get("room_faults"), "room_faults")
+        recoveries = _mapping(data.get("room_recoveries"), "room_recoveries")
         occurrences = _mapping(data.get("occurrences"), "occurrences")
         confirmations = _mapping(data.get("water_confirmations"), "water_confirmations")
         episodes = _mapping(
@@ -1919,6 +1994,7 @@ class SchedulerState:
             ("robot_cooldowns", robot_cooldowns),
             ("robot_faults", robot_faults),
             ("room_faults", room_faults),
+            ("room_recoveries", recoveries),
             ("occurrences", occurrences),
             ("water_confirmations", confirmations),
             ("water_notification_episodes", episodes),
@@ -1968,6 +2044,11 @@ class SchedulerState:
         require_records("robot_cooldowns", robot_cooldowns, RobotCooldown.from_mapping)
         require_records("robot_faults", robot_faults, SchedulerFault.from_mapping)
         require_records("room_faults", room_faults, SchedulerFault.from_mapping)
+        require_records("room_recoveries", recoveries, RoomRecovery.from_mapping)
+        for area_id, value in recoveries.items():
+            recovery = RoomRecovery.from_mapping(_mapping(value, "room recovery"))
+            if recovery.room_area_id != area_id:
+                raise StateSchemaError("room recovery identity does not match its key")
         require_records("occurrences", occurrences, CleaningOccurrence.from_mapping)
         require_records(
             "water_confirmations", confirmations, WaterConfirmation.from_mapping
@@ -2160,6 +2241,7 @@ class SchedulerState:
             if isinstance(area_id, str) and isinstance(value, Mapping)
         }
         raw_occurrences = _mapping_or_empty(data.get("occurrences"))
+        raw_recoveries = _mapping_or_empty(data.get("room_recoveries"))
         raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
         raw_robot_faults = _mapping_or_empty(data.get("robot_faults"))
@@ -2245,6 +2327,11 @@ class SchedulerState:
                 and isinstance(value, Mapping)
                 and (occurrence := CleaningOccurrence.from_mapping(value)) is not None
             },
+            room_recoveries={
+                area_id: RoomRecovery.from_mapping(value)
+                for area_id, value in raw_recoveries.items()
+                if isinstance(area_id, str) and isinstance(value, Mapping)
+            },
             robot_entity_aliases={
                 key: alias
                 for key, alias in _mapping_or_empty(
@@ -2304,6 +2391,7 @@ class SchedulerState:
         raw_audit = _mapping(data.get("audit"), "audit")
         raw_evaluation = _mapping(data.get("evaluation"), "evaluation")
         raw_occurrences = _mapping_or_empty(data.get("occurrences"))
+        raw_recoveries = _mapping_or_empty(data.get("room_recoveries"))
         raw_confirmations = _mapping_or_empty(data.get("water_confirmations"))
         raw_episodes = _mapping_or_empty(data.get("water_notification_episodes"))
         if data.get("schema_version") in {
@@ -2412,6 +2500,11 @@ class SchedulerState:
                 for key, alias in raw_robot_aliases.items()
                 if isinstance(key, str) and isinstance(alias, str)
             },
+            room_recoveries={
+                area_id: RoomRecovery.from_mapping(value)
+                for area_id, value in raw_recoveries.items()
+                if isinstance(area_id, str) and isinstance(value, Mapping)
+            },
             water_confirmations={
                 occurrence_id: confirmation
                 for occurrence_id, value in raw_confirmations.items()
@@ -2495,6 +2588,10 @@ class SchedulerState:
             "room_faults": {
                 area_id: fault.to_store() for area_id, fault in self.room_faults.items()
             },
+            "room_recoveries": {
+                area_id: recovery.to_store()
+                for area_id, recovery in self.room_recoveries.items()
+            },
             "occurrences": {
                 area_id: occurrence.to_store()
                 for area_id, occurrence in self.occurrences.items()
@@ -2516,7 +2613,7 @@ class SchedulerState:
         }
 
     def encode(self) -> dict[str, object]:
-        """Serialize and validate a complete schema-16 payload atomically."""
+        """Serialize and validate a complete scheduler payload atomically."""
 
         payload = self.to_store()
         self._validate_current_schema(payload)

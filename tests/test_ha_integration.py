@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import ClassVar
@@ -18,6 +19,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
+from homeassistant.helpers import issue_registry as ir
 from probatio.error import MultipleInvalid
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -26,6 +28,7 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.adaptive_robovacs.application import SchedulerApplication
 from custom_components.adaptive_robovacs.commands import (
+    AcknowledgeRoomRecoveryCommand,
     CommandResult,
     EvaluateCommand,
     ManualCleanRoomCommand,
@@ -45,8 +48,10 @@ from custom_components.adaptive_robovacs.integration_core import (
     async_unload_entry,
 )
 from custom_components.adaptive_robovacs.models import (
+    CleaningProgram,
     EvaluationCause,
     EvaluationMode,
+    WaterReadiness,
 )
 from custom_components.adaptive_robovacs.runtime_data import (
     AdaptiveRoboVacsRuntimeData,
@@ -141,6 +146,109 @@ class _FakeApplication:
 
 
 class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_room_error_repair_leaves_other_rooms_schedulable_in_real_application(
+        self,
+    ):
+        from tests.test_room_recovery import recovery_application
+
+        fixture = recovery_application()
+        entry = MockConfigEntry(
+            domain=DOMAIN, entry_id="entry-recovery", data={"observe_only": False}
+        )
+        entry.add_to_hass(self.hass)
+        app = SchedulerApplication(self.hass, entry)
+        app.state = fixture.state
+        robot = fixture.discovery.robots["vacuum.alpha"]
+        robot = replace(
+            robot,
+            adapter_capabilities=replace(
+                robot.adapter_capabilities,
+                mode_options=("vacuum", "mop"),
+                water_readiness=WaterReadiness(
+                    "sensor_blocked",
+                    "water_unavailable",
+                    ready=False,
+                    authoritative=True,
+                ),
+            ),
+        )
+        app.discovery = type(fixture.discovery)(
+            {robot.entity_id: robot}, fixture.discovery.rooms
+        )
+        app.async_refresh_discovery = AsyncMock()
+        app._async_dispatch = AsyncMock(return_value=(True, "test boundary dispatch"))
+        app._async_refresh_pending_profile_if_needed = AsyncMock(
+            side_effect=lambda _robot, candidate: candidate
+        )
+        clock = datetime.now(UTC)
+        for entity_id, value in fixture.hass.states.values.items():
+            self.hass.states.async_set(entity_id, value.state)
+        for area_id in ("study", "hall"):
+            self.hass.states.async_set(f"binary_sensor.{area_id}_radar", "off")
+            history = app.state.room_history[area_id]
+            history.occupancy = "unoccupied"
+            history.unoccupied_since = clock - timedelta(hours=3)
+            history.cleaning_completed_at = clock - timedelta(days=5)
+            app.state.room_settings[area_id].ignore_desired_window = True
+        app.state.room_settings["hall"].cleaning_program = CleaningProgram.VACUUM_ONLY
+        app.state.robot_settings["registry-alpha"].fan_speed = "max"
+        app.state.robot_settings["registry-alpha"].mop_mode = "standard"
+        app.state.robot_settings["registry-alpha"].mop_intensity = "medium"
+        try:
+            with patch(
+                "custom_components.adaptive_robovacs.application._now",
+                return_value=clock,
+            ):
+                await app.async_execute(
+                    EvaluateCommand(EvaluationMode.PREVIEW, EvaluationCause.SERVICE)
+                )
+            issue_id = "room_recovery_entry-recovery_study"
+            self.assertIsNotNone(
+                ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id)
+            )
+            for entity_id, value in {
+                "vacuum.alpha": "docked",
+                "sensor.alpha_status": "charging",
+                "sensor.alpha_error": "none",
+            }.items():
+                self.hass.states.async_set(entity_id, value)
+            for offset in (1, 11):
+                with patch(
+                    "custom_components.adaptive_robovacs.application._now",
+                    return_value=clock + timedelta(seconds=offset),
+                ):
+                    await app.async_execute(
+                        EvaluateCommand(EvaluationMode.PREVIEW, EvaluationCause.SERVICE)
+                    )
+            snapshot = app.current_snapshot()
+            self.assertTrue(snapshot.scheduler.scheduler_limited)
+            self.assertIsNotNone(snapshot.room("study").recovery)
+            self.assertIsNone(snapshot.room("study").active)
+            self.assertIsNone(snapshot.room("study").failure)
+            recovery = app.state.room_recoveries["study"]
+            with patch(
+                "custom_components.adaptive_robovacs.application._now",
+                return_value=clock + timedelta(seconds=22),
+            ):
+                result = await app.async_execute(
+                    EvaluateCommand(EvaluationMode.DISPATCH, EvaluationCause.SERVICE)
+                )
+            self.assertTrue(result.as_response()["assignments"], result.as_response())
+            self.assertEqual(result.as_response()["assignments"][0]["room"], "hall")
+            app._async_dispatch.assert_awaited_once()
+            self.assertEqual(app._async_dispatch.call_args.args[1].room_id, "hall")
+            app._async_dispatch.reset_mock()
+            self.hass.states.async_set("vacuum.alpha", "cleaning")
+            result = await app.async_execute(
+                AcknowledgeRoomRecoveryCommand("study", recovery.recovery_id)
+            )
+            self.assertTrue(result.as_response()["cleared"])
+            self.assertIsNone(ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id))
+            app._async_dispatch.assert_not_awaited()
+        finally:
+            app.begin_shutdown()
+            await app.async_shutdown()
+
     async def asyncSetUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.hass_context = async_test_home_assistant(

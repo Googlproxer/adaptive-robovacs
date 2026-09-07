@@ -63,6 +63,15 @@ class ApplicationRecoveryMixin:
 
     if TYPE_CHECKING:
 
+        async def _async_handle_room_error(
+            self,
+            registry_id: str,
+            robot: DiscoveredRobot | None,
+            active: ActiveJob | None,
+            state_text: str,
+            now: datetime,
+        ) -> bool: ...
+
         def _async_create_task(
             self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
         ) -> asyncio.Task[Any] | None: ...
@@ -190,6 +199,11 @@ class ApplicationRecoveryMixin:
                     entity_id, active, completion, confidence
                 )
                 self.state.robot_holds.pop(registry_id, None)
+                continue
+
+            if await self._async_handle_room_error(
+                registry_id, robot, active, state_text, now
+            ):
                 continue
 
             # Retain v1.0.9 holds written before their richer state was added.

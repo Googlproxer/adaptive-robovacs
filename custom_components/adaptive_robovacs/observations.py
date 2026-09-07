@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from homeassistant.core import HomeAssistant
 
 from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
-from .models import RobotObservation, RoomObservation, resolve_occupancy
+from .models import (
+    RobotErrorObservation,
+    RobotObservation,
+    RoomObservation,
+    normalize_robot_error,
+    resolve_occupancy,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,10 +69,17 @@ class HomeAssistantObserver:
         cleaning_timer = self._number(
             self._state(robot.profile.cleaning_time_entity_id)
         )
+        error_ids = robot.adapter_capabilities.error_entity_ids
+        error = RobotErrorObservation()
+        if len(error_ids) == 1:
+            error = normalize_robot_error(self._state(error_ids[0]))
+        elif error_ids:
+            error = RobotErrorObservation("unknown")
         return RobotObservation(
             state=state,
             battery=battery,
             cleaning_timer_minutes=cleaning_timer,
+            error=error,
         )
 
     def house(self, discovery: DiscoverySnapshot) -> HouseObservation:

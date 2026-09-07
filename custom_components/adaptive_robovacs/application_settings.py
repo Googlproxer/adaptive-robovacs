@@ -172,7 +172,11 @@ class ApplicationSettingsMixin:
 
     @property
     def scheduler_limited(self) -> bool:
-        return bool(self.state.robot_faults or self.state.room_faults)
+        return bool(
+            self.state.robot_faults
+            or self.state.room_faults
+            or self.state.room_recoveries
+        )
 
     @property
     def storage_safe_mode(self) -> bool:

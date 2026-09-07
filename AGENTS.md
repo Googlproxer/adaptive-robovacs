@@ -29,6 +29,12 @@
 
 ## Validation
 
+Before committing code, check the running Home Assistant Core version and
+available stable updates. Refresh stale compatible dependency and CI pins,
+update the relevant version documentation, and run validation against the
+updated test environment. This check does not authorize a live upgrade or
+deployment.
+
 Run both checks before committing integration changes:
 
 ```powershell

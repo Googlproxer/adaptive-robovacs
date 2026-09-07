@@ -55,6 +55,25 @@ def fault_summary(reason_code: str) -> str:
     )
 
 
+def room_recovery_summary(category: str) -> str:
+    """Describe only normalized interruption categories."""
+
+    return {
+        "robot_trapped": "The vacuum reported that it was trapped.",
+        "brush_jammed": "The vacuum reported a jammed brush.",
+        "wheels_jammed": "The vacuum reported jammed wheels.",
+        "sensor_error": "The vacuum reported a sensor problem.",
+    }.get(category, "The vacuum reported an error during this room clean.")
+
+
+def room_recovery_issue_id(entry_id: str, area_id: str) -> str:
+    return f"room_recovery_{entry_id}_{area_id}"
+
+
+def robot_error_recovery_issue_id(entry_id: str, registry_id: str) -> str:
+    return f"robot_error_recovery_{entry_id}_{registry_id}"
+
+
 def scheduler_halted_issue_id(entry_id: str) -> str:
     """Return the legacy global-halt issue ID removed by schema 16."""
 

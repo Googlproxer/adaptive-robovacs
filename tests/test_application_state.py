@@ -171,6 +171,9 @@ def state_application() -> SchedulerApplication:
         sync_cleaning_program_issues=Mock(),
         delete_robot_dispatch_fault=Mock(),
         delete_room_dispatch_fault=Mock(),
+        sync_room_recoveries=Mock(),
+        set_robot_error_recovery=Mock(),
+        delete_robot_error_recovery=Mock(),
     )
     app._storage_safe_mode = False
     app._closing = False
@@ -181,6 +184,8 @@ def state_application() -> SchedulerApplication:
     app._start_confirmation_timers = {}
     app._ready_confirmation_timers = {}
     app._ready_since = {}
+    app._room_recovery_since = {}
+    app._room_recovery_timers = {}
     app._lock = asyncio.Lock()
     app._notify_listeners = Mock()
     app.async_evaluate = AsyncMock(return_value={})

@@ -1,9 +1,9 @@
 # Install the first five packages normally, then install pytest with
-# ``--no-deps``. pytest-homeassistant-custom-component 0.13.363 declares an
-# exact pytest 9.0.3 dependency, while the 1.13 acceptance environment is pinned
+# ``--no-deps``. pytest-homeassistant-custom-component 0.13.364 declares an
+# exact pytest 9.0.3 dependency, while the 1.14 acceptance environment is pinned
 # to pytest 9.1.1. CI documents and verifies that intentional two-phase setup.
-homeassistant==2026.9.0
-pytest-homeassistant-custom-component==0.13.363
+homeassistant==2026.9.1
+pytest-homeassistant-custom-component==0.13.364
 pytest-cov==7.1.0
 ruff==0.16.6
 mypy==2.3.1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -21,13 +22,17 @@ from .repairs_manager import (
     fault_summary,
     notification_delivery_issue_id,
     robot_dispatch_fault_issue_id,
+    robot_error_recovery_issue_id,
     room_dispatch_fault_issue_id,
+    room_recovery_issue_id,
+    room_recovery_summary,
     scheduler_halted_issue_id,
     two_pass_issue_id,
 )
 from .state import (
     CleaningOccurrence,
     RobotSettings,
+    RoomRecovery,
     RoomSettings,
     SchedulerFault,
 )
@@ -162,6 +167,78 @@ class RepairService:
                 },
                 data={"entry_id": self._entry_id, "area_id": area_id},
             )
+
+    def sync_room_recoveries(
+        self,
+        recoveries: Mapping[str, RoomRecovery],
+        robots: Iterable[DiscoveredRobot],
+        rooms: Mapping[str, DiscoveredRoom],
+    ) -> None:
+        """Recreate durable room Repairs and remove only stale issues we own."""
+
+        prefix = room_recovery_issue_id(self._entry_id, "")
+        expected = {
+            room_recovery_issue_id(self._entry_id, area_id) for area_id in recoveries
+        }
+        for domain, issue_id in tuple(ir.async_get(self._hass).issues):
+            if (
+                domain == DOMAIN
+                and issue_id.startswith(prefix)
+                and issue_id not in expected
+            ):
+                ir.async_delete_issue(self._hass, DOMAIN, issue_id)
+        by_registry = {robot.registry_id: robot for robot in robots}
+        for area_id, recovery in recoveries.items():
+            room = rooms.get(area_id)
+            robot = by_registry.get(recovery.robot_registry_id)
+            ir.async_create_issue(
+                self._hass,
+                DOMAIN,
+                room_recovery_issue_id(self._entry_id, area_id),
+                is_fixable=True,
+                is_persistent=True,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="room_error_recovery",
+                translation_placeholders={
+                    "room": room.name if room else "the affected room",
+                    "robot": robot.name if robot else "the vacuum",
+                    "operation": str(recovery.operation),
+                    "reason": room_recovery_summary(recovery.error_category),
+                },
+                data={
+                    "entry_id": self._entry_id,
+                    "area_id": area_id,
+                    "recovery_id": recovery.recovery_id,
+                },
+            )
+
+    def set_robot_error_recovery(
+        self, registry_id: str, held_at: datetime, robot: DiscoveredRobot | None
+    ) -> None:
+        """Offer explicit abandonment when a legacy job cannot bind to a room."""
+
+        ir.async_create_issue(
+            self._hass,
+            DOMAIN,
+            robot_error_recovery_issue_id(self._entry_id, registry_id),
+            is_fixable=True,
+            is_persistent=True,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="robot_error_recovery",
+            translation_placeholders={"robot": robot.name if robot else "the vacuum"},
+            data={
+                "entry_id": self._entry_id,
+                "robot_registry_id": registry_id,
+                "held_at": held_at.isoformat(),
+            },
+        )
+
+    def delete_robot_error_recovery(self, registry_id: str) -> None:
+        ir.async_delete_issue(
+            self._hass,
+            DOMAIN,
+            robot_error_recovery_issue_id(self._entry_id, registry_id),
+        )
 
     def delete_robot_dispatch_fault(self, robot_registry_id: str) -> None:
         """Delete one resolved robot fault Repair."""

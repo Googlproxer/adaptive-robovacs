@@ -66,6 +66,15 @@ class ApplicationJobsMixin:
 
     if TYPE_CHECKING:
 
+        async def _async_handle_room_error(
+            self,
+            registry_id: str,
+            robot: DiscoveredRobot | None,
+            active: ActiveJob | None,
+            state_text: str,
+            now: datetime,
+        ) -> bool: ...
+
         def _async_create_task(
             self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
         ) -> asyncio.Task[Any] | None: ...
@@ -254,6 +263,11 @@ class ApplicationJobsMixin:
                 await self._async_complete_job(robot_id, active, completion, confidence)
                 self.state.robot_holds.pop(registry_id, None)
                 changed = True
+                continue
+
+            if await self._async_handle_room_error(
+                registry_id, robot, active, state_text, now
+            ):
                 continue
 
             hold_action = self._reconcile_robot_hold(

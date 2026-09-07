@@ -217,8 +217,8 @@ class SchedulerStateTests(unittest.TestCase):
         with self.assertRaises(state.StateSchemaError):
             state.SchedulerState.from_store(payload, ENTRY_DATA)
 
-    def test_each_versioned_schema_migrates_once_to_schema_16(self) -> None:
-        for version in range(2, 16):
+    def test_each_versioned_schema_migrates_once_to_schema_17(self) -> None:
+        for version in range(2, 17):
             with self.subTest(version=version):
                 payload = populated_state().to_store()
                 payload["schema_version"] = version
@@ -236,7 +236,7 @@ class SchedulerStateTests(unittest.TestCase):
 
                 self.assertTrue(changed)
                 self.assertFalse(changed_again)
-                self.assertEqual(stable.encode()["schema_version"], 16)
+                self.assertEqual(stable.encode()["schema_version"], 17)
                 self.assertEqual(stable.room_settings["study"].fan_speed, "max")
                 self.assertEqual(stable.active_jobs["registry-alpha"].room_id, "study")
                 self.assertEqual(stable.audit.manual_events[0].outcome, "requested")
@@ -305,7 +305,7 @@ class SchedulerStateTests(unittest.TestCase):
         self.assertEqual(restored.robot_holds["vacuum.alpha"].reason, "paused")
         self.assertEqual(restored.audit.manual_events[0].outcome, "requested")
         encoded = restored.encode()
-        self.assertEqual(encoded["schema_version"], 16)
+        self.assertEqual(encoded["schema_version"], 17)
         self.assertNotIn("carpet", encoded["room_settings"]["kitchen"])
 
     def test_registry_identity_migration_survives_entity_rename(self) -> None:

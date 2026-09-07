@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, patch
 from homeassistant.config_entries import ConfigEntryState
 
 from custom_components.adaptive_robovacs.commands import (
+    AcknowledgeRobotErrorCommand,
+    AcknowledgeRoomRecoveryCommand,
     CommandResult,
     RecheckAndResumeCommand,
     RecheckCleaningProgramCommand,
@@ -18,6 +20,7 @@ from custom_components.adaptive_robovacs.commands import (
 )
 from custom_components.adaptive_robovacs.repairs import (
     CleaningProgramCompatibilityRepairFlow,
+    ErrorRecoveryRepairFlow,
     NotificationDeliveryRepairFlow,
     RobotDispatchFaultRepairFlow,
     RoomDispatchFaultRepairFlow,
@@ -28,7 +31,9 @@ from custom_components.adaptive_robovacs.repairs_manager import (
     cleaning_program_issue_id,
     notification_delivery_issue_id,
     robot_dispatch_fault_issue_id,
+    robot_error_recovery_issue_id,
     room_dispatch_fault_issue_id,
+    room_recovery_issue_id,
     two_pass_issue_id,
 )
 from custom_components.adaptive_robovacs.runtime_data import (
@@ -37,6 +42,43 @@ from custom_components.adaptive_robovacs.runtime_data import (
 
 
 class RepairFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_error_recovery_requires_confirmation_and_keeps_failed_issue_open(
+        self,
+    ):
+        for command in (
+            AcknowledgeRoomRecoveryCommand("study", "episode-1"),
+            AcknowledgeRobotErrorCommand("registry-alpha", "timestamp"),
+        ):
+            submit = AsyncMock(
+                return_value=CommandResult.from_mapping(
+                    {"cleared": False, "reason": "awaiting_safe_dock"}
+                )
+            )
+            flow = ErrorRecoveryRepairFlow(submit, command)
+            with patch(
+                "custom_components.adaptive_robovacs.repairs._description_placeholders",
+                return_value={},
+            ):
+                self.assertEqual(
+                    (await flow.async_step_init({"confirm": True}))["type"].value,
+                    "form",
+                )
+                submit.assert_not_awaited()
+                self.assertEqual(
+                    (await flow.async_step_confirm({}))["errors"]["base"],
+                    "awaiting_safe_dock",
+                )
+                submit.assert_awaited_once_with(command)
+                submit.return_value = None
+                self.assertEqual(
+                    (await flow.async_step_confirm({}))["errors"]["base"],
+                    "recovery_unavailable",
+                )
+                submit.return_value = CommandResult.from_mapping({"cleared": True})
+                self.assertEqual(
+                    (await flow.async_step_confirm({}))["type"].value, "create_entry"
+                )
+
     async def test_each_flow_submits_its_typed_recheck_only_after_confirmation(
         self,
     ) -> None:
@@ -143,6 +185,20 @@ class RepairFlowTests(unittest.IsolatedAsyncioTestCase):
                 robot_dispatch_fault_issue_id("entry-1", "registry-alpha"),
                 {"entry_id": "entry-1", "robot_registry_id": "registry-alpha"},
                 RobotDispatchFaultRepairFlow,
+            ),
+            (
+                room_recovery_issue_id("entry-1", "study"),
+                {"entry_id": "entry-1", "area_id": "study", "recovery_id": "episode"},
+                ErrorRecoveryRepairFlow,
+            ),
+            (
+                robot_error_recovery_issue_id("entry-1", "registry-alpha"),
+                {
+                    "entry_id": "entry-1",
+                    "robot_registry_id": "registry-alpha",
+                    "held_at": "timestamp",
+                },
+                ErrorRecoveryRepairFlow,
             ),
             (
                 notification_delivery_issue_id("entry-1"),

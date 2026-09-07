@@ -45,12 +45,13 @@ from custom_components.adaptive_robovacs.models import (
     ManualCleanRequest,
     SchedulerHaltRecheckResult,
 )
+from tests.test_application_state import robot
 
 
 def routed_application() -> SchedulerApplication:
     app = SchedulerApplication.__new__(SchedulerApplication)
     app.discovery = DiscoverySnapshot(
-        MappingProxyType({"vacuum.alpha": object()}),
+        MappingProxyType({"vacuum.alpha": robot()}),
         MappingProxyType({}),
     )
     app.async_evaluate = AsyncMock(return_value={"preview": True})
@@ -92,6 +93,7 @@ def routed_application() -> SchedulerApplication:
         select_preview_option=Mock(),
     )
     app._notify_listeners = Mock()
+    app._reset_room_recovery_dock = Mock()
     app.has_notification_targets = Mock(return_value=True)
     app.repairs = SimpleNamespace(set_notification_delivery_issue=Mock())
     return app

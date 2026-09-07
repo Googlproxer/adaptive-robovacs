@@ -631,6 +631,8 @@ class ApplicationPolicyMixin:
         detail = self._room_data(room.area_id)
         if room.area_id in self.state.room_faults:
             return None, "room dispatch blocked pending Repair"
+        if room.area_id in self.state.room_recoveries:
+            return None, "room recovery blocked pending Repair"
         occurrence = self.state.occurrences.get(room.area_id)
         manual_override = bool(occurrence and occurrence.manual_override)
         if not settings.enabled and not manual_override:

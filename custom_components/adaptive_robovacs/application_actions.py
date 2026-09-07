@@ -227,6 +227,8 @@ class ApplicationActionsMixin:
                 return await reject("room is not discovered by this config entry")
             if room.area_id in self.state.room_faults:
                 return await reject("room dispatch blocked pending Repair")
+            if room.area_id in self.state.room_recoveries:
+                return await reject("room recovery blocked pending Repair")
             if self.observe_only:
                 return await reject("observe-only mode")
             if self.party_mode:

@@ -99,6 +99,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 "ApplicationJobsMixin",
                 "ApplicationPolicyMixin",
                 "ApplicationRecoveryMixin",
+                "ApplicationRoomRecoveryMixin",
                 "ApplicationSettingsMixin",
                 "ApplicationWaterMixin",
             },

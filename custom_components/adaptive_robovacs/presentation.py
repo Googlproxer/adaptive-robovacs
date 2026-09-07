@@ -19,6 +19,7 @@ from .snapshots import (
     RobotHoldView,
     RobotSettingsView,
     RoomDecisionView,
+    RoomRecoveryView,
     SchedulerView,
     WaterConfirmationView,
     WaterNotificationEpisodeView,
@@ -53,6 +54,21 @@ def fault_attributes(fault: FaultView | None) -> dict[str, object] | None:
         "repair_active": True,
         "robot": fault.robot_name,
         "room": fault.room_name,
+    }
+
+
+def room_recovery_attributes(
+    recovery: RoomRecoveryView | None,
+) -> dict[str, object] | None:
+    if recovery is None:
+        return None
+    return {
+        "recovery_id": recovery.recovery_id,
+        "occurrence_id": recovery.occurrence_id,
+        "stage_index": recovery.stage_index,
+        "operation": str(recovery.operation),
+        "detached_at": _iso(recovery.detached_at),
+        "failure": fault_attributes(recovery.failure),
     }
 
 
@@ -345,5 +361,8 @@ def scheduler_attributes(scheduler: SchedulerView) -> dict[str, object]:
         "scheduler_fault": singular,
         "robot_faults": [fault_attributes(item) for item in scheduler.robot_faults],
         "room_faults": [fault_attributes(item) for item in scheduler.room_faults],
+        "room_recoveries": [
+            room_recovery_attributes(item) for item in scheduler.room_recoveries
+        ],
         "floor_plan": floor_plan_attributes(scheduler.floor_plan),
     }

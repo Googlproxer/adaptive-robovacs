@@ -690,6 +690,14 @@ class RoborockVacuumAdapter(VacuumAdapter):
         readiness_entity_id, readiness_watched = resolve_roborock_dispatch_readiness(
             context.entities
         )
+        # Retain every match: multiple diagnostics are ambiguous, not absent.
+        error_ids = tuple(
+            evidence.entity_id
+            for evidence in context.entities
+            if evidence.domain == "sensor"
+            and evidence.platform == "roborock"
+            and evidence.translation_key in {"vacuum_error", "robot_error"}
+        )
         return AdapterCapabilities(
             adapter_id=self.adapter_id,
             schema_version=self.schema_version,
@@ -707,7 +715,10 @@ class RoborockVacuumAdapter(VacuumAdapter):
             mop_pass_counts=frozenset(mop_pass_counts),
             native_vacuum_pass_counts=frozenset(native_vacuum_pass_counts),
             native_mop_pass_counts=frozenset(native_mop_pass_counts),
-            watched_entity_ids=tuple(dict.fromkeys((*watched, *readiness_watched))),
+            watched_entity_ids=tuple(
+                dict.fromkeys((*watched, *readiness_watched, *error_ids))
+            ),
+            error_entity_ids=error_ids,
             native_mop_profile=native_mop_profile,
             readiness_entity_id=readiness_entity_id,
             readiness_states=(

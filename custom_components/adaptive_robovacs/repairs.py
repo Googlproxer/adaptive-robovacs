@@ -13,6 +13,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
 from .commands import (
+    AcknowledgeRobotErrorCommand,
+    AcknowledgeRoomRecoveryCommand,
     RecheckAndResumeCommand,
     RecheckCleaningProgramCommand,
     RecheckNotificationTargetsCommand,
@@ -26,7 +28,9 @@ from .repairs_manager import (
     cleaning_program_issue_id,
     notification_delivery_issue_id,
     robot_dispatch_fault_issue_id,
+    robot_error_recovery_issue_id,
     room_dispatch_fault_issue_id,
+    room_recovery_issue_id,
     two_pass_issue_id,
 )
 from .runtime_data import AdaptiveRoboVacsRuntimeData
@@ -74,6 +78,40 @@ class RobotDispatchFaultRepairFlow(RepairsFlow):
             if response.get("cleared"):
                 return self.async_create_entry(title="", data={})
             errors["base"] = str(response.get("reason", "recheck_failed"))
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            errors=errors,
+            description_placeholders=_description_placeholders(self),
+        )
+
+
+class ErrorRecoveryRepairFlow(RepairsFlow):
+    """Confirm one interruption episode without dispatching physical work."""
+
+    def __init__(
+        self,
+        submit: CommandSubmitter,
+        command: AcknowledgeRoomRecoveryCommand | AcknowledgeRobotErrorCommand,
+    ) -> None:
+        self._submit = submit
+        self._command = command
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            result = await self._submit(self._command)
+            response = result.as_response() if result else {}
+            if response.get("cleared"):
+                return self.async_create_entry(title="", data={})
+            errors["base"] = str(response.get("reason", "recovery_unavailable"))
         return self.async_show_form(
             step_id="confirm",
             data_schema=vol.Schema({}),
@@ -227,6 +265,20 @@ async def async_create_fix_flow(
     if issue_id == notification_delivery_issue_id(entry_id):
         return NotificationDeliveryRepairFlow(submit)
     area_id = str((data or {}).get("area_id", ""))
+    if issue_id == room_recovery_issue_id(entry_id, area_id):
+        return ErrorRecoveryRepairFlow(
+            submit,
+            AcknowledgeRoomRecoveryCommand(
+                area_id, str((data or {}).get("recovery_id", ""))
+            ),
+        )
+    if issue_id == robot_error_recovery_issue_id(entry_id, robot_registry_id):
+        return ErrorRecoveryRepairFlow(
+            submit,
+            AcknowledgeRobotErrorCommand(
+                robot_registry_id, str((data or {}).get("held_at", ""))
+            ),
+        )
     if issue_id == room_dispatch_fault_issue_id(entry_id, area_id):
         return RoomDispatchFaultRepairFlow(submit, area_id)
     if issue_id == cleaning_program_issue_id(entry_id, area_id):

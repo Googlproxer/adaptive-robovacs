@@ -27,6 +27,7 @@ from custom_components.adaptive_robovacs.repairs_manager import (
 from custom_components.adaptive_robovacs.state import (
     CleaningStage,
     RobotSettings,
+    RoomRecovery,
     RoomSettings,
     SchedulerFault,
 )
@@ -58,6 +59,65 @@ def robot() -> DiscoveredRobot:
 
 
 class RepairServiceTests(unittest.TestCase):
+    def test_room_recovery_issues_recreate_and_remove_only_owned_episodes(self):
+        record = RoomRecovery(
+            "episode",
+            "study",
+            "registry-alpha",
+            "occurrence",
+            0,
+            CleaningOperation.MOP,
+            WHEN,
+            "robot_trapped",
+        )
+        registry = SimpleNamespace(
+            issues={
+                (DOMAIN, "room_recovery_entry-1_stale"): object(),
+                (DOMAIN, "room_recovery_other-entry_study"): object(),
+                (DOMAIN, "room_recovery_entry-1_study"): object(),
+            }
+        )
+        with (
+            patch(
+                "custom_components.adaptive_robovacs.repair_service.ir.async_get",
+                return_value=registry,
+            ),
+            patch(
+                "custom_components.adaptive_robovacs.repair_service.ir.async_create_issue"
+            ) as create,
+            patch(
+                "custom_components.adaptive_robovacs.repair_service.ir.async_delete_issue"
+            ) as delete,
+        ):
+            self.service.sync_room_recoveries(
+                {"study": record},
+                [robot()],
+                {"study": DiscoveredRoom("study", "Study", "ground", frozenset())},
+            )
+            self.assertEqual(create.call_args.kwargs["data"]["recovery_id"], "episode")
+            self.assertIn(
+                "trapped", create.call_args.kwargs["translation_placeholders"]["reason"]
+            )
+            self.assertTrue(create.call_args.kwargs["is_fixable"])
+            self.assertTrue(create.call_args.kwargs["is_persistent"])
+            delete.assert_called_once_with(
+                self.hass, DOMAIN, "room_recovery_entry-1_stale"
+            )
+            self.service.sync_room_recoveries({"study": record}, [], {})
+            self.assertEqual(
+                create.call_args.kwargs["translation_placeholders"]["room"],
+                "the affected room",
+            )
+            self.service.set_robot_error_recovery("registry-alpha", WHEN, robot())
+            self.assertEqual(
+                create.call_args.kwargs["data"]["held_at"], WHEN.isoformat()
+            )
+            self.service.set_robot_error_recovery("registry-alpha", WHEN, None)
+            self.service.delete_robot_error_recovery("registry-alpha")
+            self.assertEqual(
+                delete.call_args.args[-1], "robot_error_recovery_entry-1_registry-alpha"
+            )
+
     def setUp(self) -> None:
         self.hass = object()
         self.service = RepairService(self.hass, "entry-1")

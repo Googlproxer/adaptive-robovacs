@@ -1309,5 +1309,68 @@ class DomainBoundaryCoverageTests(unittest.TestCase):
         )
 
 
+class RoomRecoveryDecisionTests(unittest.TestCase):
+    def test_error_normalization_never_exposes_unknown_vendor_text(self):
+        for value in (None, "unknown", "unavailable"):
+            self.assertEqual(models.normalize_robot_error(value).status, "unknown")
+        for value in ("none", "ok", "no_error"):
+            self.assertEqual(models.normalize_robot_error(value).status, "clear")
+        self.assertEqual(
+            models.normalize_robot_error("robot_trapped").category, "robot_trapped"
+        )
+        self.assertEqual(
+            models.normalize_robot_error("main_brush_jammed").category, "brush_jammed"
+        )
+        self.assertEqual(
+            models.normalize_robot_error("raw vendor detail").category, "robot_error"
+        )
+
+    def test_safe_dock_requires_all_physical_evidence_and_startup_settling(self):
+        for state in (
+            "error",
+            "paused",
+            "idle",
+            "returning",
+            "cleaning",
+            "unavailable",
+            None,
+        ):
+            self.assertFalse(
+                models.room_recovery_dock_is_safe(
+                    state,
+                    models.RobotErrorObservation("clear"),
+                    terminal_ready=True,
+                    startup_settling=False,
+                )
+            )
+        for error in ("unknown", "error"):
+            self.assertFalse(
+                models.room_recovery_dock_is_safe(
+                    "docked",
+                    models.RobotErrorObservation(error),
+                    terminal_ready=True,
+                    startup_settling=False,
+                )
+            )
+        for terminal, settling in ((False, False), (True, True)):
+            self.assertFalse(
+                models.room_recovery_dock_is_safe(
+                    "docked",
+                    models.RobotErrorObservation("clear"),
+                    terminal_ready=terminal,
+                    startup_settling=settling,
+                )
+            )
+        for status in ("clear", "unsupported"):
+            self.assertTrue(
+                models.room_recovery_dock_is_safe(
+                    "docked",
+                    models.RobotErrorObservation(status),
+                    terminal_ready=True,
+                    startup_settling=False,
+                )
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

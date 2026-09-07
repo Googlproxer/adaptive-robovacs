@@ -178,6 +178,22 @@ actionable notification-delivery issue. This does not halt vacuuming. A profile,
 clean command, or start-confirmation failure after an actual stage attempt is
 different: it uses the existing system-wide scheduler halt.
 
+## Room error recovery (1.14.0)
+
+If a scheduled or dashboard single-room clean encounters a robot error, resolve
+the physical problem and return the robot to its dock. The room shows
+**Room blocked — recovery confirmation required**, with a persistent Repair in
+**Settings > System > Repairs**.
+
+Once docked and terminal-ready without errors for ten continuous seconds, the
+robot can clean other eligible rooms while this room stays blocked. Submit the
+Repair when the room is ready for another attempt. Confirmation sends no clean
+command; it permits the unfinished stage to retry under normal scheduling
+checks and preserves completed stages. Opening or dismissing the Repair leaves
+the block in place. Confirmation can be accepted while the robot cleans another
+room. See [the migration guide](migration-v1.14.0.md) for legacy error holds and
+diagnostic requirements.
+
 ## v1.3.0 troubleshooting
 
 ### Scheduler halted after a start failure

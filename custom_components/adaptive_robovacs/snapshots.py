@@ -93,6 +93,18 @@ class FaultView:
 
 
 @dataclass(frozen=True, slots=True)
+class RoomRecoveryView:
+    """Detached-room recovery details without mutable storage references."""
+
+    recovery_id: str
+    occurrence_id: str
+    stage_index: int
+    operation: CleaningOperation
+    detached_at: datetime | None
+    failure: FaultView
+
+
+@dataclass(frozen=True, slots=True)
 class ActiveJobView:
     """Immutable copy of an active physical-clean checkpoint."""
 
@@ -373,6 +385,7 @@ class RoomView:
     last_stage_summary: str | None
     water_notification_episode: WaterNotificationEpisodeView | None
     failure: FaultView | None
+    recovery: RoomRecoveryView | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,6 +568,7 @@ class SchedulerView:
     room_faults: tuple[FaultView, ...]
     floor_plan: FloorPlanView
     failure: FaultView | None
+    room_recoveries: tuple[RoomRecoveryView, ...] = ()
 
     def global_setting(self, key: str) -> object:
         """Return one supported global control value."""

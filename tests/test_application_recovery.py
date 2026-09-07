@@ -568,7 +568,9 @@ class ActiveJobReconciliationTests(unittest.IsolatedAsyncioTestCase):
         job = tracked_job()
         app.state.active_jobs["registry-alpha"] = job
         app.state.robot_faults["registry-alpha"] = SimpleNamespace(
-            room_area_id="study", robot_registry_id="registry-alpha"
+            room_area_id="study",
+            robot_registry_id="registry-alpha",
+            outcome_uncertain=False,
         )
         app._discard_unconfirmed_scheduler_job = Mock()
         app.hass.states.values["vacuum.alpha"] = SimpleNamespace(

@@ -24,6 +24,7 @@ from .presentation import (
     robot_hold_attributes,
     robot_settings_attributes,
     room_decision_attributes,
+    room_recovery_attributes,
     scheduler_attributes,
     water_confirmation_attributes,
     water_episode_attributes,
@@ -219,6 +220,8 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         room = self.room_view(self.area_id)
+        if room.recovery:
+            return "Room blocked — recovery confirmation required"
         if room.failure:
             return "Room blocked"
         if room.active:
@@ -259,7 +262,9 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
         room = self.room_view(self.area_id)
         candidate = room.next_candidate
         active = active_job_attributes(room.active)
-        failure = fault_attributes(room.failure)
+        failure = fault_attributes(
+            room.failure or (room.recovery.failure if room.recovery else None)
+        )
         return {
             **super().extra_state_attributes,
             "room": room.name,
@@ -342,6 +347,7 @@ class _RoomScheduleSensor(AdaptiveEntity, SensorEntity):
                 for item in room.duration_estimates_by_robot
             ],
             "occurrence": occurrence_attributes(room.occurrence),
+            "room_recovery": room_recovery_attributes(room.recovery),
             "water_confirmation": water_confirmation_attributes(
                 room.water_confirmation
             ),

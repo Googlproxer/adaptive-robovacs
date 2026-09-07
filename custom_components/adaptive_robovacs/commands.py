@@ -152,6 +152,22 @@ class RecheckAndResumeCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class AcknowledgeRoomRecoveryCommand:
+    """Allow a later retry of exactly one detached interruption episode."""
+
+    area_id: str
+    recovery_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AcknowledgeRobotErrorCommand:
+    """Explicitly abandon an unassociated legacy error checkpoint."""
+
+    robot_registry_id: str
+    held_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class RecheckRoomFaultCommand:
     """Recheck one room-scoped dispatch failure."""
 
@@ -256,6 +272,8 @@ type SchedulerCommand = (
     | StopAndReturnCommand
     | RecheckAndResumeCommand
     | RecheckRoomFaultCommand
+    | AcknowledgeRoomRecoveryCommand
+    | AcknowledgeRobotErrorCommand
     | RecheckTwoPassCompatibilityCommand
     | RecheckCleaningProgramCommand
     | RecheckNotificationTargetsCommand
