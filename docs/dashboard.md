@@ -77,6 +77,16 @@ chronologically, then by room name; status-only rows follow by name. Missing dat
 and an empty enabled-room list have distinct messages. Tapping a Bubble row opens
 Status details. Rows grow to accommodate wrapped text on narrow displays.
 
+Each room also provides a **Clean** Bubble Card button on the right, matching
+the manual-room control's label and icon. It presses the existing room manual
+clean entity, discovered by integration entry, room,
+and role; renamed entities remain discoverable. Missing, ambiguous, or
+unavailable controls are omitted. A button's initial `unknown` state simply
+means it has not been pressed yet and does not hide the control.
+
+This action uses the integration's existing manual-clean behavior, configured
+profiles, and robot selection. Schedule text still opens Status details.
+
 Auto-entities subscribes to its template, including `now()` for day labels. These
 evaluations produce card configuration only, with no entity or Store writes.
 Return the final list with `{{ result.rows }}`. Applying `to_json` to that list

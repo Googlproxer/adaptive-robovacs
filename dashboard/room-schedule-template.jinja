@@ -16,6 +16,11 @@
     | selectattr('attributes.adaptive_robovacs_role', 'eq', 'room_status') | list %}
   {% set schedules = entities
     | selectattr('attributes.adaptive_robovacs_role', 'eq', 'room_schedule') | list %}
+  {% set manual_controls = states.button
+    | selectattr('attributes.adaptive_robovacs_entry_id', 'defined')
+    | selectattr('attributes.adaptive_robovacs_entry_id', 'eq', entry)
+    | selectattr('attributes.adaptive_robovacs_role', 'defined')
+    | selectattr('attributes.adaptive_robovacs_role', 'eq', 'room_manual_clean_control') | list %}
   {% set sorted_rows = namespace(items=[]) %}
   {% for room in statuses
       if room.attributes.enabled | default(false)
@@ -45,12 +50,24 @@
         {% endif %}
       {% endif %}
     {% endif %}
+    {% set actions = namespace(buttons=[]) %}
+    {% set controls = manual_controls
+      | selectattr('attributes.area_id', 'eq', room.attributes.area_id) | list %}
+    {% if controls | count == 1 and controls[0].state != 'unavailable' %}
+        {% set actions.buttons = [{
+          'entity': controls[0].entity_id, 'name': 'Clean', 'icon': 'mdi:robot-vacuum',
+          'show_name': true, 'show_state': false, 'state_background': false,
+          'tap_action': {'action': 'perform-action', 'perform_action': 'button.press',
+            'target': {'entity_id': controls[0].entity_id}}
+        }] %}
+    {% endif %}
     {% set bubble = {
       'type': 'custom:bubble-card', 'card_type': 'button', 'button_type': 'state',
       'entity': room.entity_id, 'name': name, 'icon': 'mdi:calendar-clock',
       'show_state': false, 'show_attribute': true,
       'button_action': {'tap_action': {'action': 'more-info'}},
       'tap_action': {'action': 'more-info'},
+      'sub_button': {'main': actions.buttons, 'bottom': []},
       'styles': '.bubble-button-card-container { height: auto; min-height: 50px; }\n'
         ~ '.bubble-button-card { position: relative; height: auto; min-height: 50px; }\n'
         ~ '.bubble-name-container { padding: 8px 0; }\n'

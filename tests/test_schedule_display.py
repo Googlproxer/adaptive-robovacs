@@ -98,6 +98,56 @@ class ScheduleDisplayTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(result, list)
             return result
 
+    async def test_manual_clean_discovers_renamed_control_and_excludes_other_modes(
+        self,
+    ) -> None:
+        self.set_robot()
+        self.set_room("study", "Study", NOW.isoformat(), entry="entry_2")
+        self.set_room("study", "Renamed room", NOW.isoformat())
+        for suffix, role in [
+            ("clean", "room_manual_clean_control"),
+            ("vacuum", "room_manual_vacuum_control"),
+            ("mop", "room_manual_mop_control"),
+        ]:
+            for entry in ("entry_1", "entry_2"):
+                self.hass.states.async_set(
+                    f"button.renamed_{suffix}_{entry}",
+                    "unknown",
+                    {
+                        "adaptive_robovacs_entry_id": entry,
+                        "adaptive_robovacs_role": role,
+                        "area_id": "study",
+                    },
+                )
+        await self.hass.async_block_till_done()
+        self.events.clear()
+        card = self.render()[0]
+        buttons = card["sub_button"]["main"]
+        self.assertEqual([b["name"] for b in buttons], ["Clean"])
+        self.assertEqual(card["sub_button"]["bottom"], [])
+        self.assertEqual(buttons[0]["icon"], "mdi:robot-vacuum")
+        entity_id = "button.renamed_clean_entry_1"
+        self.assertEqual(buttons[0]["entity"], entity_id)
+        self.assertEqual(
+            buttons[0]["tap_action"],
+            {
+                "action": "perform-action",
+                "perform_action": "button.press",
+                "target": {"entity_id": entity_id},
+            },
+        )
+        self.assertEqual(card["button_action"]["tap_action"], {"action": "more-info"})
+        await self.hass.async_block_till_done()
+        self.assertEqual(self.events, [])
+        clean = self.hass.states.get(entity_id)
+        self.hass.states.async_set(entity_id, "unavailable", clean.attributes)
+        self.assertEqual(self.render()[0]["sub_button"]["main"], [])
+        self.hass.states.async_remove(entity_id)
+        self.assertEqual(self.render()[0]["sub_button"]["main"], [])
+        self.hass.states.async_set(entity_id, "unknown", clean.attributes)
+        self.hass.states.async_set("button.duplicate", "unknown", clean.attributes)
+        self.assertEqual(self.render()[0]["sub_button"]["main"], [])
+
     async def test_timestamp_repeated_writes_emit_no_countdown_state_changes(
         self,
     ) -> None:
