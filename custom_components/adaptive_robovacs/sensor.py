@@ -293,6 +293,19 @@ class _RoomStatusSensor(AdaptiveEntity, SensorEntity):
             "operation": candidate.operation.value if candidate else None,
             "forecast_confidence": candidate.confidence if candidate else 0,
             "occupancy": room.occupancy,
+            "adjacency_mode": room.adjacency_mode.value,
+            "adjacency_active": room.adjacency_active,
+            "adjacency_blocked": room.adjacency_reason is not None,
+            "adjacency_reason": room.adjacency_reason,
+            "adjacent_area_ids": list(room.adjacent_area_ids),
+            "adjacency_blockers": [
+                {
+                    "area_id": item.area_id,
+                    "name": item.name,
+                    "occupancy": item.occupancy,
+                }
+                for item in room.adjacency_blockers
+            ],
             "occupancy_source": room.occupancy_source,
             "vacancy_diagnostic": room.vacancy_diagnostic.as_attributes(),
             "robot_eligibility": [

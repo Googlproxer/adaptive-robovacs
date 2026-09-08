@@ -17,6 +17,8 @@ from .const import (
     CONF_OBSERVE_ONLY,
     CONF_UNRESOLVED_END,
     CONF_UNRESOLVED_START,
+    DEFAULT_ADJACENCY_NIGHT_END,
+    DEFAULT_ADJACENCY_NIGHT_START,
     DEFAULT_BEDROOM_INTERVAL,
     DEFAULT_COMMON_INTERVAL,
     DEFAULT_EXPECTED_MINUTES,
@@ -30,6 +32,7 @@ from .models import (
     FLOOR_PLAN_MIN_ROOM_SPAN,
     ROBOT_ERROR_CATEGORIES,
     ROOM_PROFILE_OVERRIDE_KEYS,
+    AdjacencyMode,
     CleaningOperation,
     CleaningProgram,
     FaultCode,
@@ -45,7 +48,7 @@ from .models import (
     room_cleaning_profile_is_custom,
 )
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 RETIRED_GLOBAL_SETTINGS = frozenset({"hall_start", "hall_end"})
 DAILY_WINDOW_VERSION = 1
 
@@ -258,6 +261,8 @@ class GlobalSettings:
     forecast_confidence: float = DEFAULT_FORECAST_CONFIDENCE
     unresolved_start: str = DEFAULT_UNRESOLVED_START
     unresolved_end: str = DEFAULT_UNRESOLVED_END
+    adjacency_night_start: str = DEFAULT_ADJACENCY_NIGHT_START
+    adjacency_night_end: str = DEFAULT_ADJACENCY_NIGHT_END
 
     @classmethod
     def from_entry(cls, entry_data: Mapping[str, object]) -> GlobalSettings:
@@ -288,6 +293,18 @@ class GlobalSettings:
             defaults.unresolved_end,
             "global unresolved_end",
         )
+        night_start = _daily_time(
+            value.get("adjacency_night_start"),
+            defaults.adjacency_night_start,
+            "global adjacency_night_start",
+        )
+        night_end = _daily_time(
+            value.get("adjacency_night_end"),
+            defaults.adjacency_night_end,
+            "global adjacency_night_end",
+        )
+        if night_start == night_end:
+            raise StateSchemaError("adjacency night start and end must differ")
         return cls(
             observe_only=bool(value.get("observe_only", defaults.observe_only)),
             party_mode=bool(value.get("party_mode", defaults.party_mode)),
@@ -300,6 +317,8 @@ class GlobalSettings:
             ),
             unresolved_start=unresolved_start,
             unresolved_end=unresolved_end,
+            adjacency_night_start=night_start,
+            adjacency_night_end=night_end,
         )
 
 
@@ -320,6 +339,7 @@ class RoomSettings:
     mop_intensity: str | None = None
     cleaning_depth: str | None = None
     profile_custom: bool = False
+    adjacency_mode: AdjacencyMode = AdjacencyMode.NIGHT_ONLY
 
     @property
     def vacuum_interval(self) -> float:
@@ -373,6 +393,13 @@ class RoomSettings:
                 )
         else:
             window = {}
+        raw_adjacency_mode = value.get("adjacency_mode", default.adjacency_mode)
+        try:
+            if not isinstance(raw_adjacency_mode, str):
+                raise ValueError("mode must be a string")
+            adjacency_mode = AdjacencyMode(raw_adjacency_mode)
+        except ValueError as err:
+            raise StateSchemaError("invalid room adjacency_mode") from err
         raw_start = value.get("desired_window_start", window.get("start"))
         raw_end = value.get("desired_window_end", window.get("end"))
         profile_custom = _boolean(
@@ -382,6 +409,7 @@ class RoomSettings:
         ) or any(value.get(key) is not None for key in ROOM_PROFILE_OVERRIDE_KEYS)
         return cls(
             enabled=bool(value.get("enabled", default.enabled)),
+            adjacency_mode=adjacency_mode,
             cleaning_interval=_bounded_number(
                 value.get("cleaning_interval", value.get("vacuum_interval")),
                 default.cleaning_interval,
@@ -425,6 +453,7 @@ class RoomSettings:
 
         return {
             "enabled": self.enabled,
+            "adjacency_mode": self.adjacency_mode.value,
             "cleaning_interval": self.cleaning_interval,
             "expected_minutes": self.expected_minutes,
             "ignore_desired_window": self.ignore_desired_window,
@@ -1913,10 +1942,16 @@ class SchedulerState:
             return cls.create(entry_data), False
         data = _mapping(payload, "stored scheduler state")
         schema_version = data.get("schema_version")
-        if schema_version == 16:
+        if schema_version is not None and (
+            isinstance(schema_version, bool) or not isinstance(schema_version, int)
+        ):
+            raise StateSchemaError("schema_version must be an integer")
+        if schema_version in {16, 17}:
             # Validate the full former current schema before any permissive
             # legacy parsing. Retired settings remain ignored by that validator.
-            upgraded = {**data, "schema_version": SCHEMA_VERSION, "room_recoveries": {}}
+            upgraded = {**data, "schema_version": SCHEMA_VERSION}
+            if schema_version == 16:
+                upgraded["room_recoveries"] = {}
             cls._validate_current_schema(upgraded)
             return cls._from_versioned(upgraded, entry_data), True
         if schema_version is None or schema_version == 1:
@@ -1968,7 +2003,7 @@ class SchedulerState:
         """Reject malformed current records instead of silently dropping them."""
 
         if data.get("schema_version") != SCHEMA_VERSION:
-            raise StateSchemaError("schema_version must be 17")
+            raise StateSchemaError(f"schema_version must be {SCHEMA_VERSION}")
 
         room_settings = _mapping(data.get("room_settings"), "room_settings")
         robot_settings = _mapping(data.get("robot_settings"), "robot_settings")

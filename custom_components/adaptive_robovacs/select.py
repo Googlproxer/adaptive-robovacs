@@ -22,6 +22,7 @@ from .entity import (
 from .models import (
     ROOM_CLEANING_PERIOD_OPTIONS,
     ROOM_CLEANING_PROFILE_OPTIONS,
+    AdjacencyMode,
     is_native_mop_profile_value,
 )
 from .runtime_data import AdaptiveRoboVacsConfigEntry
@@ -45,6 +46,12 @@ PROGRAM_VALUES = {
 }
 PROGRAM_LABELS = {value: label for label, value in PROGRAM_VALUES.items()}
 NOT_CONFIGURED_OPTION = "Not configured"
+ADJACENCY_OPTIONS = {
+    "Off": AdjacencyMode.OFF,
+    "Night only": AdjacencyMode.NIGHT_ONLY,
+    "Always": AdjacencyMode.ALWAYS,
+}
+ADJACENCY_LABELS = list(ADJACENCY_OPTIONS)
 
 
 class _TimeSelect(AdaptiveEntity, SelectEntity):
@@ -101,6 +108,38 @@ class _RoomTimeSelect(AdaptiveEntity, SelectEntity):
                 self.area_id,
                 self.key,
                 None if option == USE_GLOBAL_OPTION else option,
+            )
+        )
+
+
+class _RoomAdjacencySelect(AdaptiveEntity, SelectEntity):
+    """Control restrictions on this room's own scheduled cleaning."""
+
+    _attr_options = ADJACENCY_LABELS
+
+    def __init__(
+        self, coordinator: AdaptiveRoboVacsCoordinator, area_id: str, name: str
+    ) -> None:
+        super().__init__(
+            coordinator,
+            f"room_{area_id}_adjacency_mode",
+            name,
+            "room_adjacency_mode_control",
+            area_id=area_id,
+        )
+        self.area_id = area_id
+
+    @property
+    def current_option(self) -> str:
+        mode = self.room_view(self.area_id).adjacency_mode
+        return next(
+            label for label, value in ADJACENCY_OPTIONS.items() if value == mode
+        )
+
+    async def async_select_option(self, option: str) -> None:
+        await self.coordinator.async_execute(
+            SetRoomSettingCommand(
+                self.area_id, "adjacency_mode", ADJACENCY_OPTIONS[option]
             )
         )
 
@@ -458,6 +497,8 @@ def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
     entities: list[AdaptiveEntity] = [
         _TimeSelect(coordinator, "unresolved_start", "Desired cleaning start"),
         _TimeSelect(coordinator, "unresolved_end", "Desired cleaning end"),
+        _TimeSelect(coordinator, "adjacency_night_start", "Adjacency night start"),
+        _TimeSelect(coordinator, "adjacency_night_end", "Adjacency night end"),
     ]
     for robot in coordinator.data.robots:
         entities.append(
@@ -524,6 +565,11 @@ def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
                 )
             )
     for room in coordinator.data.rooms:
+        entities.append(
+            _RoomAdjacencySelect(
+                coordinator, room.area_id, f"{room.name} adjacency protection"
+            )
+        )
         supports_mopping = any(
             robot.floor_id == room.floor_id and "mop" in robot.supported_operations
             for robot in coordinator.data.robots

@@ -20,7 +20,7 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from .commands import EvaluateCommand
-from .models import EvaluationCause, EvaluationMode
+from .models import EvaluationCause, EvaluationMode, next_daily_window_boundary
 
 
 class SchedulerRuntime:
@@ -39,6 +39,7 @@ class SchedulerRuntime:
         home_assistant_started_handler: Callable[[Event[Any]], None],
         submit: Callable[[EvaluateCommand], Coroutine[Any, Any, object]],
         create_task: Callable[[Coroutine[Any, Any, object]], object],
+        night_window: Callable[[], tuple[str, str]] | None = None,
     ) -> None:
         self._hass = hass
         self._interval_handler = interval_handler
@@ -51,10 +52,16 @@ class SchedulerRuntime:
         self._submit = submit
         self._create_task = create_task
         self._unsubscribers: list[Callable[[], None]] = []
+        self._night_window = night_window
+        self._night_cancel: Callable[[], None] | None = None
+        self._night_deadline: datetime | None = None
+        self._running = False
 
     async def async_start(self, settle_until: datetime) -> None:
         """Register callbacks only after durable recovery has completed."""
 
+        self._running = True
+        self.update_adjacency_window()
         self._unsubscribers.extend(
             [
                 async_track_time_interval(
@@ -129,8 +136,54 @@ class SchedulerRuntime:
             )
         )
 
+    @callback
+    def stop_adjacency_timer(self) -> None:
+        """Invalidate even an already queued boundary callback."""
+
+        if self._night_cancel:
+            self._night_cancel()
+        self._night_cancel = None
+        self._night_deadline = None
+
+    @callback
+    def update_adjacency_window(self) -> None:
+        """Own a single timer for the next real local night transition."""
+
+        if not self._running or self._night_window is None:
+            return
+        deadline = next_daily_window_boundary(dt_util.now(), *self._night_window())
+        if deadline == self._night_deadline:
+            return
+        self.stop_adjacency_timer()
+        if deadline is None:
+            return
+        self._night_deadline = deadline
+
+        @callback
+        def boundary_reached(_timestamp: datetime) -> None:
+            if not self._running or self._night_deadline != deadline:
+                return
+            self._night_cancel = None
+            self._night_deadline = None
+            self.update_adjacency_window()
+            self._create_task(
+                self._submit(
+                    EvaluateCommand(
+                        mode=EvaluationMode.DISPATCH,
+                        cause=EvaluationCause.ADJACENCY_BOUNDARY,
+                        coalesce=True,
+                    )
+                )
+            )
+
+        self._night_cancel = async_track_point_in_utc_time(
+            self._hass, boundary_reached, deadline
+        )
+
     async def async_stop(self) -> None:
         """Unsubscribe every external callback exactly once."""
 
+        self._running = False
+        self.stop_adjacency_timer()
         while self._unsubscribers:
             self._unsubscribers.pop()()

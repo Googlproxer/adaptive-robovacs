@@ -102,7 +102,7 @@ manual_clean_room:
           integration: adaptive_robovacs
 save_floor_plan:
   name: Save floor plan
-  description: Administrator-only atomic save of one visual floor-plan draft. This does not start, stop, defer, or otherwise change cleaning work.
+  description: Administrator-only atomic save of one floor-plan draft. Links affect adjacency protection for subsequent scheduled stages. Saving refreshes the preview without starting or stopping cleaning.
   fields:
     floor_id:
       name: Floor
@@ -152,7 +152,7 @@ save_floor_plan:
           integration: adaptive_robovacs
 set_room_adjacency:
   name: Set room adjacency
-  description: Administrator-only replacement of one discovered room's direct same-floor neighbours. This saves topology only; scheduler cross-room occupancy blocking is not enabled by this release.
+  description: Administrator-only replacement of one discovered room's direct same-floor neighbours. Links affect adjacency protection for subsequent scheduled stages. Saving refreshes the preview without starting or stopping cleaning.
   fields:
     area_id:
       name: Room

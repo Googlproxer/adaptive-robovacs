@@ -586,7 +586,7 @@ class ApplicationDispatchMixin:
         self,
         robot: DiscoveredRobot,
     ) -> None:
-        """Clear a checkpoint when shutdown wins before the start call."""
+        """Clear an unstarted checkpoint after shutdown or a fresh safety block."""
 
         self.state.active_jobs[robot.registry_id] = None
         await self._async_save()

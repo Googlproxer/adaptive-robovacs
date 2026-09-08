@@ -20,6 +20,133 @@ sys.modules[SPEC.name] = models
 SPEC.loader.exec_module(models)
 
 
+class AdjacencyPolicyTests(unittest.TestCase):
+    def decision(self, *, area="hall", mode="night_only", now=None, occupancy=None):
+        return models.resolve_adjacency(
+            area,
+            models.AdjacencyMode(mode),
+            now or datetime(2026, 9, 8, 23, tzinfo=UTC),
+            "23:00",
+            "09:00",
+            (
+                ("bedroom", "hall"),
+                ("hall", "living"),
+                ("hall", "missing"),
+                ("hall", "upstairs"),
+                ("hall", "hall"),
+            ),
+            {
+                "bedroom": "ground",
+                "hall": "ground",
+                "living": "ground",
+                "upstairs": "upper",
+            },
+            occupancy
+            or {"bedroom": "occupied", "hall": "unoccupied", "living": "unoccupied"},
+        )
+
+    def test_direct_two_way_links_do_not_propagate_restrictions(self):
+        hall = self.decision()
+        self.assertEqual(hall.neighbor_area_ids, ("bedroom", "living"))
+        self.assertEqual(
+            hall.blockers, (models.AdjacencyBlocker("bedroom", "occupied"),)
+        )
+        self.assertFalse(self.decision(area="living").blocked)
+        self.assertTrue(
+            self.decision(area="bedroom", occupancy={"hall": "occupied"}).blocked
+        )
+        self.assertEqual(self.decision(area="missing").neighbor_area_ids, ())
+
+    def test_modes_and_half_open_night_boundaries(self):
+        for hour, minute, night in (
+            (22, 59, False),
+            (23, 0, True),
+            (0, 0, True),
+            (8, 59, True),
+            (9, 0, False),
+            (12, 0, False),
+        ):
+            for mode in ("off", "night_only", "always"):
+                with self.subTest(hour=hour, minute=minute, mode=mode):
+                    result = self.decision(
+                        mode=mode, now=datetime(2026, 9, 8, hour, minute, tzinfo=UTC)
+                    )
+                    self.assertEqual(
+                        result.blocked,
+                        mode == "always" or (mode == "night_only" and night),
+                    )
+
+    def test_unknown_missing_and_multiple_neighbours_fail_closed(self):
+        for state in ("unresolved", "unknown", "unavailable"):
+            result = self.decision(occupancy={"bedroom": state})
+            self.assertEqual(
+                result.blockers,
+                (
+                    models.AdjacencyBlocker("bedroom", "unresolved"),
+                    models.AdjacencyBlocker("living", "unresolved"),
+                ),
+            )
+        result = self.decision(
+            occupancy={"bedroom": "unoccupied", "living": "unoccupied"}
+        )
+        self.assertFalse(result.blocked)
+
+    def test_sensor_resolution_remains_the_single_occupancy_authority(self):
+        for radars, fallbacks, blocked in (
+            ([], [], False),
+            (["unavailable"], ["off"], False),
+            (["on"], ["off"], True),
+            (["unavailable"], [], True),
+            ([], ["on"], True),
+            (["off"], ["on"], False),
+        ):
+            resolved = models.resolve_occupancy(radars, fallbacks)
+            self.assertEqual(
+                self.decision(
+                    occupancy={"bedroom": resolved.state, "living": "unoccupied"}
+                ).blocked,
+                blocked,
+            )
+
+    def test_night_boundary_uses_local_time_and_daylight_saving_transitions(self):
+        tz = ZoneInfo("Australia/Sydney")
+        self.assertEqual(
+            models.next_daily_window_boundary(
+                datetime(2026, 10, 3, 23, tzinfo=tz), "23:00", "09:00"
+            ),
+            datetime(2026, 10, 3, 22, tzinfo=UTC),
+        )
+        self.assertEqual(
+            models.next_daily_window_boundary(
+                datetime(2026, 9, 8, 9, tzinfo=tz), "23:00", "09:00"
+            ),
+            datetime(2026, 9, 8, 13, tzinfo=UTC),
+        )
+        # The clock jump itself closes an interval whose endpoint is nonexistent.
+        self.assertEqual(
+            models.next_daily_window_boundary(
+                datetime(2026, 10, 4, 1, tzinfo=tz), "01:00", "02:30"
+            ),
+            datetime(2026, 10, 3, 16, tzinfo=UTC),
+        )
+        # Repeated wall times close at the first occurrence and reopen on rollback.
+        self.assertEqual(
+            models.next_daily_window_boundary(
+                datetime(2026, 4, 5, 2, 45, fold=0, tzinfo=tz), "02:00", "02:30"
+            ),
+            datetime(2026, 4, 4, 16, tzinfo=UTC),
+        )
+        self.assertIsNone(
+            models.next_daily_window_boundary(datetime(2026, 9, 8), "23:00", "09:00")
+        )
+        for start, end in (("23:00", "23:00"), ("invalid", "09:00")):
+            self.assertIsNone(
+                models.next_daily_window_boundary(
+                    datetime(2026, 9, 8, tzinfo=UTC), start, end
+                )
+            )
+
+
 @dataclass
 class ProfileSettings:
     """Small typed policy used to exercise domain profile decisions."""

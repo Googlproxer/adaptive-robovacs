@@ -694,7 +694,7 @@ class RecoveryCodecTests(unittest.TestCase):
         migrated, changed = SchedulerState.from_store(original, ENTRY_DATA)
         self.assertTrue(changed)
         self.assertEqual(original, before)
-        self.assertEqual(migrated.encode()["schema_version"], 17)
+        self.assertEqual(migrated.encode()["schema_version"], 18)
         self.assertEqual(
             migrated.occurrences["study"].to_store(),
             app.state.occurrences["study"].to_store(),

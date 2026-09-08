@@ -12,6 +12,7 @@ from homeassistant.util import dt as dt_util
 
 from .discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
 from .models import (
+    AdjacencyDecision,
     CleaningOperation,
     DurationEstimate,
     OccurrenceSource,
@@ -29,6 +30,7 @@ from .models import (
     stage_pass_count,
 )
 from .planner import CandidateRobotDecision, ScheduleCandidate, VacancyDiagnostic
+from .presentation import adjacency_block_reason
 from .repairs_manager import fault_summary, room_recovery_summary
 from .room_status import room_robot_previews
 from .snapshots import (
@@ -52,6 +54,7 @@ from .snapshots import (
     RobotHoldView,
     RobotSettingsView,
     RobotView,
+    RoomAdjacencyBlockerView,
     RoomDecisionView,
     RoomRecoveryView,
     RoomView,
@@ -106,6 +109,10 @@ class ProjectionSource(Protocol):
     def _robot_settings(self, robot: DiscoveredRobot) -> RobotSettings: ...
 
     def _desired_window(self, room: DiscoveredRoom) -> ResolvedDailyWindow: ...
+
+    def _adjacency_decision(
+        self, room: DiscoveredRoom, now: datetime
+    ) -> AdjacencyDecision: ...
 
     def _room_due(
         self,
@@ -376,6 +383,10 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
     )
     next_due = source._room_due(room, "cleaning", now)
     candidate, reason = source._room_candidate(room, now)
+    adjacency = source._adjacency_decision(room, now)
+    adjacency_reason = adjacency_block_reason(
+        adjacency, {key: item.name for key, item in source.discovery.rooms.items()}
+    )
     diagnostics = source._candidate_robot_diagnostics(candidate) if candidate else ()
     eligibility = tuple(
         RobotEligibilityView(
@@ -561,6 +572,18 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         cleaning_period=source.room_cleaning_period(room.area_id),
         cleaning_profile=source.room_cleaning_profile(room.area_id),
         enabled=settings.enabled,
+        adjacency_mode=settings.adjacency_mode,
+        adjacency_active=adjacency.active,
+        adjacent_area_ids=adjacency.neighbor_area_ids,
+        adjacency_blockers=tuple(
+            RoomAdjacencyBlockerView(
+                item.area_id, source.discovery.rooms[item.area_id].name, item.occupancy
+            )
+            for item in adjacency.blockers
+        ),
+        adjacency_reason=(
+            None if occurrence and occurrence.manual_override else adjacency_reason
+        ),
         cleaning_interval=settings.cleaning_interval,
         expected_minutes=settings.expected_minutes,
         ignore_desired_window=settings.ignore_desired_window,
@@ -860,6 +883,8 @@ def build_snapshot(source: ProjectionSource) -> IntegrationSnapshot:
     if not isinstance(confidence, (int, float)):
         raise TypeError("forecast_confidence must be numeric")
     scheduler = SchedulerView(
+        adjacency_night_start=source.state.global_settings.adjacency_night_start,
+        adjacency_night_end=source.state.global_settings.adjacency_night_end,
         observe_only=source.observe_only,
         party_mode=source.party_mode,
         scheduler_halted=source.scheduler_halted,

@@ -22,6 +22,8 @@ READY_CONFIRMATION_DELAY: Final = timedelta(seconds=10)
 # Occupancy providers may take a few seconds to re-publish their true state
 # after Home Assistant starts. Do not dispatch into that restoration gap.
 STARTUP_STATE_SETTLE_DELAY: Final = timedelta(minutes=1)
+DEFAULT_ADJACENCY_NIGHT_START: Final = "23:00"
+DEFAULT_ADJACENCY_NIGHT_END: Final = "09:00"
 
 # Home Assistant normalizes label IDs from display names with underscores.
 # The documented labels may be shown as ``robovac-bedroom`` in the UI, but

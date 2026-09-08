@@ -70,6 +70,9 @@ class DispatchDependencies:
         [DiscoveredRobot, DiscoveredRoom, ScheduleCandidate, ActiveJob, datetime],
         Awaitable[None],
     ]
+    start_block_reason: Callable[[ScheduleCandidate, datetime], str | None] | None = (
+        None
+    )
 
 
 class DispatchPipeline:
@@ -356,6 +359,11 @@ class DispatchPipeline:
             if dependencies.is_closing():
                 await dependencies.async_abandon_checkpoint(robot)
                 return False, "coordinator shutting down"
+            if dependencies.start_block_reason:
+                reason = dependencies.start_block_reason(candidate, dt_util.utcnow())
+                if reason:
+                    await dependencies.async_abandon_checkpoint(robot)
+                    return False, f"waiting for {room.name}: {reason}"
             async with asyncio.timeout(SERVICE_CALL_TIMEOUT_SECONDS):
                 result = await self._gateway.async_dispatch(robot, request)
         except Exception:  # Integration service exceptions vary by HA version.

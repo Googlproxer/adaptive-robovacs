@@ -25,6 +25,7 @@ from ..const import (
 )
 from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
 from ..models import (
+    AdjacencyDecision,
     CleaningOperation,
     CleaningProgram,
     EvaluationCause,
@@ -51,6 +52,7 @@ from ..models import (
     map_recovery_hold_is_manual,
     ready_confirmation_elapsed,
     requested_cleaning_profile,
+    resolve_adjacency,
     resolve_cleaning_profile,
     stage_pass_count,
     startup_dispatch_allowed,
@@ -63,6 +65,7 @@ from ..planner import (
     ScheduleCandidate,
     VacancyDiagnostic,
 )
+from ..presentation import adjacency_block_reason
 from ..state import (
     ActiveJob,
     CleaningStage,
@@ -619,6 +622,39 @@ class ApplicationPolicyMixin:
             source=(occurrence.source if occurrence else OccurrenceSource.SCHEDULER),
         )
 
+    def _adjacency_decision(
+        self, room: DiscoveredRoom, now: datetime
+    ) -> AdjacencyDecision:
+        """Apply the target's policy to settled neighbouring occupancy."""
+
+        settings = self.state.global_settings
+        return resolve_adjacency(
+            room.area_id,
+            self._room_settings(room).adjacency_mode,
+            _local(now),
+            settings.adjacency_night_start,
+            settings.adjacency_night_end,
+            self.state.floor_plan.edges,
+            {key: item.floor_id for key, item in self.discovery.rooms.items()},
+            {key: item.occupancy for key, item in self.state.room_history.items()},
+        )
+
+    def _dispatch_adjacency_block_reason(
+        self, candidate: ScheduleCandidate, now: datetime
+    ) -> str | None:
+        """Reobserve after profile/checkpoint awaits and before the start call."""
+
+        if candidate.manual_override:
+            return None
+        room = self.discovery.rooms.get(candidate.room_id)
+        if room is None:
+            return "room is no longer discovered"
+        self._observe_occupancy(now)
+        return adjacency_block_reason(
+            self._adjacency_decision(room, now),
+            {key: item.name for key, item in self.discovery.rooms.items()},
+        )
+
     def _room_candidate(
         self,
         room: DiscoveredRoom,
@@ -654,6 +690,13 @@ class ApplicationPolicyMixin:
                 return None, "waiting for water confirmation"
         if not manual_override and detail.occupancy == "occupied":
             return None, (f"occupancy {detail.occupancy} ({detail.occupancy_source})")
+        if not manual_override:
+            adjacency_reason = adjacency_block_reason(
+                self._adjacency_decision(room, now),
+                {key: item.name for key, item in self.discovery.rooms.items()},
+            )
+            if adjacency_reason:
+                return None, adjacency_reason
         bypass_desired_window = bool(occurrence and occurrence.bypass_desired_window)
         if (
             not manual_override

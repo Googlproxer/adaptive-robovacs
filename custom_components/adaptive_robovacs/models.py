@@ -28,6 +28,76 @@ class CleaningOperation(StrEnum):
     MOP = "mop"
 
 
+class AdjacencyMode(StrEnum):
+    """When neighbouring occupancy protects a room from scheduled starts."""
+
+    OFF = "off"
+    NIGHT_ONLY = "night_only"
+    ALWAYS = "always"
+
+
+@dataclass(frozen=True, slots=True)
+class AdjacencyBlocker:
+    """Resolved occupancy evidence for one direct neighbour."""
+
+    area_id: str
+    occupancy: str
+
+
+@dataclass(frozen=True, slots=True)
+class AdjacencyDecision:
+    """A transient restriction, independent of the target room's occupancy."""
+
+    active: bool
+    neighbor_area_ids: tuple[str, ...]
+    blockers: tuple[AdjacencyBlocker, ...]
+
+    @property
+    def blocked(self) -> bool:
+        return bool(self.blockers)
+
+
+def resolve_adjacency(
+    area_id: str,
+    mode: AdjacencyMode,
+    now: datetime,
+    night_start: str,
+    night_end: str,
+    edges: Iterable[tuple[str, str]],
+    room_floor_by_id: Mapping[str, str],
+    occupancy_by_id: Mapping[str, str],
+) -> AdjacencyDecision:
+    """Protect only direct live same-floor neighbours; never traverse the graph."""
+
+    floor_id = room_floor_by_id.get(area_id)
+    neighbors = tuple(
+        sorted(
+            {
+                right if left == area_id else left
+                for left, right in edges
+                if area_id in (left, right)
+                and left != right
+                and floor_id is not None
+                and room_floor_by_id.get(left) == floor_id
+                and room_floor_by_id.get(right) == floor_id
+            }
+        )
+    )
+    active = mode == AdjacencyMode.ALWAYS or (
+        mode == AdjacencyMode.NIGHT_ONLY
+        and in_daytime_window(now, night_start, night_end)
+    )
+    blockers = tuple(
+        AdjacencyBlocker(
+            neighbor,
+            "occupied" if occupancy_by_id.get(neighbor) == "occupied" else "unresolved",
+        )
+        for neighbor in neighbors
+        if active and occupancy_by_id.get(neighbor) != "unoccupied"
+    )
+    return AdjacencyDecision(active, neighbors, blockers)
+
+
 class CleaningProgram(StrEnum):
     """Ordered room-cleaning program."""
 
@@ -153,6 +223,7 @@ class EvaluationCause(StrEnum):
     REPAIR = "repair"
     USER_PREVIEW = "dashboard_preview"
     STAGE_TRANSITION = "stage_transition"
+    ADJACENCY_BOUNDARY = "adjacency_boundary"
 
 
 VALID_OCCUPANCY_STATES = {"on", "off"}
@@ -1602,6 +1673,15 @@ def next_clean_schedule(
         else:
             opening = None
     return None, None
+
+
+def next_daily_window_boundary(now: datetime, start: str, end: str) -> datetime | None:
+    """Return the next real opening or closing, including DST clock changes."""
+
+    opening, closing = next_clean_schedule(now, now, start, end)
+    if opening is None:
+        return None
+    return closing if opening <= now.astimezone(UTC) else opening
 
 
 def format_time_until(due_at: datetime, now: datetime) -> str:

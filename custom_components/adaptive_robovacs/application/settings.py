@@ -14,10 +14,12 @@ from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
 from ..floor_plans import FloorPlanWrite, replace_floor_plan, replace_room_adjacency
 from ..models import (
     ROOM_PROFILE_OVERRIDE_KEYS,
+    AdjacencyMode,
     CleaningProgram,
     JobPhase,
     ResolvedDailyWindow,
     is_native_mop_profile_value,
+    is_valid_daily_time,
     mop_stage_start_is_observed,
     native_mop_profile_default_migration,
     resolve_daily_window,
@@ -192,6 +194,8 @@ class ApplicationSettingsMixin:
             "forecast_confidence",
             "unresolved_start",
             "unresolved_end",
+            "adjacency_night_start",
+            "adjacency_night_end",
         }:
             raise ValueError(f"Unknown global setting: {key}")
         if key == "observe_only":
@@ -206,6 +210,7 @@ class ApplicationSettingsMixin:
             raise ValueError(f"Unknown room area: {area_id}")
         if key not in {
             "enabled",
+            "adjacency_mode",
             "cleaning_interval",
             "vacuum_interval",
             "expected_minutes",
@@ -298,8 +303,8 @@ class ApplicationSettingsMixin:
                 },
             )
             await self._async_save()
-            self._notify_listeners()
-            return self.floor_plan_view()
+        await self.async_evaluate(dry_run=True, reason="floor_plan")
+        return self.floor_plan_view()
 
     async def async_set_room_adjacency(
         self, area_id: str, neighbor_area_ids: list[str]
@@ -318,8 +323,8 @@ class ApplicationSettingsMixin:
                 },
             )
             await self._async_save()
-            self._notify_listeners()
-            return self.floor_plan_view()
+        await self.async_evaluate(dry_run=True, reason="room_adjacency")
+        return self.floor_plan_view()
 
     def _mop_washing_is_observed(
         self, robot: DiscoveredRobot | None, active: ActiveJob | None
@@ -376,8 +381,22 @@ class ApplicationSettingsMixin:
             "forecast_confidence",
             "unresolved_start",
             "unresolved_end",
+            "adjacency_night_start",
+            "adjacency_night_end",
         }:
             raise ValueError(f"Unknown global setting: {key}")
+        if key in {"adjacency_night_start", "adjacency_night_end"}:
+            if not isinstance(value, str) or not is_valid_daily_time(value):
+                raise ValueError("Adjacency night bounds must be HH:MM times")
+            if int(value[-2:]) % 15:
+                raise ValueError("Adjacency night bounds must use 15-minute steps")
+            other_key = (
+                "adjacency_night_end"
+                if key.endswith("start")
+                else "adjacency_night_start"
+            )
+            if value == getattr(self.state.global_settings, other_key):
+                raise ValueError("Adjacency night start and end must differ")
         if key in {"unresolved_start", "unresolved_end"}:
             global_start = (
                 str(value)
@@ -443,6 +462,7 @@ class ApplicationSettingsMixin:
             raise ValueError(f"Unknown room area: {area_id}")
         if key not in {
             "enabled",
+            "adjacency_mode",
             "cleaning_interval",
             "vacuum_interval",
             "expected_minutes",
@@ -462,6 +482,8 @@ class ApplicationSettingsMixin:
             raise ValueError(f"Unknown room setting: {key}")
         room = self.discovery.rooms[area_id]
         settings = self._room_settings(room)
+        if key == "adjacency_mode":
+            value = AdjacencyMode(value)
         key = {
             "vacuum_interval": "cleaning_interval",
             "pass_count": "vacuum_pass_count",

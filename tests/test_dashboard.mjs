@@ -343,6 +343,40 @@ test("vacuum card ignores retired map controls and never offers map actions", ()
   ]);
 });
 
+test("adjacency selector stays below occupancy independently of profile and period", () => {
+  for (const period of ["Off", "Default", "Night", "Custom"]) {
+    for (const profile of ["Robot default", "Custom"]) {
+      const states = baseStates();
+      states["select.renamed_adjacency"] = adaptiveState("room_adjacency_mode_control", {
+        area_id: "kitchen", friendly_name: "Kitchen adjacency protection",
+        options: ["Off", "Night only", "Always"],
+      }, "Night only");
+      states["select.kitchen_cleaning_period"].state = period;
+      states["select.kitchen_cleaning_profile"].state = profile;
+      const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
+      const rows = configuration.entities;
+      const occupancy = rows.findIndex((row) => row.entity === "sensor.kitchen_occupancy");
+      assert.deepEqual(rows[occupancy + 1], {
+        entity: "select.renamed_adjacency", name: "Adjacency protection",
+      });
+      assert.equal(rows.filter((row) => row.entity === "select.renamed_adjacency").length, 1);
+    }
+  }
+});
+
+test("global card discovers both adjacency night controls", () => {
+  const states = baseStates();
+  for (const bound of ["start", "end"]) {
+    states[`select.night_${bound}`] = adaptiveState("global_control", {
+      friendly_name: `Adjacency night ${bound}`,
+    }, bound === "start" ? "23:00" : "09:00");
+  }
+  const { configuration } = configure(GlobalCard, {}, states);
+  const ids = configuration.entities.map((row) => typeof row === "string" ? row : row.entity);
+  assert.ok(ids.includes("select.night_start"));
+  assert.ok(ids.includes("select.night_end"));
+});
+
 test("room card contains one selected room with simple controls before advanced settings", () => {
   const { configuration } = configure(RoomCard, { area_id: "kitchen" });
   assert.equal(configuration.title, "Kitchen");

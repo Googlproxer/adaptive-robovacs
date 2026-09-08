@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 
-from .models import RequestedCleaningProfile, ResolvedCleaningProfile
+from .models import AdjacencyDecision, RequestedCleaningProfile, ResolvedCleaningProfile
 from .snapshots import (
     ActiveJobView,
     CandidateView,
@@ -29,6 +30,21 @@ from .snapshots import (
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def adjacency_block_reason(
+    decision: AdjacencyDecision, room_names: Mapping[str, str]
+) -> str | None:
+    """Name the live neighbours responsible for a transient restriction."""
+
+    if not decision.blocked:
+        return None
+    neighbors = "; ".join(
+        f"{room_names.get(blocker.area_id, blocker.area_id)} "
+        f"({'occupied' if blocker.occupancy == 'occupied' else 'occupancy unresolved'})"
+        for blocker in decision.blockers
+    )
+    return f"Adjacent room protection: {neighbors}"
 
 
 def _resolved_profile(
@@ -355,6 +371,8 @@ def floor_plan_attributes(plan: FloorPlanView) -> dict[str, object]:
 def scheduler_attributes(scheduler: SchedulerView) -> dict[str, object]:
     singular = fault_attributes(scheduler.failure)
     return {
+        "adjacency_night_start": scheduler.adjacency_night_start,
+        "adjacency_night_end": scheduler.adjacency_night_end,
         "last_evaluation": _iso(scheduler.last_evaluation_at),
         "preview": thaw_json(scheduler.preview),
         "scheduler_fault": singular,

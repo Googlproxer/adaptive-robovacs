@@ -7,6 +7,9 @@ based on current source, existing tests, release documentation, and the user's
 field observations recorded below; this review did not run live Home Assistant
 or hardware checks.
 
+On 2026-09-08, adjacency was implemented for v1.16.0 using the user's approved
+replacement policy below. The other remaining items are unchanged.
+
 The recent [application package refactor](application-package-refactor.md)
 remains a separate, unchanged implementation plan.
 
@@ -14,44 +17,8 @@ remains a separate, unchanged implementation plan.
 
 | Item | Current status | Remaining outcome |
 | --- | --- | --- |
-| [Adjacent-room occupancy](#adjacent-room-occupancy) | Topology storage and editing service exist; scheduling gate is absent. | Direct neighbors block new scheduled and dashboard-manual stages. |
 | [Bedroom confirmation](#bedroom-confirmation) | Water-notification infrastructure exists; bedroom authorization is absent. | One assigned user and phone approve each bedroom occurrence. |
 | [Occupancy investigation](#occupancy-investigation) | Typed vacancy diagnostics and a bounded decision audit exist. | Explain missed windows from evidence; complete audit/UI gaps before considering a correction. |
-
-### Adjacent-room occupancy
-
-The existing [floor-plan model and reducers](../../custom_components/adaptive_robovacs/floor_plans.py)
-already store canonical, symmetric area-ID edges and support atomic neighbor
-replacement through `adaptive_robovacs.set_room_adjacency`. The
-[v1.12.0 release](../releases/v1.12.0.md) explicitly makes those links visual
-only. The [v1.14.0 notes](../releases/v1.14.0.md) still identify scheduling
-adjacency as future work. Reconcile this existing topology with the new safety
-meaning and document migration/activation; do not recreate the service or
-silently assume saved diagrams already authorize occupancy blocking.
-
-Remaining requirements:
-
-- Evaluate the target room and its direct, same-floor neighbors symmetrically.
-  A-B and B-C must not make C a blocker for A without an A-C edge. Local
-  occupancy remains mandatory.
-- Apply the same gate to scheduled work, initial dashboard-manual requests,
-  and every later stage. An initially blocked manual request creates no latent
-  clean; an already-started sequence retains only its unfinished work. A new
-  occupied neighbor must not stop an already-running stage.
-- Repeat the full occupancy/vacancy check after robot-specific duration
-  resolution and at preparation/dispatch boundaries. Reuse the current
-  unresolved-observation policy for discovered neighbors; missing saved rooms
-  fail closed. Missing or cross-floor references need safe diagnostics and
-  auto-clearing, room-scoped Repairs.
-- Add **Edit adjacent rooms** to each room card using a native multiple-area
-  selector, with explicit save, same-entry/floor validation, and separate
-  display of missing references. Show local versus adjacent block reasons.
-- Route graph changes and neighbor observations through the typed application
-  queue. Preserve strict Store validation, shutdown gating, and cleanup.
-
-Acceptance: reciprocal add/remove, direct-only blocking, missing references,
-restart/migration, scheduled/manual continuations, robot-specific forecasts,
-Repair lifecycle, and unload behavior are covered. Both dashboard copies agree.
 
 ### Bedroom confirmation
 
@@ -133,6 +100,26 @@ repository.
 These items are implemented or explicitly closed by the user. Historical release
 records remain in [releases](../releases/) and Git history. Partial plans have
 their remaining work retained above.
+
+### Adjacent-room occupancy
+
+[v1.16.0](../releases/v1.16.0.md) implements the approved replacement policy:
+each room controls its own scheduled stages with Off / Night only / Always,
+defaulting to Night only during a separate configurable 23:00–09:00 interval.
+Only saved links to discovered same-floor neighbours count. Occupied and
+unresolved neighbours block; manual Clean retains its existing override.
+Running stages finish, blocked stages remain due, and adjacency creates no
+faults, Repairs or cadence delays. The existing floor-plan editor and service
+remain the topology controls. This supersedes the former manual-blocking,
+missing-room Repair and per-room editor proposals.
+
+Typed policy, dispatch revalidation, named snapshot/status/robot-preview
+blockers, selectors, boundary timers and schema 18 migration are implemented
+and tested. See the [migration guide](../migration-v1.16.0.md) for activation
+details. Live operation of the new backend awaits the user's later restart;
+this release is deployed without triggering a restart.
+
+### Other completed work
 
 On 2026-09-07, the user confirmed that the Q10 implementation is working well:
 two-pass cleans have been observed completing successfully, with no issues

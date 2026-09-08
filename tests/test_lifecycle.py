@@ -40,6 +40,84 @@ class _Bus:
 
 
 class SchedulerRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_night_boundaries_rearm_without_duplicate_or_stale_wakeups(self):
+        submitted, tasks, points, cancelled = [], [], [], []
+        now = WHEN
+        window = ["23:00", "09:00"]
+
+        async def submit(command):
+            submitted.append(command)
+
+        def create_task(coroutine):
+            tasks.append(asyncio.create_task(coroutine))
+
+        def track_point(_hass, callback, timestamp):
+            points.append((callback, timestamp))
+            return lambda: cancelled.append(timestamp)
+
+        runtime = SchedulerRuntime(
+            SimpleNamespace(bus=_Bus([])),
+            interval_handler=lambda _now: submit("interval"),
+            call_service_handler=lambda _e: None,
+            state_changed_handler=lambda _e: None,
+            device_registry_handler=lambda _e: None,
+            notification_action_handler=lambda _e: None,
+            notification_cleared_handler=lambda _e: None,
+            home_assistant_started_handler=lambda _e: None,
+            submit=submit,
+            create_task=create_task,
+            night_window=lambda: tuple(window),
+        )
+        with (
+            patch(
+                "custom_components.adaptive_robovacs.lifecycle.dt_util.now",
+                side_effect=lambda: now,
+            ),
+            patch(
+                "custom_components.adaptive_robovacs.lifecycle.dt_util.utcnow",
+                side_effect=lambda: now,
+            ),
+            patch(
+                "custom_components.adaptive_robovacs.lifecycle.async_track_point_in_utc_time",
+                side_effect=track_point,
+            ),
+            patch(
+                "custom_components.adaptive_robovacs.lifecycle.async_track_time_interval",
+                return_value=lambda: None,
+            ),
+        ):
+            runtime.update_adjacency_window()
+            self.assertEqual(points, [])
+            await runtime.async_start(WHEN + timedelta(minutes=1))
+            original, original_time = points[0]
+            self.assertEqual(original_time, WHEN.replace(hour=23))
+            count = len(points)
+            runtime.update_adjacency_window()
+            self.assertEqual(len(points), count)
+            window[0] = "21:00"
+            runtime.update_adjacency_window()
+            self.assertIn(original_time, cancelled)
+            original(original_time)
+            self.assertEqual(tasks, [])
+            opening, opening_time = points[-1]
+            now = opening_time
+            opening(now)
+            await asyncio.gather(*tasks)
+            self.assertEqual(submitted[-1].cause, EvaluationCause.ADJACENCY_BOUNDARY)
+            self.assertEqual(submitted[-1].mode, EvaluationMode.DISPATCH)
+            closing, closing_time = points[-1]
+            self.assertEqual(closing_time, (WHEN + timedelta(days=1)).replace(hour=9))
+            now = closing_time
+            closing(now)
+            await asyncio.gather(*tasks)
+            self.assertEqual(len(submitted), 2)
+            stale, stale_time = points[-1]
+            await runtime.async_stop()
+            stale(stale_time)
+            runtime.update_adjacency_window()
+            self.assertEqual(len(tasks), 2)
+            self.assertIsNone(runtime._night_deadline)
+
     async def test_registers_every_source_and_unsubscribes_exactly_once(self) -> None:
         unsubscribed: list[str] = []
         bus = _Bus(unsubscribed)

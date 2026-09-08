@@ -120,6 +120,37 @@ complete relevant profile. Vacuum stages never apply mop-only settings. An
 accepted ordered occurrence keeps the same robot and exact resolved values for
 its remaining stages across Home Assistant restarts.
 
+## Room adjacency protection
+
+Draw links between neighbouring rooms in the floor-plan editor, then use each
+room's **Adjacency protection** selector: **Off**, **Night only**, or **Always**.
+The selector controls that room's own scheduled cleaning. An occupied bedroom
+can therefore block a linked hallway, while a living room without a direct link
+to that bedroom remains eligible. A blocked hallway does not itself block the
+living room unless the hallway is occupied or its occupancy is unresolved.
+
+The global card's **Adjacency night start** and **Adjacency night end** default
+to **23:00–09:00**, in Home Assistant's timezone. They use 15-minute steps,
+support midnight crossings, include the start and exclude the end; identical
+bounds are rejected. These hours are separate from the **Night** cleaning-period
+preset, which remains 00:00–06:00.
+
+While protection is active, occupied or unresolved neighbours block new scheduled
+vacuum and mop stages. Existing radar and fallback rules determine occupancy;
+rooms without occupancy sensors remain non-blocking. A neighbour still counts
+when its cleaning is disabled or its own adjacency setting is Off. Only direct
+links between currently discovered rooms on the same floor count. Missing or
+moved rooms do not turn saved links into travel routes or inferred connections.
+
+Room Status identifies the neighbours responsible and distinguishes occupied
+from unresolved occupancy. When they clear, the room remains due and can be
+selected normally. Protection is checked at each stage's start, including after
+dispatch preparation. Running stages finish even if night begins or a neighbour
+becomes occupied. Explicit manual Clean actions retain their existing override.
+Editing settings or saving links refreshes previews without starting or stopping
+work. Normal evaluation runs when occupancy changes or the night interval opens
+or closes. See [the v1.16.0 migration guide](migration-v1.16.0.md).
+
 ## Manual room actions
 
 Every discovered room has three integration-owned buttons:
@@ -131,7 +162,7 @@ Every discovered room has three integration-owned buttons:
   profile.
 
 These actions are explicit user overrides. They bypass the room cadence,
-desired window, occupancy and vacancy forecast,
+desired window, occupancy, adjacency protection and vacancy forecast,
 configured room/robot enablement, battery threshold, scheduler holds, and the
 global scheduler halt. A discovered compatible robot on the room's floor must
 be physically docked. Party Mode, observe-only mode, storage-safe mode, startup

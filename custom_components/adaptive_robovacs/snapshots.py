@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from .const import DEFAULT_ADJACENCY_NIGHT_END, DEFAULT_ADJACENCY_NIGHT_START
 from .discovery import RobotProfile
 from .models import (
     AdapterCapabilities,
+    AdjacencyMode,
     CleaningOperation,
     CleaningProgram,
     JobPhase,
@@ -323,6 +325,15 @@ class RoomRobotPreviewView:
 
 
 @dataclass(frozen=True, slots=True)
+class RoomAdjacencyBlockerView:
+    """Friendly, registry-derived evidence for a neighbouring occupancy block."""
+
+    area_id: str
+    name: str
+    occupancy: str
+
+
+@dataclass(frozen=True, slots=True)
 class RoomView:
     """Typed entity-facing state for one discovered room."""
 
@@ -397,6 +408,11 @@ class RoomView:
     schedule_due_at: datetime | None = None
     next_clean_window_end_at: datetime | None = None
     robot_previews: tuple[RoomRobotPreviewView, ...] = ()
+    adjacency_mode: AdjacencyMode = AdjacencyMode.NIGHT_ONLY
+    adjacency_active: bool = False
+    adjacent_area_ids: tuple[str, ...] = ()
+    adjacency_blockers: tuple[RoomAdjacencyBlockerView, ...] = ()
+    adjacency_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,6 +584,8 @@ class SchedulerView:
     floor_plan: FloorPlanView
     failure: FaultView | None
     room_recoveries: tuple[RoomRecoveryView, ...] = ()
+    adjacency_night_start: str = DEFAULT_ADJACENCY_NIGHT_START
+    adjacency_night_end: str = DEFAULT_ADJACENCY_NIGHT_END
 
     def global_setting(self, key: str) -> object:
         """Return one supported global control value."""
@@ -582,6 +600,10 @@ class SchedulerView:
             return self.unresolved_start
         if key == "unresolved_end":
             return self.unresolved_end
+        if key == "adjacency_night_start":
+            return self.adjacency_night_start
+        if key == "adjacency_night_end":
+            return self.adjacency_night_end
         raise KeyError(key)
 
 

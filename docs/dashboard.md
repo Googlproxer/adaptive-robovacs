@@ -115,6 +115,10 @@ link. The dragged connection shows a live line: it follows the pointer until
 it snaps to a compatible room. Click a connector to remove it. Save applies
 the complete floor draft atomically; Cancel leaves the saved plan unchanged.
 
+Saved links now govern room adjacency protection for future scheduled stages.
+Saving refreshes the preview without starting or stopping cleaning. Geometry and
+sensor placement do not determine which rooms are adjacent; only saved links do.
+
 Every discovered `robovac-radar` sensor and every fallback motion/occupancy
 source is shown with a distinct marker. Its marker can be placed only inside
 the area where Home Assistant discovered it. Marker status is live: active,
@@ -142,9 +146,15 @@ sample rooms, links, and occupancy sensors. Its Save action is simulated
 locally and shows the exact service payload; it never contacts Home Assistant
 or a robot. Stop the local server with `Ctrl+C` when finished.
 
-Each room card places two mobile-friendly selectors immediately below its
+Each room card places three mobile-friendly selectors immediately below its
 occupancy status:
 
+- **Adjacency protection** offers **Off**, **Night only**, and **Always**. It
+  controls this room's own scheduled cleaning when a direct linked neighbour is
+  occupied or unresolved, and remains visible for every cleaning period/profile.
+  New and migrated rooms default to Night only; rooms without links are unaffected.
+  The global card's **Adjacency night start/end** controls default to 23:00–09:00.
+  This shared protection interval is separate from the Night cleaning-period preset.
 - **Cleaning period** has **Default**, **Off**, **Night** (00:00–06:00), **Morning**
   (06:00–12:00), **Afternoon** (12:00–18:00), **Evening** (18:00–00:00), and
   **Custom**. **Default** enables the room and inherits both global Desired
@@ -157,6 +167,13 @@ occupancy status:
   so the matching robot defaults apply. Custom preserves the saved overrides
   and reveals the individual profile controls. Those individual entities remain
   available to automations regardless of the card view.
+
+Status identifies blocking neighbours with their friendly names and occupancy
+states. Its attributes include `adjacency_mode`, `adjacency_active`,
+`adjacency_blocked`, `adjacency_reason`, `adjacent_area_ids`, and
+`adjacency_blockers` (area ID, name and occupancy for each blocking neighbour).
+Robot popup previews report the same restriction without guessing a clearing
+time. Running stages finish normally, and manual Clean retains its override.
 
 The card shows **Desired cleaning start** and **Desired cleaning end** only for
 the **Custom** period. They offer 15-minute values plus **Use global**; start

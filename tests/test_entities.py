@@ -22,6 +22,7 @@ from custom_components.adaptive_robovacs.commands import (
 from custom_components.adaptive_robovacs.entity import async_setup_dynamic_entities
 from custom_components.adaptive_robovacs.models import (
     AdapterCapabilities,
+    AdjacencyMode,
     CleaningOperation,
     CleaningProgram,
     JobPhase,
@@ -159,6 +160,11 @@ def room_view(area_id: str = "study", name: str = "Study"):
         fallback_entity_ids=("binary_sensor.study_motion",),
         cleaning_period="Default",
         cleaning_profile="Custom",
+        adjacency_mode=AdjacencyMode.NIGHT_ONLY,
+        adjacency_active=False,
+        adjacent_area_ids=(),
+        adjacency_blockers=(),
+        adjacency_reason=None,
         enabled=True,
         cleaning_interval=72,
         expected_minutes=20,

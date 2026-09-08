@@ -49,7 +49,7 @@ existing dashboard module and do not create Home Assistant updates.
 
 `models.py`, `planner.py`, `jobs.py`, and `state.py` contain identifiers,
 enums, typed values, pure scheduling rules, whole-plan allocation, lifecycle
-reducers, and the schema-17 Store model. They do not import Home Assistant.
+reducers, and the schema-18 Store model. They do not import Home Assistant.
 The reducers return transitions and effects; they do not call services or
 mutate a coordinator.
 
@@ -78,6 +78,10 @@ without rebuilding a second god file:
   Repair acknowledgement. It persists room blocks, interrupted occurrences, and
   robot/job detachment together before exposing a released robot to scheduling.
 - `application/policy.py` supplies observations and pure scheduling inputs.
+- Adjacency policy consumes saved direct same-floor links and resolved occupancy
+  through `resolve_adjacency`. It returns transient typed blockers independently
+  of the target's occupancy, cadence and durable fault/recovery state. The dispatch
+  pipeline rechecks it after profile and checkpoint awaits before starting work.
 - `application/settings.py` owns typed configuration and floor-plan changes.
 - `application/faults.py` and `application/water.py` own their scoped workflows.
 - `application/actions.py` handles explicit user cleaning and return requests.
@@ -97,6 +101,9 @@ adapters.
 
 ### Infrastructure
 
+- `lifecycle.py` owns one cancellable adjacency night-boundary timer. It queues
+  normal evaluations at real local-time transitions, including DST, and rearms
+  after settings changes. The independent presentation clock never dispatches.
 - `discovery.py` reads current area, floor, device, entity, and label
   registries and produces a typed `DiscoverySnapshot`.
 - `observations.py` converts current HA states to typed observations.
@@ -133,7 +140,7 @@ action. A retained alias preserves existing Adaptive RoboVacs unique IDs after
 a vacuum entity rename.
 
 The scheduler Store keeps its existing key and envelope version. Internal
-schemas 1 through 16 migrate to schema 17 only after the entire payload parses
+schemas 1 through 17 migrate to schema 18 only after the entire payload parses
 and validates. An unresolved legacy identity is retained as a typed unresolved
 reference, cannot dispatch, and creates a Repair. Malformed retained data or a
 newer schema is never overwritten; the entry starts in storage-safe,

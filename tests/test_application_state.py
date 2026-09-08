@@ -190,6 +190,7 @@ def state_application() -> SchedulerApplication:
     app._lock = asyncio.Lock()
     app._notify_listeners = Mock()
     app._schedule_clock = Mock()
+    app.lifecycle = Mock()
     app.async_evaluate = AsyncMock(return_value={})
     app.async_refresh_discovery = AsyncMock()
     app._async_create_task = Mock()

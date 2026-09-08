@@ -5,6 +5,22 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.16.0] - 2026-09-08
+
+### Added
+
+- Room adjacency protection using saved direct floor-plan links, with per-room
+  Off, Night only and Always selectors and configurable 23:00–09:00 night hours.
+- Occupied and unresolved neighbours block scheduled vacuum/mop stage starts;
+  room Status and robot previews explain the blocking neighbours.
+- Local-time night-boundary evaluations and a final adjacency check after
+  dispatch preparation. Running stages finish and manual overrides are retained.
+- Store schema 18 migrates adjacency defaults while retaining jobs, room
+  recoveries, floor plans and history. Saving settings/topology refreshes previews
+  without dispatching.
+
+Detailed notes: [`docs/releases/v1.16.0.md`](docs/releases/v1.16.0.md).
+
 ## [1.15.1] - 2026-09-08
 
 ### Fixed

@@ -194,6 +194,7 @@ class SchedulerApplication(
                 async_checkpoint=self._async_checkpoint_dispatch,
                 async_abandon_checkpoint=self._async_abandon_dispatch_checkpoint,
                 async_accept=self._async_accept_dispatch,
+                start_block_reason=self._dispatch_adjacency_block_reason,
             ),
         )
         self.observer = HomeAssistantObserver(hass)
@@ -209,6 +210,10 @@ class SchedulerApplication(
             home_assistant_started_handler=self._on_home_assistant_started,
             submit=self.async_execute,
             create_task=self._async_create_task,
+            night_window=lambda: (
+                self.state.global_settings.adjacency_night_start,
+                self.state.global_settings.adjacency_night_end,
+            ),
         )
 
     async def async_initialize(self) -> None:
@@ -286,6 +291,7 @@ class SchedulerApplication(
 
         self._closing = True
         self._schedule_clock.stop()
+        self.lifecycle.stop_adjacency_timer()
         self.commands.begin_shutdown()
 
     def cancel_shutdown(self) -> None:
@@ -293,6 +299,7 @@ class SchedulerApplication(
 
         self._closing = False
         self.commands.cancel_shutdown()
+        self.lifecycle.update_adjacency_window()
         if self._snapshot is not None:
             self._schedule_clock.update(self._snapshot)
 
@@ -523,6 +530,7 @@ class SchedulerApplication(
                 listener(err)
             return
         self._schedule_clock.update(snapshot)
+        self.lifecycle.update_adjacency_window()
         self._publish_snapshot(snapshot)
         if self._discovery_signal_pending:
             # Dynamic entity factories read coordinator.data. Application

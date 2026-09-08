@@ -20,6 +20,7 @@ const ROOM_ROLES = new Map([
   ["room_schedule", 0],
   ["room_last_cleaned", 1],
   ["room_occupancy", 2],
+  ["room_adjacency_mode_control", 2.5],
   ["room_cleaning_period_control", 3],
   ["room_cleaning_profile_control", 4],
   ["room_cleaning_program_control", 5],

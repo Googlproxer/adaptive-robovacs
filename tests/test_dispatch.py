@@ -169,6 +169,33 @@ class DispatchPipelineTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_fresh_adjacency_block_abandons_unstarted_checkpoint_without_fault(
+        self,
+    ):
+        def start_block(_candidate, _now):
+            self.assertEqual(self.events[-1], "checkpoint")
+            return "Adjacent room protection: Bedroom (occupied)"
+
+        self.pipeline._dependencies = replace(
+            self.pipeline._dependencies, start_block_reason=start_block
+        )
+        accepted, reason = await self.pipeline.async_dispatch(
+            robot(), candidate(), WHEN
+        )
+        self.assertFalse(accepted)
+        self.assertIn("Bedroom (occupied)", reason)
+        self.assertEqual(self.events[-1], "abandon")
+        self.assertNotIn("dispatch", self.events)
+        self.assertFalse(self.faults)
+
+    async def test_clear_final_gate_retains_checkpoint_before_dispatch(self):
+        self.pipeline._dependencies = replace(
+            self.pipeline._dependencies, start_block_reason=lambda _c, _n: None
+        )
+        accepted, _ = await self.pipeline.async_dispatch(robot(), candidate(), WHEN)
+        self.assertTrue(accepted)
+        self.assertLess(self.events.index("checkpoint"), self.events.index("dispatch"))
+
     async def test_checkpoints_before_the_only_outbound_start(self) -> None:
         accepted, message = await self.pipeline.async_dispatch(
             robot(), candidate(), WHEN

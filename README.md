@@ -13,6 +13,9 @@ automatically on supported versions.
 
 - Schedules common rooms and opt-in bedrooms using adjustable per-area cadence
   and independently inherited daily cleaning windows.
+- Protects rooms from scheduled cleaning beside occupied neighbours using the
+  saved floor-plan links. Each room offers Off, Night only, or Always; the shared
+  adjacency night interval defaults to 23:00–09:00 and is adjustable.
 - Resolves every vacuum through an integration-owned adapter. Unknown vendors
   retain the portable `vacuum.clean_area` path; compatible Roborock vacuums can
   use native two-pass cross-hatched room cleaning through Home Assistant's

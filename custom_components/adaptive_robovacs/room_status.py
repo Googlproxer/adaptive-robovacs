@@ -28,6 +28,12 @@ def room_status(room: RoomView) -> str:
         )
     if not room.enabled:
         return "disabled"
+    if room.adjacency_reason:
+        return (
+            room.adjacency_reason
+            if len(room.adjacency_reason) <= 255
+            else room.adjacency_reason[:252] + "..."
+        )
     if room.next_candidate:
         return "ready now"
     if room.block_reason in {
@@ -52,6 +58,8 @@ def robot_preview_reason(
         return "Observe-only mode"
     if scheduler.party_mode:
         return "Party Mode"
+    if room.adjacency_reason:
+        return room.adjacency_reason
     if not robot.ready:
         return robot.reason
     occurrence = room.occurrence
