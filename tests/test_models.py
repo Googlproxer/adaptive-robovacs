@@ -108,6 +108,43 @@ class AdjacencyPolicyTests(unittest.TestCase):
                 blocked,
             )
 
+    def test_clear_neighbor_remains_blocked_until_its_vacancy_forecast_allows(self):
+        waiting = models.Forecast(
+            False,
+            0.0,
+            "waiting for 30 clear minutes",
+            required_minutes=30,
+            clear_minutes=0.35,
+        )
+        result = models.resolve_adjacency(
+            "hall",
+            models.AdjacencyMode.ALWAYS,
+            datetime(2026, 9, 8, 23, tzinfo=UTC),
+            "23:00",
+            "09:00",
+            (("bedroom", "hall"),),
+            {"bedroom": "ground", "hall": "ground"},
+            {"bedroom": "unoccupied"},
+            {"bedroom": waiting},
+        )
+        self.assertEqual(
+            result.blockers,
+            (models.AdjacencyBlocker("bedroom", "unoccupied", waiting),),
+        )
+        self.assertFalse(
+            models.resolve_adjacency(
+                "hall",
+                models.AdjacencyMode.ALWAYS,
+                datetime(2026, 9, 8, 23, tzinfo=UTC),
+                "23:00",
+                "09:00",
+                (("bedroom", "hall"),),
+                {"bedroom": "ground", "hall": "ground"},
+                {"bedroom": "unoccupied"},
+                {"bedroom": models.Forecast(True, 1.0, "forecast safe")},
+            ).blocked
+        )
+
     def test_night_boundary_uses_local_time_and_daylight_saving_transitions(self):
         tz = ZoneInfo("Australia/Sydney")
         self.assertEqual(

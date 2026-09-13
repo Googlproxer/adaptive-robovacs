@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 
-from .models import AdjacencyDecision, RequestedCleaningProfile, ResolvedCleaningProfile
+from .models import (
+    AdjacencyBlocker,
+    AdjacencyDecision,
+    RequestedCleaningProfile,
+    ResolvedCleaningProfile,
+)
 from .snapshots import (
     ActiveJobView,
     CandidateView,
@@ -39,11 +44,25 @@ def adjacency_block_reason(
 
     if not decision.blocked:
         return None
-    neighbors = "; ".join(
-        f"{room_names.get(blocker.area_id, blocker.area_id)} "
-        f"({'occupied' if blocker.occupancy == 'occupied' else 'occupancy unresolved'})"
-        for blocker in decision.blockers
-    )
+
+    def describe(blocker: AdjacencyBlocker) -> str:
+        area_id = blocker.area_id
+        name = room_names.get(area_id, area_id)
+        if blocker.occupancy == "occupied":
+            return f"{name} (occupied)"
+        if blocker.occupancy != "unoccupied":
+            return f"{name} (occupancy unresolved)"
+        forecast = blocker.vacancy
+        if forecast is None:
+            return f"{name} (vacancy window unresolved)"
+        elapsed = (
+            f"; clear for {max(0.0, forecast.clear_minutes):.1f} minutes"
+            if forecast.clear_minutes is not None
+            else ""
+        )
+        return f"{name} ({forecast.reason}{elapsed})"
+
+    neighbors = "; ".join(describe(blocker) for blocker in decision.blockers)
     return f"Adjacent room protection: {neighbors}"
 
 

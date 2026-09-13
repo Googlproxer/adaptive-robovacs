@@ -78,10 +78,14 @@ without rebuilding a second god file:
   Repair acknowledgement. It persists room blocks, interrupted occurrences, and
   robot/job detachment together before exposing a released robot to scheduling.
 - `application/policy.py` supplies observations and pure scheduling inputs.
-- Adjacency policy consumes saved direct same-floor links and resolved occupancy
-  through `resolve_adjacency`. It returns transient typed blockers independently
-  of the target's occupancy, cadence and durable fault/recovery state. The dispatch
-  pipeline rechecks it after profile and checkpoint awaits before starting work.
+- Adjacency policy consumes saved direct same-floor links, resolved occupancy,
+  and optional typed vacancy forecasts through `resolve_adjacency`. Occupied and
+  unresolved neighbours fail closed immediately. Each clear sensor-equipped
+  neighbour is forecast against its own persisted vacancy history and the
+  candidate robot's safe duration for the target's exact stage. Candidate
+  resolution, occurrence preparation, and the post-checkpoint dispatch gate all
+  repeat this decision; later stages use their own duration. The transient typed
+  blockers remain independent of cadence and durable fault/recovery state.
 - `application/settings.py` owns typed configuration and floor-plan changes.
 - `application/faults.py` and `application/water.py` own their scoped workflows.
 - `application/actions.py` handles explicit user cleaning and return requests.
@@ -145,6 +149,10 @@ and validates. An unresolved legacy identity is retained as a typed unresolved
 reference, cannot dispatch, and creates a Repair. Malformed retained data or a
 newer schema is never overwritten; the entry starts in storage-safe,
 observe-only mode and publishes its diagnostic state.
+
+Adjacency vacancy windows reuse schema 18's durable `unoccupied_since` and
+occupancy samples. The decision itself and its per-robot diagnostics are
+transient, so v1.16.1 requires no Store migration.
 
 Room recovery records are separate from mapping/profile faults and carry stable
 room, robot, occurrence, stage, and episode identities. Ten continuous seconds

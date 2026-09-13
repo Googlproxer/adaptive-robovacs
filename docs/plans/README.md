@@ -8,7 +8,9 @@ field observations recorded below; this review did not run live Home Assistant
 or hardware checks.
 
 On 2026-09-08, adjacency was implemented for v1.16.0 using the user's approved
-replacement policy below. The other remaining items are unchanged.
+replacement policy below. On 2026-09-13, v1.16.1 extended that policy so a clear
+neighbour must pass the same adaptive vacancy forecast as the target room. The
+other remaining items are unchanged.
 
 The recent [application package refactor](application-package-refactor.md)
 remains a separate, unchanged implementation plan.
@@ -115,9 +117,12 @@ missing-room Repair and per-room editor proposals.
 
 Typed policy, dispatch revalidation, named snapshot/status/robot-preview
 blockers, selectors, boundary timers and schema 18 migration are implemented
-and tested. See the [migration guide](../migration-v1.16.0.md) for activation
-details. Live operation of the new backend awaits the user's later restart;
-this release is deployed without triggering a restart.
+and tested. [v1.16.1](../releases/v1.16.1.md) closes the immediate-unlock gap:
+sensor-equipped neighbours remain blocked until their history passes the target
+robot and stage's exact safe-duration forecast. Occupancy returning resets the
+window; no-sensor neighbours, manual overrides, and running stages retain their
+v1.16.0 behavior. Schema 18 already persists the required timestamps and samples.
+See the [migration guide](../migration-v1.16.0.md) for activation details.
 
 ### Other completed work
 

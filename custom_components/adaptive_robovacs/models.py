@@ -41,7 +41,8 @@ class AdjacencyBlocker:
     """Resolved occupancy evidence for one direct neighbour."""
 
     area_id: str
-    occupancy: str
+    occupancy: Literal["occupied", "unresolved", "unoccupied"]
+    vacancy: Forecast | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,8 +67,9 @@ def resolve_adjacency(
     edges: Iterable[tuple[str, str]],
     room_floor_by_id: Mapping[str, str],
     occupancy_by_id: Mapping[str, str],
+    vacancy_by_id: Mapping[str, Forecast] | None = None,
 ) -> AdjacencyDecision:
-    """Protect only direct live same-floor neighbours; never traverse the graph."""
+    """Protect direct live same-floor neighbours and their vacancy evidence."""
 
     floor_id = room_floor_by_id.get(area_id)
     neighbors = tuple(
@@ -87,15 +89,23 @@ def resolve_adjacency(
         mode == AdjacencyMode.NIGHT_ONLY
         and in_daytime_window(now, night_start, night_end)
     )
-    blockers = tuple(
-        AdjacencyBlocker(
-            neighbor,
-            "occupied" if occupancy_by_id.get(neighbor) == "occupied" else "unresolved",
-        )
-        for neighbor in neighbors
-        if active and occupancy_by_id.get(neighbor) != "unoccupied"
-    )
-    return AdjacencyDecision(active, neighbors, blockers)
+    forecasts = vacancy_by_id or {}
+    blockers = []
+    if active:
+        for neighbor in neighbors:
+            occupancy = occupancy_by_id.get(neighbor)
+            if occupancy != "unoccupied":
+                blockers.append(
+                    AdjacencyBlocker(
+                        neighbor,
+                        "occupied" if occupancy == "occupied" else "unresolved",
+                    )
+                )
+                continue
+            forecast = forecasts.get(neighbor)
+            if forecast is not None and not forecast.allowed:
+                blockers.append(AdjacencyBlocker(neighbor, "unoccupied", forecast))
+    return AdjacencyDecision(active, neighbors, tuple(blockers))
 
 
 class CleaningProgram(StrEnum):

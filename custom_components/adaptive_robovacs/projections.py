@@ -111,7 +111,10 @@ class ProjectionSource(Protocol):
     def _desired_window(self, room: DiscoveredRoom) -> ResolvedDailyWindow: ...
 
     def _adjacency_decision(
-        self, room: DiscoveredRoom, now: datetime
+        self,
+        room: DiscoveredRoom,
+        now: datetime,
+        duration_minutes: float | None = None,
     ) -> AdjacencyDecision: ...
 
     def _room_due(
@@ -383,10 +386,6 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
     )
     next_due = source._room_due(room, "cleaning", now)
     candidate, reason = source._room_candidate(room, now)
-    adjacency = source._adjacency_decision(room, now)
-    adjacency_reason = adjacency_block_reason(
-        adjacency, {key: item.name for key, item in source.discovery.rooms.items()}
-    )
     diagnostics = source._candidate_robot_diagnostics(candidate) if candidate else ()
     eligibility = tuple(
         RobotEligibilityView(
@@ -434,6 +433,16 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         duration_operation,
         duration_passes,
         active_registry_id,
+    )
+    adjacency = source._adjacency_decision(room, now, duration_estimate.safe_minutes)
+    if (
+        adjacency.blockers
+        and all(item.occupancy == "unoccupied" for item in adjacency.blockers)
+        and any(item.eligibility.eligible for item in diagnostics)
+    ):
+        adjacency = replace(adjacency, blockers=())
+    adjacency_reason = adjacency_block_reason(
+        adjacency, {key: item.name for key, item in source.discovery.rooms.items()}
     )
     duration_estimates = []
     for robot in source.discovery.robots.values():
@@ -577,7 +586,18 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         adjacent_area_ids=adjacency.neighbor_area_ids,
         adjacency_blockers=tuple(
             RoomAdjacencyBlockerView(
-                item.area_id, source.discovery.rooms[item.area_id].name, item.occupancy
+                item.area_id,
+                source.discovery.rooms[item.area_id].name,
+                item.occupancy,
+                (
+                    VacancyDiagnostic.from_forecast(
+                        source._room_data(item.area_id).occupancy_source,
+                        source._room_data(item.area_id).unoccupied_since,
+                        item.vacancy,
+                    )
+                    if item.vacancy is not None
+                    else None
+                ),
             )
             for item in adjacency.blockers
         ),

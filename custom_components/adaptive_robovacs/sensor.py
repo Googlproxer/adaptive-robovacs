@@ -303,6 +303,15 @@ class _RoomStatusSensor(AdaptiveEntity, SensorEntity):
                     "area_id": item.area_id,
                     "name": item.name,
                     "occupancy": item.occupancy,
+                    **(
+                        {
+                            "vacancy_diagnostic": (
+                                item.vacancy_diagnostic.as_attributes()
+                            )
+                        }
+                        if item.vacancy_diagnostic
+                        else {}
+                    ),
                 }
                 for item in room.adjacency_blockers
             ],

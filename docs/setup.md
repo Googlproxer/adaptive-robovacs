@@ -135,21 +135,39 @@ support midnight crossings, include the start and exclude the end; identical
 bounds are rejected. These hours are separate from the **Night** cleaning-period
 preset, which remains 00:00–06:00.
 
-While protection is active, occupied or unresolved neighbours block new scheduled
-vacuum and mop stages. Existing radar and fallback rules determine occupancy;
-rooms without occupancy sensors remain non-blocking. A neighbour still counts
-when its cleaning is disabled or its own adjacency setting is Off. Only direct
-links between currently discovered rooms on the same floor count. Missing or
-moved rooms do not turn saved links into travel routes or inferred connections.
+While protection is active, occupied or unresolved neighbours immediately block
+new scheduled vacuum and mop stages. A sensor-equipped neighbour that becomes
+unoccupied must also pass the normal adaptive vacancy forecast before the target
+stage can start. That forecast uses the neighbour's persisted occupancy history
+and the selected robot's safe duration for the target's exact operation and pass
+count. With insufficient comparable history, the existing whole-minute duration
+plus 10-minute margin applies; sufficient successful history can permit an
+earlier start under the existing confidence rule. Occupancy returning resets the
+continuous clear interval.
 
-Room Status identifies the neighbours responsible and distinguishes occupied
-from unresolved occupancy. When they clear, the room remains due and can be
-selected normally. Protection is checked at each stage's start, including after
-dispatch preparation. Running stages finish even if night begins or a neighbour
-becomes occupied. Explicit manual Clean actions retain their existing override.
-Editing settings or saving links refreshes previews without starting or stopping
-work. Normal evaluation runs when occupancy changes or the night interval opens
-or closes. See [the v1.16.0 migration guide](migration-v1.16.0.md).
+Existing radar and fallback rules remain the only occupancy authority; rooms
+without occupancy sensors remain non-blocking. A neighbour still counts when its
+cleaning is disabled or its own adjacency setting is Off. Only direct links
+between currently discovered rooms on the same floor count. Missing or moved
+rooms do not turn saved links into travel routes or inferred connections.
+
+Room Status identifies the neighbours responsible and distinguishes occupied,
+unresolved, and clear-but-waiting states. Waiting blockers include required and
+elapsed clear minutes, confidence, comparable and successful sample counts, and
+the forecast reason. Each robot preview uses that robot's exact duration; the
+room remains adjacency-blocked only when no otherwise-compatible candidate can
+pass. A blocked room remains due.
+
+Protection is checked during robot-specific resolution, again before occurrence
+preparation, after the persisted dispatch checkpoint, and at every later stage
+using that stage's duration. A newly unsafe neighbour abandons an unstarted
+checkpoint without creating a fault, Repair, or cadence change. Running stages
+finish even if night begins or a neighbour becomes occupied. Explicit manual
+Clean actions retain their existing override. Editing settings or saving links
+refreshes previews without starting or stopping work. Normal evaluation runs
+when occupancy changes or the night interval opens or closes. See the
+[v1.16.0 migration guide](migration-v1.16.0.md) and
+[v1.16.1 release notes](releases/v1.16.1.md).
 
 ## Manual room actions
 

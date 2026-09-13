@@ -28,6 +28,8 @@ from custom_components.adaptive_robovacs.room_status import room_status
 from custom_components.adaptive_robovacs.sensor import _RoomStatusSensor
 from custom_components.adaptive_robovacs.state import (
     CleaningStage,
+    DurationSample,
+    OccupancySample,
     RoomRecovery,
     SchedulerState,
 )
@@ -49,12 +51,140 @@ def add_neighbors(app):
         settings.enabled = False
         settings.adjacency_mode = AdjacencyMode.OFF
         history.occupancy = "occupied" if key == "bedroom" else "unoccupied"
+        history.occupancy_source = "radars"
+        if history.occupancy == "unoccupied":
+            history.unoccupied_since = NOW - timedelta(hours=2)
     app.discovery = DiscoverySnapshot(app.discovery.robots, MappingProxyType(rooms))
     app.state.floor_plan.edges = {("bedroom", "study"), ("living", "study")}
     app.state.room_settings["study"].adjacency_mode = AdjacencyMode.ALWAYS
 
 
 class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_short_clear_interval_cannot_dispatch_the_thursday_sequence(self):
+        app = evaluation_application()
+        add_neighbors(app)
+        neighbor = app.state.room_history["bedroom"]
+        neighbor.occupancy = "unoccupied"
+        neighbor.unoccupied_since = NOW - timedelta(seconds=21)
+        neighbor.occupancy_samples.clear()
+        app.state.robot_settings["registry-alpha"].double_pass = True
+        target_history = app.state.room_history["study"]
+        target_history.duration_samples = [
+            DurationSample(
+                minutes,
+                CleaningOperation.VACUUM,
+                2,
+                "registry-alpha",
+                "elapsed_total_v2",
+                measurement_version=2,
+            )
+            for minutes in (18.2, 19.7, 20.409)
+        ]
+        app._async_prepare_occurrence = AsyncMock()
+
+        result = await evaluate(app)
+
+        self.assertIn("waiting for 30 clear minutes", result["blocks"]["study"])
+        self.assertIn("clear for 0.3 minutes", result["blocks"]["study"])
+        self.assertNotIn("study", app.state.occurrences)
+        self.assertTrue(all(job is None for job in app.state.active_jobs.values()))
+        app._async_prepare_occurrence.assert_not_awaited()
+        app._async_dispatch.assert_not_awaited()
+
+        app.state, migrated = SchedulerState.from_store(app.state.encode(), ENTRY_DATA)
+        self.assertFalse(migrated)
+        self.assertEqual(
+            app.state.room_history["bedroom"].unoccupied_since,
+            NOW - timedelta(seconds=21),
+        )
+        candidate, _ = app._room_candidate(app.discovery.rooms["study"], NOW)
+        resolved, reason = app._resolve_candidate_for_robot(
+            candidate, app.discovery.robots["vacuum.alpha"]
+        )
+        self.assertIsNone(resolved)
+        self.assertIn("waiting for 30 clear minutes", reason)
+
+        app.state.room_history["bedroom"].unoccupied_since = NOW - timedelta(minutes=30)
+        candidate, _ = app._room_candidate(app.discovery.rooms["study"], NOW)
+        resolved, reason = app._resolve_candidate_for_robot(
+            candidate, app.discovery.robots["vacuum.alpha"]
+        )
+        self.assertIsNotNone(resolved)
+        self.assertEqual(reason, "eligible")
+
+    def test_target_robot_duration_and_existing_confidence_control_clearance(self):
+        app = planning_application()
+        add_neighbors(app)
+        neighbor = app.state.room_history["bedroom"]
+        neighbor.occupancy = "unoccupied"
+        neighbor.unoccupied_since = NOW - timedelta(minutes=15)
+        neighbor.occupancy_samples.clear()
+        target_history = app.state.room_history["study"]
+        target_history.duration_samples = [
+            DurationSample(
+                minutes,
+                CleaningOperation.VACUUM,
+                1,
+                registry_id,
+                "elapsed_total_v2",
+                measurement_version=2,
+            )
+            for registry_id, minutes in (
+                ("registry-alpha", 5.0),
+                ("registry-alpha", 5.0),
+                ("registry-alpha", 5.0),
+                ("registry-beta", 20.4),
+                ("registry-beta", 20.4),
+                ("registry-beta", 20.4),
+            )
+        ]
+        beta = replace(
+            app.discovery.robots["vacuum.alpha"],
+            entity_id="vacuum.beta",
+            name="Beta",
+            registry_id="registry-beta",
+            device_id="device-registry-beta",
+        )
+        app.state.robot_settings["registry-beta"] = deepcopy(
+            app.state.robot_settings["registry-alpha"]
+        )
+        robots = dict(app.discovery.robots)
+        robots[beta.entity_id] = beta
+        app.discovery = DiscoverySnapshot(MappingProxyType(robots), app.discovery.rooms)
+        app.hass.states.values[beta.entity_id] = deepcopy(
+            app.hass.states.values["vacuum.alpha"]
+        )
+        app._ready_since[beta.entity_id] = NOW - timedelta(minutes=1)
+        candidate, _ = app._room_candidate(app.discovery.rooms["study"], NOW)
+
+        short, short_reason = app._resolve_candidate_for_robot(
+            candidate, app.discovery.robots["vacuum.alpha"]
+        )
+        long, long_reason = app._resolve_candidate_for_robot(candidate, beta)
+        self.assertIsNotNone(short)
+        self.assertEqual(short_reason, "eligible")
+        self.assertIsNone(long)
+        self.assertIn("waiting for 30 clear minutes", long_reason)
+
+        with patch(
+            "custom_components.adaptive_robovacs.projections._now", return_value=NOW
+        ):
+            view = build_snapshot(app).room("study")
+        self.assertFalse(view.adjacency_blockers)
+        self.assertIsNone(view.adjacency_reason)
+        previews = {item.robot_entity_id: item for item in view.robot_previews}
+        self.assertIsNone(previews["vacuum.alpha"].reason)
+        self.assertIn("waiting for 30 clear minutes", previews["vacuum.beta"].reason)
+
+        neighbor.unoccupied_since = NOW
+        neighbor.occupancy_samples = [
+            OccupancySample(NOW - timedelta(days=7 * index), 45)
+            for index in range(1, 7)
+        ]
+        long, long_reason = app._resolve_candidate_for_robot(candidate, beta)
+        self.assertIsNotNone(long)
+        self.assertEqual(long_reason, "eligible")
+
     def test_disabled_neighbor_blocks_and_clearance_preserves_cadence(self):
         app = planning_application()
         add_neighbors(app)
@@ -68,6 +198,7 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
             "Bedroom (occupancy unresolved)", app._room_candidate(target, NOW)[1]
         )
         app.state.room_history["bedroom"].occupancy = "unoccupied"
+        app.state.room_history["bedroom"].unoccupied_since = NOW - timedelta(hours=2)
         allowed, _ = app._room_candidate(target, NOW)
         self.assertIsNotNone(allowed)
         self.assertEqual(app.state.room_history["study"].to_store(), before)
@@ -98,10 +229,34 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
         pending = app.state.occurrences["study"]
         self.assertIsNone(app._room_candidate(target, NOW)[0])
         self.assertEqual(pending.to_store(), before)
-        cadence_before = app.state.room_history["study"].to_store()
         app.state.room_history["bedroom"].occupancy = "unoccupied"
+        app.state.room_history["bedroom"].unoccupied_since = NOW - timedelta(minutes=15)
+        app.state.room_history["study"].duration_samples = [
+            DurationSample(
+                20.4,
+                CleaningOperation.MOP,
+                1,
+                "registry-alpha",
+                "elapsed_total_v2",
+                measurement_version=2,
+            )
+            for _ in range(3)
+        ]
+        cadence_before = app.state.room_history["study"].to_store()
         candidate, _ = app._room_candidate(target, NOW)
         self.assertEqual(candidate.operation, CleaningOperation.MOP)
+        resolved, reason = app._resolve_candidate_for_robot(
+            candidate, app.discovery.robots["vacuum.alpha"]
+        )
+        self.assertIsNone(resolved)
+        self.assertIn("waiting for 30 clear minutes", reason)
+        app.state.room_history["bedroom"].unoccupied_since = NOW - timedelta(minutes=30)
+        candidate, _ = app._room_candidate(target, NOW)
+        resolved, reason = app._resolve_candidate_for_robot(
+            candidate, app.discovery.robots["vacuum.alpha"]
+        )
+        self.assertIsNotNone(resolved)
+        self.assertEqual(reason, "eligible")
         self.assertEqual(candidate.due_at, pending.scheduled_at)
         self.assertEqual(pending.to_store(), before)
         self.assertEqual(app.state.room_history["study"].to_store(), cadence_before)
@@ -135,6 +290,9 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
                 app = evaluation_application()
                 add_neighbors(app)
                 app.state.room_history["bedroom"].occupancy = "unoccupied"
+                app.state.room_history["bedroom"].unoccupied_since = NOW - timedelta(
+                    hours=2
+                )
                 observations = 0
 
                 def observe(_now, app=app, change_at=change_at):
@@ -159,7 +317,21 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
         add_neighbors(app)
         target = app.discovery.rooms["study"]
         app.state.room_history["bedroom"].occupancy = "unoccupied"
+        app.state.room_history["bedroom"].unoccupied_since = NOW - timedelta(hours=2)
         candidate, _ = app._room_candidate(target, NOW)
+
+        app.state.room_history["bedroom"].unoccupied_since = NOW - timedelta(seconds=21)
+        for neighbor in ("bedroom", "living"):
+            app.hass.states.values[f"binary_sensor.{neighbor}_radar"] = SimpleNamespace(
+                state="off"
+            )
+        reason = app._dispatch_adjacency_block_reason(candidate, NOW)
+        self.assertIn(
+            f"waiting for {int(candidate.duration_minutes) + 10} clear minutes",
+            reason,
+        )
+
+        app.state.room_history["bedroom"].unoccupied_since = NOW - timedelta(hours=2)
         app.hass.states.values["binary_sensor.bedroom_radar"] = SimpleNamespace(
             state="on"
         )
@@ -252,6 +424,48 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(
                 len(room_status(replace(view, adjacency_reason="x" * 500))), 255
             )
+
+    def test_snapshot_exposes_clear_neighbor_vacancy_diagnostic(self):
+        app = planning_application()
+        add_neighbors(app)
+        app.state.room_settings["study"].expected_minutes = 20.4
+        neighbor = app.state.room_history["bedroom"]
+        neighbor.occupancy = "unoccupied"
+        neighbor.unoccupied_since = NOW - timedelta(seconds=21)
+        neighbor.occupancy_samples.clear()
+        with patch(
+            "custom_components.adaptive_robovacs.projections._now", return_value=NOW
+        ):
+            snapshot = build_snapshot(app)
+            view = snapshot.room("study")
+        blocker = next(
+            item for item in view.adjacency_blockers if item.area_id == "bedroom"
+        )
+        self.assertEqual(blocker.occupancy, "unoccupied")
+        diagnostic = blocker.vacancy_diagnostic
+        self.assertIsNotNone(diagnostic)
+        self.assertEqual(diagnostic.required_clear_minutes, 30)
+        self.assertEqual(diagnostic.clear_minutes, 0.3)
+        self.assertIn("waiting for 30 clear minutes", view.adjacency_reason)
+        self.assertIn("waiting for 30 clear minutes", view.robot_previews[0].reason)
+        coordinator = _Coordinator()
+        coordinator.data = snapshot
+        sensor = _RoomStatusSensor(coordinator, "study", "Study")
+        attributes = sensor.extra_state_attributes["adjacency_blockers"][0]
+        self.assertEqual(
+            attributes["vacancy_diagnostic"],
+            {
+                "occupancy_source": "radars",
+                "unoccupied_since": (NOW - timedelta(seconds=21)).isoformat(),
+                "required_clear_minutes": 30,
+                "clear_minutes": 0.3,
+                "forecast_confidence": 0.0,
+                "comparable_sample_count": 0,
+                "successful_sample_count": 0,
+                "reason": "waiting for 30 clear minutes",
+                "allowed": False,
+            },
+        )
 
 
 class AdjacencyEntityTests(unittest.IsolatedAsyncioTestCase):

@@ -58,6 +58,21 @@ def robot_preview_reason(
         return "Observe-only mode"
     if scheduler.party_mode:
         return "Party Mode"
+    hard_adjacency = room.adjacency_reason and any(
+        item.occupancy != "unoccupied" for item in room.adjacency_blockers
+    )
+    if hard_adjacency:
+        return room.adjacency_reason
+    eligibility = next(
+        (
+            item
+            for item in room.robot_eligibility
+            if item.robot_entity_id == robot.entity_id
+        ),
+        None,
+    )
+    if eligibility is not None and not eligibility.eligible:
+        return eligibility.reason
     if room.adjacency_reason:
         return room.adjacency_reason
     if not robot.ready:

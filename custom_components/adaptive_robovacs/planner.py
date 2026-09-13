@@ -8,6 +8,7 @@ from datetime import datetime
 from .models import (
     CleaningOperation,
     CleaningProgram,
+    Forecast,
     OccurrenceSource,
     RequestedCleaningProfile,
     ResolvedCleaningProfile,
@@ -28,6 +29,31 @@ class VacancyDiagnostic:
     successful_sample_count: int
     reason: str
     allowed: bool
+
+    @classmethod
+    def from_forecast(
+        cls,
+        occupancy_source: str,
+        unoccupied_since: datetime | None,
+        forecast: Forecast,
+    ) -> VacancyDiagnostic:
+        """Build one consistently rounded diagnostic from a forecast result."""
+
+        return cls(
+            occupancy_source=occupancy_source,
+            unoccupied_since=unoccupied_since,
+            required_clear_minutes=forecast.required_minutes,
+            clear_minutes=(
+                round(forecast.clear_minutes, 1)
+                if forecast.clear_minutes is not None
+                else None
+            ),
+            forecast_confidence=forecast.confidence,
+            comparable_sample_count=forecast.comparable_samples,
+            successful_sample_count=forecast.successful_samples,
+            reason=forecast.reason,
+            allowed=forecast.allowed,
+        )
 
     def as_attributes(self) -> dict[str, object]:
         """Serialize only when building entity/service attributes."""

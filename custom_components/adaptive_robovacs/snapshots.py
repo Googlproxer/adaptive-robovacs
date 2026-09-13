@@ -331,6 +331,7 @@ class RoomAdjacencyBlockerView:
     area_id: str
     name: str
     occupancy: str
+    vacancy_diagnostic: VacancyDiagnostic | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -172,8 +172,11 @@ Status identifies blocking neighbours with their friendly names and occupancy
 states. Its attributes include `adjacency_mode`, `adjacency_active`,
 `adjacency_blocked`, `adjacency_reason`, `adjacent_area_ids`, and
 `adjacency_blockers` (area ID, name and occupancy for each blocking neighbour).
-Robot popup previews report the same restriction without guessing a clearing
-time. Running stages finish normally, and manual Clean retains its override.
+A clear-but-waiting blocker also has an optional `vacancy_diagnostic` containing
+required and elapsed clear minutes, confidence, comparable and successful sample
+counts, and the forecast reason. Robot popup previews use each robot's exact
+stage duration, so their waiting requirements can differ. Running stages finish
+normally, and manual Clean retains its override.
 
 The card shows **Desired cleaning start** and **Desired cleaning end** only for
 the **Custom** period. They offer 15-minute values plus **Use global**; start

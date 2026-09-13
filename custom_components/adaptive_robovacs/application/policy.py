@@ -470,20 +470,10 @@ class ApplicationPolicyMixin:
 
         detail = self._room_data(room.area_id)
         forecast = self._forecast(room, now, duration_minutes)
-        return VacancyDiagnostic(
-            occupancy_source=detail.occupancy_source,
-            unoccupied_since=detail.unoccupied_since,
-            required_clear_minutes=forecast.required_minutes,
-            clear_minutes=(
-                round(forecast.clear_minutes, 1)
-                if forecast.clear_minutes is not None
-                else None
-            ),
-            forecast_confidence=forecast.confidence,
-            comparable_sample_count=forecast.comparable_samples,
-            successful_sample_count=forecast.successful_samples,
-            reason=forecast.reason,
-            allowed=forecast.allowed,
+        return VacancyDiagnostic.from_forecast(
+            detail.occupancy_source,
+            detail.unoccupied_since,
+            forecast,
         )
 
     def _record_room_decision(
@@ -623,11 +613,37 @@ class ApplicationPolicyMixin:
         )
 
     def _adjacency_decision(
-        self, room: DiscoveredRoom, now: datetime
+        self,
+        room: DiscoveredRoom,
+        now: datetime,
+        duration_minutes: float | None = None,
     ) -> AdjacencyDecision:
-        """Apply the target's policy to settled neighbouring occupancy."""
+        """Apply occupancy and optional target-stage vacancy to direct neighbours."""
 
         settings = self.state.global_settings
+        floors = {key: item.floor_id for key, item in self.discovery.rooms.items()}
+        occupancy = {
+            key: item.occupancy for key, item in self.state.room_history.items()
+        }
+        decision = resolve_adjacency(
+            room.area_id,
+            self._room_settings(room).adjacency_mode,
+            _local(now),
+            settings.adjacency_night_start,
+            settings.adjacency_night_end,
+            self.state.floor_plan.edges,
+            floors,
+            occupancy,
+        )
+        if not decision.active or duration_minutes is None:
+            return decision
+        vacancy = {
+            area_id: self._forecast(
+                self.discovery.rooms[area_id], now, duration_minutes
+            )
+            for area_id in decision.neighbor_area_ids
+            if occupancy.get(area_id) == "unoccupied"
+        }
         return resolve_adjacency(
             room.area_id,
             self._room_settings(room).adjacency_mode,
@@ -635,8 +651,9 @@ class ApplicationPolicyMixin:
             settings.adjacency_night_start,
             settings.adjacency_night_end,
             self.state.floor_plan.edges,
-            {key: item.floor_id for key, item in self.discovery.rooms.items()},
-            {key: item.occupancy for key, item in self.state.room_history.items()},
+            floors,
+            occupancy,
+            vacancy,
         )
 
     def _dispatch_adjacency_block_reason(
@@ -650,8 +667,20 @@ class ApplicationPolicyMixin:
         if room is None:
             return "room is no longer discovered"
         self._observe_occupancy(now)
+        return self._duration_adjacency_block_reason(
+            room, now, candidate.duration_minutes
+        )
+
+    def _duration_adjacency_block_reason(
+        self,
+        room: DiscoveredRoom,
+        now: datetime,
+        duration_minutes: float,
+    ) -> str | None:
+        """Explain the neighbour gate for one exact executable stage."""
+
         return adjacency_block_reason(
-            self._adjacency_decision(room, now),
+            self._adjacency_decision(room, now, duration_minutes),
             {key: item.name for key, item in self.discovery.rooms.items()},
         )
 
@@ -812,6 +841,12 @@ class ApplicationPolicyMixin:
             )
             if not forecast.allowed:
                 return None, forecast.reason
+            if not candidate.manual_override and (
+                adjacency_reason := self._duration_adjacency_block_reason(
+                    room, candidate.evaluated_at, duration
+                )
+            ):
+                return None, adjacency_reason
             return replace(
                 candidate,
                 operation=operation,
@@ -906,6 +941,12 @@ class ApplicationPolicyMixin:
         )
         if not forecast.allowed:
             return None, forecast.reason
+        if not candidate.manual_override and (
+            adjacency_reason := self._duration_adjacency_block_reason(
+                room, candidate.evaluated_at, duration
+            )
+        ):
+            return None, adjacency_reason
         return replace(
             candidate,
             operation=operation,
