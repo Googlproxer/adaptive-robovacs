@@ -38,6 +38,66 @@ def active_job(**overrides):
     return state.ActiveJob(**values)
 
 
+def delayed_mop_occurrence(
+    completed_at: datetime | None,
+    *,
+    source=None,
+    program=None,
+    current_stage: int = 1,
+    mop_status=None,
+):
+    vacuum_profile = models.ResolvedCleaningProfile(
+        models.CleaningOperation.VACUUM,
+        fan_speed="turbo",
+    )
+    mop_profile = models.ResolvedCleaningProfile(
+        models.CleaningOperation.MOP,
+        mop_intensity="deep",
+    )
+    return state.CleaningOccurrence(
+        occurrence_id="occ-delayed",
+        room_id="rumpus",
+        robot_registry_id="registry-rob",
+        robot_entity_id="vacuum.rob",
+        program=program or models.CleaningProgram.VACUUM_THEN_MOP,
+        stages=[
+            state.CleaningStage(
+                models.CleaningOperation.VACUUM,
+                2,
+                status=models.StageStatus.COMPLETED,
+                reason="observed",
+                started_at=(completed_at - timedelta(minutes=20))
+                if completed_at
+                else None,
+                completed_at=completed_at,
+                cleaning_profile=vacuum_profile,
+                profile_sources=(("fan_speed", "room"),),
+            ),
+            state.CleaningStage(
+                models.CleaningOperation.MOP,
+                3,
+                status=mop_status or models.StageStatus.PENDING,
+                reason="robot_error_recovery",
+                started_at=datetime(2026, 8, 9, 9, 0, tzinfo=UTC),
+                completed_at=datetime(2026, 8, 9, 9, 5, tzinfo=UTC),
+                cleaning_profile=mop_profile,
+                profile_sources=(("mop_intensity", "room"),),
+            ),
+        ],
+        scheduled_at=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
+        created_at=datetime(2026, 8, 1, 7, 55, tzinfo=UTC),
+        adapter_id="roborock",
+        adapter_schema_version=7,
+        current_stage=current_stage,
+        source=source or models.OccurrenceSource.SCHEDULER,
+        manual_mode="configured" if source else None,
+        manual_override=bool(source),
+        bypass_desired_window=bool(source),
+        manual_context_id="context-1" if source else None,
+        manual_user_id="user-1" if source else None,
+    )
+
+
 class JobReducerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.when = datetime(2026, 8, 9, 9, 30, tzinfo=UTC)
@@ -48,6 +108,98 @@ class JobReducerTests(unittest.TestCase):
             jobs.active_rooms(active_job(room_ids=["study", "hall", "study"])),
             ("study", "hall"),
         )
+
+    def test_delayed_mop_stays_eligible_until_exact_freshness_limit(self) -> None:
+        completed_at = self.when - timedelta(hours=11, minutes=59, seconds=59)
+        occurrence = delayed_mop_occurrence(completed_at)
+
+        self.assertIsNone(jobs.rewind_expired_mop_stage(occurrence, self.when))
+
+        at_limit = completed_at + timedelta(hours=12)
+        rewound = jobs.rewind_expired_mop_stage(occurrence, at_limit)
+        self.assertIsNotNone(rewound)
+
+    def test_expired_mop_rewinds_same_occurrence_without_losing_contract(self) -> None:
+        occurrence = delayed_mop_occurrence(
+            self.when - timedelta(days=8),
+            source=models.OccurrenceSource.MANUAL_DASHBOARD,
+        )
+
+        rewound = jobs.rewind_expired_mop_stage(occurrence, self.when)
+
+        assert rewound is not None
+        self.assertEqual(rewound.occurrence_id, occurrence.occurrence_id)
+        self.assertEqual(rewound.room_id, occurrence.room_id)
+        self.assertEqual(rewound.robot_registry_id, occurrence.robot_registry_id)
+        self.assertEqual(rewound.robot_entity_id, occurrence.robot_entity_id)
+        self.assertEqual(rewound.scheduled_at, occurrence.scheduled_at)
+        self.assertEqual(rewound.created_at, occurrence.created_at)
+        self.assertEqual(rewound.adapter_id, occurrence.adapter_id)
+        self.assertEqual(
+            rewound.adapter_schema_version, occurrence.adapter_schema_version
+        )
+        self.assertEqual(rewound.source, occurrence.source)
+        self.assertEqual(rewound.manual_context_id, occurrence.manual_context_id)
+        self.assertEqual(rewound.manual_user_id, occurrence.manual_user_id)
+        self.assertEqual(rewound.current_stage, 0)
+        self.assertEqual(rewound.stages[0].status, models.StageStatus.PENDING)
+        self.assertEqual(rewound.stages[0].reason, "mop_delay_expired")
+        self.assertIsNone(rewound.stages[0].started_at)
+        self.assertIsNone(rewound.stages[0].completed_at)
+        self.assertEqual(rewound.stages[0].passes, 2)
+        self.assertIs(
+            rewound.stages[0].cleaning_profile,
+            occurrence.stages[0].cleaning_profile,
+        )
+        self.assertEqual(rewound.stages[1].status, models.StageStatus.PENDING)
+        self.assertIsNone(rewound.stages[1].reason)
+        self.assertIsNone(rewound.stages[1].started_at)
+        self.assertIsNone(rewound.stages[1].completed_at)
+        self.assertEqual(rewound.stages[1].passes, 3)
+        self.assertIs(
+            rewound.stages[1].cleaning_profile,
+            occurrence.stages[1].cleaning_profile,
+        )
+        self.assertEqual(occurrence.current_stage, 1)
+        self.assertEqual(occurrence.stages[0].status, models.StageStatus.COMPLETED)
+
+    def test_missing_completion_time_is_expired_and_restore_safe(self) -> None:
+        occurrence = delayed_mop_occurrence(None)
+        restored = state.CleaningOccurrence.from_mapping(occurrence.to_store())
+        assert restored is not None
+
+        rewound = jobs.rewind_expired_mop_stage(restored, self.when)
+
+        self.assertIsNotNone(rewound)
+        assert rewound is not None
+        self.assertIsNone(jobs.rewind_expired_mop_stage(rewound, self.when))
+
+    def test_mop_freshness_guard_excludes_other_program_and_stage_states(self) -> None:
+        cases = (
+            delayed_mop_occurrence(
+                self.when - timedelta(days=1),
+                program=models.CleaningProgram.MOP_THEN_VACUUM,
+            ),
+            delayed_mop_occurrence(
+                self.when - timedelta(days=1),
+                program=models.CleaningProgram.MOP_ONLY,
+            ),
+            delayed_mop_occurrence(
+                self.when - timedelta(days=1),
+                current_stage=0,
+            ),
+            delayed_mop_occurrence(
+                self.when - timedelta(days=1),
+                mop_status=models.StageStatus.RUNNING,
+            ),
+        )
+        for occurrence in cases:
+            with self.subTest(
+                program=occurrence.program,
+                current_stage=occurrence.current_stage,
+                status=occurrence.stages[1].status,
+            ):
+                self.assertIsNone(jobs.rewind_expired_mop_stage(occurrence, self.when))
 
     def test_observed_scheduler_completion_emits_duration_sample(self) -> None:
         transition = jobs.reduce_job_completion(

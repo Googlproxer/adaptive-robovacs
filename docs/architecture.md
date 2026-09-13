@@ -152,7 +152,11 @@ observe-only mode and publishes its diagnostic state.
 
 Adjacency vacancy windows reuse schema 18's durable `unoccupied_since` and
 occupancy samples. The decision itself and its per-robot diagnostics are
-transient, so v1.16.1 requires no Store migration.
+transient, so v1.16.1 requires no Store migration. The v1.16.2 mop-freshness
+guard likewise reuses the occurrence stage completion timestamps already in
+schema 18. Its pure reducer rewinds only an expired vacuum-then-mop occurrence;
+evaluation persists that result after reconciliation and repeats the policy
+before preparation and final dispatch.
 
 Room recovery records are separate from mapping/profile faults and carry stable
 room, robot, occurrence, stage, and episode identities. Ten continuous seconds
@@ -168,6 +172,8 @@ credit; only the retained unfinished stage becomes eligible after confirmation.
 - Party Mode, observe-only mode, storage-safe mode, startup settling, and
   shutdown are non-dispatching.
 - Every physical stage uses a fresh observation and complete revalidation.
+- A pending follow-up mop at least 12 hours past its prerequisite vacuum must
+  repeat that vacuum; an already-running mop is never rewound.
 - An active-job checkpoint is saved and published before an outbound start.
 - Robot observations override timing estimates during normal operation and
   recovery.

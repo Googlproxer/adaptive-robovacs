@@ -110,6 +110,12 @@ unavailable water skips that mop stage without blocking a configured vacuum
 stage or engaging the system-failure latch. Mop-capable robots without water
 telemetry require an explicit one-hour **Confirm water** mobile action; cancel,
 dismissal, timeout, or an unreachable notification safely skips only mopping.
+For vacuum-then-mop programs, the completed vacuum remains a valid prerequisite
+for 12 hours. If the mop has not started by that boundary, the same occurrence
+returns to its vacuum stage before mopping can proceed; an unverified completion
+time also fails safe by requiring another vacuum. Explicit mop-only and
+mop-then-vacuum programs, external cleans, and a mop already running are not
+changed by this freshness policy.
 When a Roborock advertises independent native **Custom** cleaning, mop route,
 and water-intensity controls plus a suction **Off** fan option, its mop stages
 use that direct profile instead of an app routine or a combined clean mode.

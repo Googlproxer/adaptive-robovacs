@@ -4,16 +4,28 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from datetime import timedelta
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from custom_components.adaptive_robovacs.application import SchedulerApplication
-from custom_components.adaptive_robovacs.models import OccurrenceSource
+from custom_components.adaptive_robovacs.commands import EvaluateCommand
+from custom_components.adaptive_robovacs.models import (
+    CleaningOperation,
+    CleaningProgram,
+    OccurrenceSource,
+    StageStatus,
+)
 from custom_components.adaptive_robovacs.planner import (
     PlannedCandidateAssignment,
     WholeSchedulePlan,
 )
-from custom_components.adaptive_robovacs.state import SchedulerFault
+from custom_components.adaptive_robovacs.state import (
+    CleaningOccurrence,
+    CleaningStage,
+    SchedulerFault,
+    WaterConfirmation,
+)
 from tests.test_application_dispatch import resolved_candidate, transaction_application
 from tests.test_application_state import NOW
 
@@ -26,8 +38,47 @@ def evaluation_application() -> SchedulerApplication:
     app._async_reconcile_jobs = AsyncMock()
     app._refresh_robot_readiness = Mock()
     app._async_save = AsyncMock()
+    app._async_clear_mobile_notification = AsyncMock()
+    app._water_confirmation_timers = {}
     app._async_dispatch = AsyncMock(return_value=(True, "started"))
     return app
+
+
+def delayed_mop_occurrence(
+    completed_at,
+    *,
+    source: OccurrenceSource = OccurrenceSource.SCHEDULER,
+) -> CleaningOccurrence:
+    return CleaningOccurrence(
+        occurrence_id="occurrence-delayed-mop",
+        room_id="study",
+        robot_registry_id="registry-alpha",
+        robot_entity_id="vacuum.alpha",
+        program=CleaningProgram.VACUUM_THEN_MOP,
+        stages=[
+            CleaningStage(
+                CleaningOperation.VACUUM,
+                1,
+                status=StageStatus.COMPLETED,
+                reason="observed",
+                started_at=(completed_at - timedelta(minutes=20))
+                if completed_at
+                else None,
+                completed_at=completed_at,
+            ),
+            CleaningStage(CleaningOperation.MOP, 1),
+        ],
+        scheduled_at=NOW - timedelta(days=8),
+        created_at=NOW - timedelta(days=8, minutes=1),
+        adapter_id="generic",
+        adapter_schema_version=1,
+        current_stage=1,
+        source=source,
+        manual_mode="configured"
+        if source is OccurrenceSource.MANUAL_DASHBOARD
+        else None,
+        manual_override=source is OccurrenceSource.MANUAL_DASHBOARD,
+    )
 
 
 async def evaluate(
@@ -41,6 +92,16 @@ async def evaluate(
         return await SchedulerApplication.async_evaluate(
             app, dry_run=dry_run, reason=reason
         )
+
+
+async def evaluate_at_times(app: SchedulerApplication, *times):
+    """Evaluate while advancing the transaction clock at selected boundaries."""
+
+    with patch(
+        "custom_components.adaptive_robovacs.application.evaluation._now",
+        side_effect=times,
+    ):
+        return await SchedulerApplication.async_evaluate(app, reason="clock-race")
 
 
 class EvaluationPreviewTests(unittest.IsolatedAsyncioTestCase):
@@ -117,6 +178,27 @@ class EvaluationPreviewTests(unittest.IsolatedAsyncioTestCase):
                 result = await evaluate(app, dry_run=True)
                 self.assertEqual(result["dispatches"], [message])
 
+    async def test_restored_days_old_mop_is_normalized_to_vacuum_candidate(
+        self,
+    ) -> None:
+        app = evaluation_application()
+        app.state.occurrences["study"] = delayed_mop_occurrence(NOW - timedelta(days=8))
+        cadence = app.state.room_history["study"].cleaning_completed_at
+
+        result = await evaluate(app, dry_run=True)
+
+        occurrence = app.state.occurrences["study"]
+        self.assertEqual(result["assignments"][0]["operation"], "vacuum")
+        self.assertEqual(occurrence.current_stage, 0)
+        self.assertEqual(occurrence.stages[0].reason, "mop_delay_expired")
+        self.assertEqual(
+            app.state.room_history["study"].cleaning_completed_at,
+            cadence,
+        )
+        self.assertEqual(app.state.robot_faults, {})
+        self.assertEqual(app.state.room_faults, {})
+        self.assertEqual(app._async_save.await_count, 2)
+
 
 class EvaluationDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_success_revalidates_twice_and_dispatches_fresh_candidate(
@@ -151,6 +233,53 @@ class EvaluationDispatchTests(unittest.IsolatedAsyncioTestCase):
         result = await evaluate(app)
         self.assertEqual(result["dispatches"], ["safe failure"])
         app._async_dispatch.assert_awaited_once()
+
+    async def test_final_dispatch_expiry_rewinds_and_invalidates_water_approval(
+        self,
+    ) -> None:
+        app = evaluation_application()
+        completed_at = NOW - timedelta(hours=11, minutes=59, seconds=59)
+        occurrence = delayed_mop_occurrence(completed_at)
+        app.state.occurrences["study"] = occurrence
+        request = WaterConfirmation(
+            request_id="water-1",
+            occurrence_id=occurrence.occurrence_id,
+            room_id="study",
+            robot_registry_id="registry-alpha",
+            stage_index=1,
+            confirm_hash="confirm",
+            cancel_hash="cancel",
+            tag="adaptive-water-study",
+            sent_at=NOW - timedelta(minutes=1),
+            expires_at=NOW + timedelta(minutes=10),
+            status="confirmed",
+        )
+        app.state.water_confirmations[occurrence.occurrence_id] = request
+        cancel_timer = Mock()
+        app._water_confirmation_timers[request.request_id] = cancel_timer
+        app._async_prepare_occurrence = AsyncMock(
+            side_effect=lambda _robot, candidate, _now: (candidate, None)
+        )
+
+        result = await evaluate_at_times(app, NOW, NOW, NOW + timedelta(seconds=1))
+
+        rewound = app.state.occurrences["study"]
+        self.assertEqual(
+            result["dispatches"],
+            ["waiting for Study: mop delay expired; vacuum required"],
+        )
+        self.assertEqual(rewound.current_stage, 0)
+        self.assertEqual(rewound.stages[0].reason, "mop_delay_expired")
+        self.assertNotIn(occurrence.occurrence_id, app.state.water_confirmations)
+        self.assertNotIn(request.request_id, app._water_confirmation_timers)
+        cancel_timer.assert_called_once_with()
+        app._async_clear_mobile_notification.assert_awaited_once_with(request.tag)
+        app._async_dispatch.assert_not_awaited()
+        self.assertEqual(app._async_save.await_count, 2)
+        command = app.async_execute.call_args.args[0]
+        self.assertIsInstance(command, EvaluateCommand)
+        self.assertTrue(command.coalesce)
+        self.assertEqual(command.detail, "mop-delay-expired:study")
 
     async def test_prepare_revalidation_handles_disappearance_and_all_gate_failures(
         self,

@@ -114,6 +114,17 @@ class ApplicationWaterMixin:
     async def _async_clear_mobile_notification(self, tag: str) -> None:
         await self.notifications.async_clear(tag)
 
+    def _discard_water_confirmation(self, occurrence_id: str) -> str | None:
+        """Remove one occurrence's stale approval and cancel its deadline."""
+
+        request = self.state.water_confirmations.pop(occurrence_id, None)
+        if request is None:
+            return None
+        unsubscribe = self._water_confirmation_timers.pop(request.request_id, None)
+        if unsubscribe:
+            unsubscribe()
+        return request.tag
+
     @staticmethod
     def _action_hash(action: str) -> str:
         return hashlib.sha256(action.encode("utf-8")).hexdigest()

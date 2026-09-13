@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Coroutine, Mapping
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -12,8 +12,11 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from ..const import EVENT_EVALUATION
+from ..commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
+from ..const import EVENT_EVALUATION, MAX_MOP_STAGE_DELAY
 from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
+from ..jobs import rewind_expired_mop_stage
+from ..models import EvaluationCause, EvaluationMode
 from ..planner import (
     CandidateRobotDecision,
     PlanningInput,
@@ -53,6 +56,18 @@ class ApplicationEvaluationMixin:
         async def async_refresh_discovery(self, *, notify: bool = True) -> None: ...
 
         async def _async_save(self) -> None: ...
+
+        def _async_create_task(
+            self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
+        ) -> asyncio.Task[Any] | None: ...
+
+        async def async_execute(
+            self, command: SchedulerCommand
+        ) -> SchedulerCommandResult: ...
+
+        def _discard_water_confirmation(self, occurrence_id: str) -> str | None: ...
+
+        async def _async_clear_mobile_notification(self, tag: str) -> None: ...
 
         def _notify_listeners(self) -> None: ...
 
@@ -151,6 +166,69 @@ class ApplicationEvaluationMixin:
                 )
         return report
 
+    async def _async_rewind_expired_mop_occurrences(
+        self,
+        now: datetime,
+        *,
+        room_ids: frozenset[str] | None = None,
+    ) -> frozenset[str]:
+        """Persist vacuum-stage rewinds for expired follow-up mops."""
+
+        rewound_rooms: set[str] = set()
+        notification_tags: list[str] = []
+        for room_id, occurrence in tuple(self.state.occurrences.items()):
+            if room_ids is not None and room_id not in room_ids:
+                continue
+            active = self.state.active_jobs.get(occurrence.robot_registry_id)
+            if (
+                room_id in self.state.room_recoveries
+                or room_id in self.state.room_faults
+                or occurrence.robot_registry_id in self.state.robot_faults
+                or (
+                    active is not None
+                    and active.occurrence_id == occurrence.occurrence_id
+                )
+            ):
+                continue
+            rewound = rewind_expired_mop_stage(
+                occurrence,
+                now,
+                MAX_MOP_STAGE_DELAY,
+            )
+            if rewound is None:
+                continue
+            self.state.occurrences[room_id] = rewound
+            rewound_rooms.add(room_id)
+            tag = self._discard_water_confirmation(occurrence.occurrence_id)
+            if tag:
+                notification_tags.append(tag)
+
+        if not rewound_rooms:
+            return frozenset()
+
+        await self._async_save()
+        for tag in notification_tags:
+            await self._async_clear_mobile_notification(tag)
+        _LOGGER.info(
+            "Adaptive RoboVacs rewound expired follow-up mop for rooms: %s",
+            ", ".join(sorted(rewound_rooms)),
+        )
+        return frozenset(rewound_rooms)
+
+    def _queue_mop_delay_evaluation(self, room_id: str) -> None:
+        """Queue a fresh dispatch pass after a mid-transaction rewind."""
+
+        self._async_create_task(
+            self.async_execute(
+                EvaluateCommand(
+                    mode=EvaluationMode.DISPATCH,
+                    cause=EvaluationCause.STAGE_TRANSITION,
+                    detail=f"mop-delay-expired:{room_id}",
+                    coalesce=True,
+                )
+            )
+        )
+
     async def async_clear_legacy_deferrals(self, area_ids: list[str]) -> dict[str, Any]:
         """Clear only user-selected legacy deferrals and never dispatch work."""
 
@@ -193,6 +271,7 @@ class ApplicationEvaluationMixin:
             self._expire_robot_cooldowns(now)
             self._observe_occupancy(now)
             await self._async_reconcile_jobs(now)
+            await self._async_rewind_expired_mop_occurrences(now)
             self._refresh_robot_readiness(now)
             candidates: list[ScheduleCandidate] = []
             reasons: dict[str, str] = {}
@@ -335,6 +414,20 @@ class ApplicationEvaluationMixin:
                     # every room and robot gate before creating an occurrence or
                     # sending a water-confirmation notification.
                     prepare_now = _now()
+                    if await self._async_rewind_expired_mop_occurrences(
+                        prepare_now,
+                        room_ids=frozenset({candidate.room_id}),
+                    ):
+                        rewound_room = self.discovery.rooms.get(candidate.room_id)
+                        room_name = (
+                            rewound_room.name if rewound_room else candidate.room_id
+                        )
+                        dispatches.append(
+                            f"waiting for {room_name}: mop delay expired; "
+                            "vacuum required"
+                        )
+                        self._queue_mop_delay_evaluation(candidate.room_id)
+                        continue
                     self._observe_occupancy(prepare_now)
                     prepared_room = self.discovery.rooms.get(candidate.room_id)
                     if prepared_room is None:
@@ -383,6 +476,20 @@ class ApplicationEvaluationMixin:
                     # every physical safety gate immediately before this command so
                     # stage two never inherits stage one's eligibility.
                     dispatch_now = _now()
+                    if await self._async_rewind_expired_mop_occurrences(
+                        dispatch_now,
+                        room_ids=frozenset({candidate.room_id}),
+                    ):
+                        rewound_room = self.discovery.rooms.get(candidate.room_id)
+                        room_name = (
+                            rewound_room.name if rewound_room else candidate.room_id
+                        )
+                        dispatches.append(
+                            f"waiting for {room_name}: mop delay expired; "
+                            "vacuum required"
+                        )
+                        self._queue_mop_delay_evaluation(candidate.room_id)
+                        continue
                     self._observe_occupancy(dispatch_now)
                     dispatch_room = self.discovery.rooms.get(candidate.room_id)
                     if dispatch_room is None:

@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
-from .models import CleaningOperation, StageStatus, manual_deferral
+from .const import MAX_MOP_STAGE_DELAY
+from .models import CleaningOperation, CleaningProgram, StageStatus, manual_deferral
 from .state import (
     ActiveJob,
     CleaningOccurrence,
@@ -252,6 +253,60 @@ def interrupted_occurrence(
         reason="robot_error_recovery",
     )
     return replace(occurrence, stages=stages)
+
+
+def rewind_expired_mop_stage(
+    occurrence: CleaningOccurrence,
+    now: datetime,
+    maximum_delay: timedelta = MAX_MOP_STAGE_DELAY,
+) -> CleaningOccurrence | None:
+    """Rewind an expired vacuum-then-mop occurrence to its vacuum stage.
+
+    ``None`` means the occurrence is either outside this policy or its
+    prerequisite vacuum is still fresh.  The supplied occurrence is never
+    mutated.
+    """
+
+    if (
+        occurrence.program is not CleaningProgram.VACUUM_THEN_MOP
+        or occurrence.current_stage != 1
+        or len(occurrence.stages) != 2
+    ):
+        return None
+    vacuum_stage, mop_stage = occurrence.stages
+    if (
+        vacuum_stage.operation is not CleaningOperation.VACUUM
+        or vacuum_stage.status is not StageStatus.COMPLETED
+        or mop_stage.operation is not CleaningOperation.MOP
+        or mop_stage.status is not StageStatus.PENDING
+    ):
+        return None
+    if (
+        vacuum_stage.completed_at is not None
+        and now < vacuum_stage.completed_at + maximum_delay
+    ):
+        return None
+
+    return replace(
+        occurrence,
+        current_stage=0,
+        stages=[
+            replace(
+                vacuum_stage,
+                status=StageStatus.PENDING,
+                reason="mop_delay_expired",
+                started_at=None,
+                completed_at=None,
+            ),
+            replace(
+                mop_stage,
+                status=StageStatus.PENDING,
+                reason=None,
+                started_at=None,
+                completed_at=None,
+            ),
+        ],
+    )
 
 
 def reduce_job_completion(

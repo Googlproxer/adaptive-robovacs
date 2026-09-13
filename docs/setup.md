@@ -167,7 +167,9 @@ Clean actions retain their existing override. Editing settings or saving links
 refreshes previews without starting or stopping work. Normal evaluation runs
 when occupancy changes or the night interval opens or closes. See the
 [v1.16.0 migration guide](migration-v1.16.0.md) and
-[v1.16.1 release notes](releases/v1.16.1.md).
+[v1.16.1 release notes](releases/v1.16.1.md). The fixed 12-hour freshness
+limit for delayed vacuum-then-mop sequences is documented in the
+[v1.16.2 release notes](releases/v1.16.2.md).
 
 ## Manual room actions
 
