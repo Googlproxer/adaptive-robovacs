@@ -158,6 +158,12 @@ schema 18. Its pure reducer rewinds only an expired vacuum-then-mop occurrence;
 evaluation persists that result after reconciliation and repeats the policy
 before preparation and final dispatch.
 
+Candidate priority remains transient in v1.16.3 and requires no Store migration.
+The pure planner orders due rooms with no completed clean first, then by oldest
+aggregate `cleaning_completed_at`, due time, forecast confidence, and stable
+discovery order. Ineligible rooms never reserve a robot, and independent robots
+can still receive assignments during the same evaluation.
+
 Room recovery records are separate from mapping/profile faults and carry stable
 room, robot, occurrence, stage, and episode identities. Ten continuous seconds
 of fresh, docked, terminal-ready, error-free observations permit detachment;

@@ -11,7 +11,8 @@ On 2026-09-08, adjacency was implemented for v1.16.0 using the user's approved
 replacement policy below. On 2026-09-13, v1.16.1 extended that policy so a clear
 neighbour must pass the same adaptive vacancy forecast as the target room. The
 same day, v1.16.2 bounded delayed vacuum-then-mop continuation to 12 hours. The
-other remaining items are unchanged.
+v1.16.3 scheduler now prioritises due rooms by oldest completed full-room clean.
+The other remaining items are unchanged.
 
 The recent [application package refactor](application-package-refactor.md)
 remains a separate, unchanged implementation plan.

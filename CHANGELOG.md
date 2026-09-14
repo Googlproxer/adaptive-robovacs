@@ -5,6 +5,19 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.16.3] - 2026-09-14
+
+### Changed
+
+- Due rooms now compete for robot capacity by oldest completed full-room clean,
+  before due time, forecast confidence, and stable discovery order.
+- Due rooms with no completed-clean history rank first. An older but ineligible
+  room still leaves its compatible robot available to a younger eligible room.
+- Fresh and persisted multi-stage candidates use the aggregate room completion;
+  eligibility, safety gates, cadence, and explicit manual actions are unchanged.
+
+Detailed notes: [`docs/releases/v1.16.3.md`](docs/releases/v1.16.3.md).
+
 ## [1.16.0] - 2026-09-08
 
 ### Added

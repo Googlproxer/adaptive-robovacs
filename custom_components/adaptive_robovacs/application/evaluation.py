@@ -309,6 +309,9 @@ class ApplicationEvaluationMixin:
                             )
                             for decision in diagnostics
                         ),
+                        last_cleaned_at=self._room_data(
+                            candidate.room_id
+                        ).cleaning_completed_at,
                     )
                 )
 

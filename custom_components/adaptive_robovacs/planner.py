@@ -135,6 +135,7 @@ class CandidateOption:
     due_at: datetime
     confidence: float
     ordinal: int
+    last_cleaned_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +181,7 @@ class PlanningInput:
     decisions: tuple[CandidateRobotDecision, ...]
     ordinal: int
     battery_by_robot: tuple[tuple[str, float | None], ...]
+    last_cleaned_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,17 +201,25 @@ class WholeSchedulePlan:
     blocks: tuple[tuple[str, str], ...]
 
 
+def _candidate_order_key(
+    item: CandidateOptions,
+) -> tuple[bool, datetime, datetime, float, int]:
+    """Prefer never-cleaned rooms, then the oldest completed room clean."""
+
+    last_cleaned_at = item.candidate.last_cleaned_at
+    return (
+        last_cleaned_at is not None,
+        last_cleaned_at or item.candidate.due_at,
+        item.candidate.due_at,
+        -item.candidate.confidence,
+        item.candidate.ordinal,
+    )
+
+
 def build_assignment_plan(inputs: tuple[CandidateOptions, ...]) -> AssignmentPlan:
     """Order candidates and allocate each robot at most once."""
 
-    ordered = sorted(
-        inputs,
-        key=lambda item: (
-            item.candidate.due_at,
-            -item.candidate.confidence,
-            item.candidate.ordinal,
-        ),
-    )
+    ordered = sorted(inputs, key=_candidate_order_key)
     used_robots: set[str] = set()
     assignments: list[PlannedAssignment] = []
     blocks: list[tuple[str, str]] = []
@@ -263,6 +273,7 @@ def build_schedule_plan(inputs: tuple[PlanningInput, ...]) -> WholeSchedulePlan:
                     due_at=item.candidate.due_at,
                     confidence=item.candidate.confidence,
                     ordinal=item.ordinal,
+                    last_cleaned_at=item.last_cleaned_at,
                 ),
                 robots=tuple(
                     RobotOption(

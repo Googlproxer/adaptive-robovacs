@@ -19,6 +19,7 @@ from custom_components.adaptive_robovacs.models import (
 from custom_components.adaptive_robovacs.planner import (
     PlannedCandidateAssignment,
     WholeSchedulePlan,
+    build_schedule_plan,
 )
 from custom_components.adaptive_robovacs.state import (
     CleaningOccurrence,
@@ -198,6 +199,31 @@ class EvaluationPreviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.state.robot_faults, {})
         self.assertEqual(app.state.room_faults, {})
         self.assertEqual(app._async_save.await_count, 2)
+
+    async def test_pending_stage_uses_aggregate_completion_for_priority(self) -> None:
+        app = evaluation_application()
+        aggregate_completion = NOW - timedelta(days=12)
+        app.state.room_history["study"].cleaning_completed_at = aggregate_completion
+        app.state.occurrences["study"] = delayed_mop_occurrence(
+            NOW - timedelta(hours=1)
+        )
+        captured_inputs = ()
+
+        def capture(inputs):
+            nonlocal captured_inputs
+            captured_inputs = inputs
+            return build_schedule_plan(inputs)
+
+        with patch(
+            "custom_components.adaptive_robovacs.application.evaluation."
+            "build_schedule_plan",
+            side_effect=capture,
+        ):
+            result = await evaluate(app, dry_run=True)
+
+        self.assertEqual(captured_inputs[0].last_cleaned_at, aggregate_completion)
+        self.assertIsNotNone(captured_inputs[0].candidate.occurrence)
+        self.assertEqual(result["assignments"][0]["operation"], "mop")
 
 
 class EvaluationDispatchTests(unittest.IsolatedAsyncioTestCase):

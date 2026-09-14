@@ -14,6 +14,7 @@ from custom_components.adaptive_robovacs.planner import (
     CandidateOption,
     CandidateOptions,
     CandidateRobotDecision,
+    PlannedAssignment,
     PlanningInput,
     RobotEligibility,
     RobotOption,
@@ -54,22 +55,33 @@ def candidate(
 
 
 class AssignmentPlannerTests(unittest.TestCase):
-    def test_ordering_uses_due_time_confidence_then_input_ordinal(self) -> None:
+    def test_equal_last_clean_uses_due_time_confidence_then_ordinal(self) -> None:
+        last_cleaned_at = NOW - timedelta(days=7)
         inputs = (
             CandidateOptions(
-                CandidateOption("ordinal", NOW, 0.8, 2),
+                CandidateOption(
+                    "ordinal", NOW, 0.8, 2, last_cleaned_at=last_cleaned_at
+                ),
                 (RobotOption("r3", 40, True, "ready"),),
             ),
             CandidateOptions(
-                CandidateOption("later", NOW + timedelta(minutes=1), 1.0, 0),
+                CandidateOption(
+                    "later",
+                    NOW + timedelta(minutes=1),
+                    1.0,
+                    0,
+                    last_cleaned_at=last_cleaned_at,
+                ),
                 (RobotOption("r4", 100, True, "ready"),),
             ),
             CandidateOptions(
-                CandidateOption("confidence", NOW, 0.9, 5),
+                CandidateOption(
+                    "confidence", NOW, 0.9, 5, last_cleaned_at=last_cleaned_at
+                ),
                 (RobotOption("r2", 50, True, "ready"),),
             ),
             CandidateOptions(
-                CandidateOption("first", NOW, 0.8, 1),
+                CandidateOption("first", NOW, 0.8, 1, last_cleaned_at=last_cleaned_at),
                 (RobotOption("r1", 60, True, "ready"),),
             ),
         )
@@ -80,6 +92,94 @@ class AssignmentPlannerTests(unittest.TestCase):
             plan.ordered_room_ids,
             ("confidence", "first", "ordinal", "later"),
         )
+
+    def test_oldest_clean_wins_even_when_another_room_was_due_first(self) -> None:
+        shared = (RobotOption("rob", 80, True, "ready"),)
+        plan = build_assignment_plan(
+            (
+                CandidateOptions(
+                    CandidateOption(
+                        "kitchen",
+                        NOW - timedelta(hours=8),
+                        0.8,
+                        0,
+                        last_cleaned_at=NOW - timedelta(hours=46),
+                    ),
+                    shared,
+                ),
+                CandidateOptions(
+                    CandidateOption(
+                        "rumpus",
+                        NOW - timedelta(hours=3),
+                        0.8,
+                        1,
+                        last_cleaned_at=NOW - timedelta(days=12),
+                    ),
+                    shared,
+                ),
+            )
+        )
+
+        self.assertEqual(plan.ordered_room_ids, ("rumpus", "kitchen"))
+        self.assertEqual(
+            plan.assignments,
+            (PlannedAssignment("rumpus", "rob"),),
+        )
+        self.assertEqual(plan.blocks, (("kitchen", "ready"),))
+
+    def test_never_cleaned_room_precedes_known_completion(self) -> None:
+        shared = (RobotOption("rob", 80, True, "ready"),)
+        plan = build_assignment_plan(
+            (
+                CandidateOptions(
+                    CandidateOption(
+                        "known",
+                        NOW - timedelta(hours=8),
+                        0.8,
+                        0,
+                        last_cleaned_at=NOW - timedelta(days=30),
+                    ),
+                    shared,
+                ),
+                CandidateOptions(
+                    CandidateOption("never", NOW - timedelta(hours=1), 0.8, 1),
+                    shared,
+                ),
+            )
+        )
+
+        self.assertEqual(plan.ordered_room_ids, ("never", "known"))
+        self.assertEqual(plan.assignments, (PlannedAssignment("never", "rob"),))
+
+    def test_ineligible_oldest_room_does_not_reserve_robot(self) -> None:
+        plan = build_assignment_plan(
+            (
+                CandidateOptions(
+                    CandidateOption(
+                        "oldest",
+                        NOW - timedelta(days=2),
+                        0.8,
+                        0,
+                        last_cleaned_at=NOW - timedelta(days=30),
+                    ),
+                    (RobotOption("rob", 80, False, "room fault"),),
+                ),
+                CandidateOptions(
+                    CandidateOption(
+                        "newer",
+                        NOW - timedelta(days=1),
+                        0.8,
+                        1,
+                        last_cleaned_at=NOW - timedelta(days=2),
+                    ),
+                    (RobotOption("rob", 80, True, "ready"),),
+                ),
+            )
+        )
+
+        self.assertEqual(plan.ordered_room_ids, ("oldest", "newer"))
+        self.assertEqual(plan.blocks, (("oldest", "room fault"),))
+        self.assertEqual(plan.assignments, (PlannedAssignment("newer", "rob"),))
 
     def test_assignment_prefers_battery_then_stable_robot_id(self) -> None:
         plan = build_assignment_plan(
