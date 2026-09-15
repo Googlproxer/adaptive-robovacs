@@ -449,6 +449,60 @@ class CadenceTests(unittest.TestCase):
         self.assertFalse(returning.cleared)
         self.assertEqual(returning.reason, "robot_not_docked_or_cleaning")
 
+    def test_hold_reset_requires_clear_error_and_stable_terminal_dock(self) -> None:
+        clear = models.RobotErrorObservation("clear")
+        ready = models.robot_hold_recheck_result(
+            "docked",
+            clear,
+            terminal_ready=True,
+            dock_stable=True,
+            startup_settling=False,
+        )
+        self.assertTrue(ready.cleared)
+        self.assertEqual(ready.reason, "cleared_docked")
+
+        cases = (
+            (
+                models.RobotErrorObservation("error"),
+                True,
+                True,
+                False,
+                "robot_error_present",
+            ),
+            (
+                models.RobotErrorObservation("unknown"),
+                True,
+                True,
+                False,
+                "robot_error_unavailable",
+            ),
+            (clear, False, True, False, "robot_servicing"),
+            (clear, True, False, False, "robot_state_not_stable"),
+            (clear, True, True, True, "startup_settling"),
+        )
+        for error, terminal, stable, settling, reason in cases:
+            with self.subTest(reason=reason):
+                result = models.robot_hold_recheck_result(
+                    "docked",
+                    error,
+                    terminal_ready=terminal,
+                    dock_stable=stable,
+                    startup_settling=settling,
+                )
+                self.assertFalse(result.cleared)
+                self.assertEqual(result.reason, reason)
+
+    def test_observed_cleaning_can_release_a_hold_without_dispatch_gates(self) -> None:
+        result = models.robot_hold_recheck_result(
+            "cleaning",
+            models.RobotErrorObservation("unsupported"),
+            terminal_ready=False,
+            dock_stable=False,
+            startup_settling=True,
+        )
+        self.assertTrue(result.cleared)
+        self.assertEqual(result.reason, "cleared_cleaning")
+
     def test_return_to_dock_is_available_until_the_robot_is_docked(self) -> None:
         self.assertTrue(models.can_request_return_to_dock("cleaning"))
         self.assertTrue(models.can_request_return_to_dock("paused"))

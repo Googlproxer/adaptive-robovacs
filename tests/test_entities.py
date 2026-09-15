@@ -36,6 +36,7 @@ from custom_components.adaptive_robovacs.snapshots import (
     FloorPlanView,
     FrozenJsonObject,
     ObservedProfileView,
+    RobotHoldView,
     RobotSettingsView,
     RoomRecoveryView,
     SchedulerView,
@@ -570,6 +571,13 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status.native_value, "Scheduler held")
         self.assertTrue(status.extra_state_attributes["repair_active"])
         robot.failure = None
+        robot.scheduler_hold = RobotHoldView("paused", "held", WHEN, WHEN, None)
+        self.assertEqual(status.native_value, "Scheduler held")
+        self.assertTrue(status.extra_state_attributes["repair_active"])
+        self.assertEqual(
+            status.extra_state_attributes["failure_code"], "scheduler_hold"
+        )
+        robot.scheduler_hold = None
         robot.adapter_capabilities = replace(
             robot.adapter_capabilities, water_readiness="legacy"
         )

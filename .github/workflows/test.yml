@@ -25,7 +25,7 @@ jobs:
             pytest-cov==7.1.0 \
             ruff==0.16.7 \
             mypy==2.3.1
-          # The HA plugin currently pins pytest 9.0.3. The v1.16.3 acceptance
+          # The HA plugin currently pins pytest 9.0.3. The v1.16.4 acceptance
           # environment deliberately validates the requested 9.1.1 runtime.
           python -m pip install --no-deps pytest==9.1.1
       - name: Verify toolchain pins

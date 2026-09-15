@@ -25,6 +25,8 @@ from .repairs_manager import (
     retired_map_hold_issue_id,
     robot_dispatch_fault_issue_id,
     robot_error_recovery_issue_id,
+    robot_hold_summary,
+    robot_state_summary,
     room_dispatch_fault_issue_id,
     room_recovery_issue_id,
     room_recovery_summary,
@@ -218,7 +220,7 @@ class RepairService:
     def set_robot_error_recovery(
         self, registry_id: str, held_at: datetime, robot: DiscoveredRobot | None
     ) -> None:
-        """Offer explicit abandonment when a legacy job cannot bind to a room."""
+        """Offer a safe recheck when an error hold cannot bind to a room."""
 
         ir.async_create_issue(
             self._hass,
@@ -228,13 +230,64 @@ class RepairService:
             is_persistent=True,
             severity=ir.IssueSeverity.ERROR,
             translation_key="robot_error_recovery",
-            translation_placeholders={"robot": robot.name if robot else "the vacuum"},
+            translation_placeholders={
+                "robot": robot.name if robot else "the vacuum",
+                "reason": robot_hold_summary("robot_error"),
+                "state": robot_state_summary("error"),
+            },
             data={
                 "entry_id": self._entry_id,
                 "robot_registry_id": registry_id,
                 "held_at": held_at.isoformat(),
             },
         )
+
+    def sync_robot_holds(
+        self,
+        holds: Mapping[str, RobotHold],
+        robots: Iterable[DiscoveredRobot],
+        observed_states: Mapping[str, str | None],
+    ) -> None:
+        """Create one actionable Repair for every non-map robot hold."""
+
+        pending = {
+            key: hold
+            for key, hold in holds.items()
+            if not map_recovery_hold_is_manual(hold.reason)
+        }
+        expected = {
+            robot_error_recovery_issue_id(self._entry_id, key) for key in pending
+        }
+        prefix = robot_error_recovery_issue_id(self._entry_id, "")
+        registry = ir.async_get(self._hass)
+        for domain, issue_id in tuple(registry.issues):
+            if (
+                domain == DOMAIN
+                and issue_id.startswith(prefix)
+                and issue_id not in expected
+            ):
+                ir.async_delete_issue(self._hass, DOMAIN, issue_id)
+        names = {robot.registry_id: robot.name for robot in robots}
+        for key, hold in pending.items():
+            ir.async_create_issue(
+                self._hass,
+                DOMAIN,
+                robot_error_recovery_issue_id(self._entry_id, key),
+                is_fixable=True,
+                is_persistent=True,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="robot_error_recovery",
+                translation_placeholders={
+                    "robot": names.get(key, "the vacuum"),
+                    "reason": robot_hold_summary(hold.reason),
+                    "state": robot_state_summary(observed_states.get(key)),
+                },
+                data={
+                    "entry_id": self._entry_id,
+                    "robot_registry_id": key,
+                    "held_at": hold.held_at.isoformat() if hold.held_at else "",
+                },
+            )
 
     def sync_retired_map_holds(
         self, holds: Mapping[str, RobotHold], robots: Iterable[DiscoveredRobot]

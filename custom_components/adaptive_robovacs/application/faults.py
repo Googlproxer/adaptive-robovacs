@@ -17,7 +17,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from ..commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
-from ..const import START_CONFIRMATION_TIMEOUT
+from ..const import READY_CONFIRMATION_DELAY, START_CONFIRMATION_TIMEOUT
 from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
 from ..dispatch import DispatchPipeline
 from ..jobs import should_assume_native_app_clean
@@ -28,8 +28,13 @@ from ..models import (
     JobPhase,
     SchedulerHaltRecheckResult,
     StageStatus,
+    detailed_status_is_dispatchable,
+    map_recovery_hold_is_manual,
+    ready_confirmation_elapsed,
+    robot_hold_recheck_result,
     scheduler_halt_recheck_result,
 )
+from ..observations import HomeAssistantObserver
 from ..repair_service import RepairService
 from ..repairs_manager import fault_summary
 from ..state import RoomHistory, RoomSettings, SchedulerFault, SchedulerState
@@ -68,6 +73,7 @@ class ApplicationFaultMixin:
     repairs: RepairService
     _lock: asyncio.Lock
     _start_confirmation_timers: dict[str, Callable[[], None]]
+    _startup_state_settle_until: datetime | None
 
     if TYPE_CHECKING:
 
@@ -86,6 +92,34 @@ class ApplicationFaultMixin:
         def _notify_listeners(self) -> None: ...
 
         def _reset_ready_confirmation(self, robot_id: str) -> None: ...
+
+        def _reset_room_recovery_dock(self, registry_id: str) -> None: ...
+
+        def _cancel_recovery_timer(self, robot_id: str) -> None: ...
+
+        def _cancel_job(
+            self, robot_id: str, active: Any, cancelled_at: datetime, reason: str
+        ) -> None: ...
+
+        def _resume_held_job(
+            self, robot_id: str, active: Any, state: Any, now: datetime
+        ) -> None: ...
+
+        async def async_acknowledge_room_recovery(
+            self, area_id: str, recovery_id: str
+        ) -> dict[str, object]: ...
+
+        async def async_acknowledge_retired_map(
+            self, registry_id: str, held_at: str
+        ) -> dict[str, object]: ...
+
+        def _sync_room_recovery_issues(self) -> None: ...
+
+        def _sync_retired_map_issues(self) -> None: ...
+
+        async def async_evaluate(
+            self, dry_run: bool = False, reason: str = "manual"
+        ) -> dict[str, Any]: ...
 
         def _room_data(self, area_id: str) -> RoomHistory: ...
 
@@ -117,6 +151,23 @@ class ApplicationFaultMixin:
             self.state.room_faults,
             self.discovery.robots.values(),
             self.discovery.rooms,
+        )
+
+    def _sync_robot_hold_issues(self) -> None:
+        """Keep every unresolved non-map hold visible as a scoped Repair."""
+
+        observed_states = {
+            robot.registry_id: (
+                state.state
+                if (state := self.hass.states.get(robot.entity_id)) is not None
+                else None
+            )
+            for robot in self.discovery.robots.values()
+        }
+        self.repairs.sync_robot_holds(
+            self.state.robot_holds,
+            self.discovery.robots.values(),
+            observed_states,
         )
 
     def _sync_two_pass_issues(self) -> None:
@@ -269,15 +320,122 @@ class ApplicationFaultMixin:
     async def async_recheck_and_resume(
         self, robot_registry_id: str | None = None
     ) -> SchedulerHaltRecheckResult:
-        """Acknowledge one robot fault without dispatching cleaning work."""
+        """Recheck scoped or global durable blockers without dispatching work."""
+
+        if robot_registry_id is not None:
+            results: list[SchedulerHaltRecheckResult] = []
+            if robot_registry_id in self.state.robot_faults:
+                results.append(await self._async_recheck_robot_fault(robot_registry_id))
+            hold = self.state.robot_holds.get(robot_registry_id)
+            if hold is not None:
+                if map_recovery_hold_is_manual(hold.reason):
+                    response = await self.async_acknowledge_retired_map(
+                        robot_registry_id,
+                        hold.held_at.isoformat() if hold.held_at else "",
+                    )
+                    results.append(
+                        SchedulerHaltRecheckResult(
+                            bool(response.get("cleared")),
+                            str(response.get("reason", "holds_remaining")),  # type: ignore[arg-type]
+                        )
+                    )
+                else:
+                    results.append(
+                        await self._async_recheck_robot_hold(robot_registry_id)
+                    )
+            if not results:
+                return SchedulerHaltRecheckResult(False, "no_scheduler_halt")
+            await self.async_evaluate(dry_run=True, reason="recheck-resume")
+            unresolved = [result for result in results if not result.cleared]
+            if unresolved:
+                return unresolved[0]
+            if len(results) == 1:
+                return results[0]
+            return SchedulerHaltRecheckResult(
+                True,
+                "all_holds_cleared",
+                attempted=len(results),
+                cleared_count=len(results),
+            )
+
+        robot_faults = tuple(sorted(self.state.robot_faults))
+        robot_holds = tuple(sorted(self.state.robot_holds))
+        room_faults = tuple(sorted(self.state.room_faults))
+        room_recoveries = tuple(
+            sorted(
+                (area_id, recovery.recovery_id)
+                for area_id, recovery in self.state.room_recoveries.items()
+            )
+        )
+        attempted = (
+            len(robot_faults)
+            + len(robot_holds)
+            + len(room_faults)
+            + len(room_recoveries)
+        )
+        cleared_count = 0
+
+        for registry_id in robot_faults:
+            if (await self._async_recheck_robot_fault(registry_id)).cleared:
+                cleared_count += 1
+        for registry_id in robot_holds:
+            hold = self.state.robot_holds.get(registry_id)
+            if hold is None:
+                cleared_count += 1
+                continue
+            if map_recovery_hold_is_manual(hold.reason):
+                response = await self.async_acknowledge_retired_map(
+                    registry_id,
+                    hold.held_at.isoformat() if hold.held_at else "",
+                )
+                if response.get("cleared"):
+                    cleared_count += 1
+            elif (await self._async_recheck_robot_hold(registry_id)).cleared:
+                cleared_count += 1
+        for area_id in room_faults:
+            if await self.async_recheck_room_fault(area_id):
+                cleared_count += 1
+        for area_id, recovery_id in room_recoveries:
+            response = await self.async_acknowledge_room_recovery(area_id, recovery_id)
+            if response.get("cleared"):
+                cleared_count += 1
+
+        self._sync_dispatch_fault_issues()
+        self._sync_robot_hold_issues()
+        self._sync_room_recovery_issues()
+        self._sync_retired_map_issues()
+        self._sync_two_pass_issues()
+        self._sync_cleaning_program_issues()
+        await self.async_evaluate(dry_run=True, reason="recheck-resume")
+        remaining = self._durable_scheduler_blockers()
+        return SchedulerHaltRecheckResult(
+            not remaining,
+            "all_holds_cleared" if not remaining else "holds_remaining",
+            attempted=attempted,
+            cleared_count=cleared_count,
+            remaining=remaining,
+        )
+
+    def _durable_scheduler_blockers(self) -> tuple[str, ...]:
+        """Return stable blocker identities for reset diagnostics."""
+
+        return tuple(
+            [f"robot_fault:{key}" for key in sorted(self.state.robot_faults)]
+            + [f"robot_hold:{key}" for key in sorted(self.state.robot_holds)]
+            + [f"room_fault:{key}" for key in sorted(self.state.room_faults)]
+            + [f"room_recovery:{key}" for key in sorted(self.state.room_recoveries)]
+        )
+
+    async def _async_recheck_robot_fault(
+        self, robot_registry_id: str
+    ) -> SchedulerHaltRecheckResult:
+        """Recheck one dispatch fault without changing unrelated blockers."""
 
         async with self._lock:
             faults = self.state.robot_faults
-            if robot_registry_id is None and len(faults) == 1:
-                robot_registry_id = next(iter(faults))
-            fault = faults.get(robot_registry_id) if robot_registry_id else None
+            fault = faults.get(robot_registry_id)
             if not fault:
-                return SchedulerHaltRecheckResult(False, "no_scheduler_halt")
+                return SchedulerHaltRecheckResult(True, "all_holds_cleared")
             await self.async_refresh_discovery()
             robot = self.robot_for_registry_id(fault.robot_registry_id)
             room = self.discovery.rooms.get(fault.room_area_id)
@@ -300,6 +458,96 @@ class ApplicationFaultMixin:
                 return result
             self._discard_unconfirmed_scheduler_job(robot, room)
             await self._async_clear_robot_fault(robot, room)
+            return result
+
+    async def _async_recheck_robot_hold(
+        self, robot_registry_id: str
+    ) -> SchedulerHaltRecheckResult:
+        """Release one hold only from fresh authoritative physical evidence."""
+
+        async with self._lock:
+            hold = self.state.robot_holds.get(robot_registry_id)
+            if hold is None:
+                return SchedulerHaltRecheckResult(True, "all_holds_cleared")
+            if map_recovery_hold_is_manual(hold.reason):
+                return SchedulerHaltRecheckResult(False, "holds_remaining")
+            await self.async_refresh_discovery(notify=False)
+            robot = self.robot_for_registry_id(robot_registry_id)
+            if robot is None:
+                self._sync_robot_hold_issues()
+                return SchedulerHaltRecheckResult(False, "recovery_target_unavailable")
+            state = self.hass.states.get(robot.entity_id)
+            state_text = state.state if state else None
+            observed = HomeAssistantObserver(self.hass).robot(robot)
+            capabilities = robot.adapter_capabilities
+            status_id = (
+                capabilities.completion_status_entity_id
+                or capabilities.readiness_entity_id
+            )
+            ready_states = (
+                capabilities.terminal_completion_states
+                if capabilities.completion_status_entity_id
+                else capabilities.readiness_states
+            )
+            status = self.hass.states.get(status_id) if status_id else None
+            now = _application_now()
+            result = robot_hold_recheck_result(
+                state_text,
+                observed.error,
+                terminal_ready=detailed_status_is_dispatchable(
+                    status.state if status else None,
+                    required=bool(status_id),
+                    ready_states=ready_states,
+                ),
+                dock_stable=bool(
+                    state
+                    and state.last_changed
+                    and ready_confirmation_elapsed(
+                        state.last_changed, now, READY_CONFIRMATION_DELAY
+                    )
+                ),
+                startup_settling=bool(
+                    self._startup_state_settle_until
+                    and now < self._startup_state_settle_until
+                ),
+            )
+            if not result.cleared:
+                self._sync_robot_hold_issues()
+                self._notify_listeners()
+                return result
+
+            active = self.state.active_jobs.get(robot_registry_id)
+            if state_text == "cleaning":
+                self.state.robot_holds.pop(robot_registry_id, None)
+                if active is not None:
+                    self._resume_held_job(robot.entity_id, active, state, now)
+            else:
+                if active is not None:
+                    self._cancel_job(
+                        robot.entity_id,
+                        active,
+                        now,
+                        "explicit_recheck_reset",
+                    )
+                self.state.robot_holds.pop(robot_registry_id, None)
+
+            if active is not None:
+                recovery = self.state.room_recoveries.get(active.room_id)
+                if (
+                    recovery
+                    and recovery.robot_registry_id == robot_registry_id
+                    and recovery.occurrence_id == active.occurrence_id
+                ):
+                    self.state.room_recoveries.pop(active.room_id, None)
+            self._reset_room_recovery_dock(robot_registry_id)
+            self._cancel_recovery_timer(robot.entity_id)
+            self._cancel_start_confirmation(robot.entity_id)
+            self._reset_ready_confirmation(robot.entity_id)
+            await self._async_save()
+            self.repairs.delete_robot_error_recovery(robot_registry_id)
+            self._sync_robot_hold_issues()
+            self._sync_room_recovery_issues()
+            self._notify_listeners()
             return result
 
     def _discard_unconfirmed_scheduler_job(

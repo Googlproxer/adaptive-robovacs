@@ -164,7 +164,14 @@ class ApplicationCommandRouterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             payload(result),
-            {"cleared": True, "reason": "ready", "robot_state": "docked"},
+            {
+                "attempted": 0,
+                "cleared": True,
+                "cleared_count": 0,
+                "reason": "ready",
+                "remaining": [],
+                "robot_state": "docked",
+            },
         )
         self.assertEqual(
             payload(

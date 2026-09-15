@@ -245,6 +245,7 @@ class SchedulerApplication(
         if self.state.robot_faults or self.state.room_faults:
             self._sync_dispatch_fault_issues()
         await self._async_recover_active_jobs()
+        self._sync_robot_hold_issues()
         self._sync_room_recovery_issues()
         await self._async_restore_water_confirmations()
         await self.async_execute(
@@ -417,6 +418,9 @@ class SchedulerApplication(
                         "cleared": halt_result.cleared,
                         "reason": halt_result.reason,
                         "robot_state": halt_result.robot_state,
+                        "attempted": halt_result.attempted,
+                        "cleared_count": halt_result.cleared_count,
+                        "remaining": list(halt_result.remaining),
                     }
                 )
             case RecheckRoomFaultCommand(area_id=area_id):
@@ -520,6 +524,7 @@ class SchedulerApplication(
 
         if self._closing:
             return
+        self._sync_robot_hold_issues()
         self._sync_retired_map_issues()
         try:
             snapshot = build_snapshot(self)

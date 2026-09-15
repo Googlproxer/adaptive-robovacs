@@ -28,6 +28,7 @@ from .presentation import (
     water_confirmation_attributes,
     water_episode_attributes,
 )
+from .repairs_manager import robot_hold_summary
 from .room_status import room_status
 from .runtime_data import AdaptiveRoboVacsConfigEntry
 
@@ -86,7 +87,9 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         robot = self.robot_view(self.robot_entity_id)
-        return "Scheduler held" if robot.failure else robot.state
+        return (
+            "Scheduler held" if robot.failure or robot.scheduler_hold else robot.state
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -94,6 +97,18 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
         active = active_job_attributes(robot.active)
         settings = robot_settings_attributes(robot.settings)
         failure = fault_attributes(robot.failure)
+        failure_fields = _fault_fields(failure)
+        if robot.scheduler_hold and not failure:
+            failure_fields = {
+                "failure_code": "scheduler_hold",
+                "failure_summary": robot_hold_summary(robot.scheduler_hold.reason),
+                "failure_since": (
+                    robot.scheduler_hold.held_at.isoformat()
+                    if robot.scheduler_hold.held_at
+                    else None
+                ),
+                "repair_active": True,
+            }
         capabilities = robot.adapter_capabilities
         water = capabilities.water_readiness
         water_attributes = (
@@ -172,7 +187,7 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             "mop_profile_summary": robot.mop_profile_summary,
             "water_readiness": water_attributes,
             "adapter_diagnostic": robot.adapter_diagnostic,
-            **_fault_fields(failure),
+            **failure_fields,
         }
 
 

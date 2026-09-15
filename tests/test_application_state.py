@@ -173,6 +173,7 @@ def state_application() -> SchedulerApplication:
         delete_robot_dispatch_fault=Mock(),
         delete_room_dispatch_fault=Mock(),
         sync_room_recoveries=Mock(),
+        sync_robot_holds=Mock(),
         set_robot_error_recovery=Mock(),
         delete_robot_error_recovery=Mock(),
     )
@@ -187,6 +188,7 @@ def state_application() -> SchedulerApplication:
     app._ready_since = {}
     app._room_recovery_since = {}
     app._room_recovery_timers = {}
+    app._recovery_timers = {}
     app._lock = asyncio.Lock()
     app._notify_listeners = Mock()
     app._schedule_clock = Mock()
@@ -797,7 +799,7 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_robot_fault_recheck_is_observation_only_and_scope_safe(self) -> None:
         app = state_application()
-        self.assertFalse((await app.async_recheck_and_resume()).cleared)
+        self.assertTrue((await app.async_recheck_and_resume()).cleared)
 
         fault = SchedulerFault(
             "start_outcome_uncertain",
@@ -816,13 +818,13 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         app = state_application()
         app.state.robot_faults["registry-alpha"] = fault
         app.hass.states.values["vacuum.alpha"] = SimpleNamespace(state="idle")
-        result = await app.async_recheck_and_resume()
+        result = await app.async_recheck_and_resume("registry-alpha")
         self.assertEqual(result.reason, "robot_not_docked_or_cleaning")
 
         app.hass.states.values["vacuum.alpha"].state = "docked"
         app._discard_unconfirmed_scheduler_job = Mock()
         app._async_clear_robot_fault = AsyncMock()
-        result = await app.async_recheck_and_resume()
+        result = await app.async_recheck_and_resume("registry-alpha")
         self.assertTrue(result.cleared)
         app._discard_unconfirmed_scheduler_job.assert_called_once()
         app._async_clear_robot_fault.assert_awaited_once()
@@ -839,6 +841,178 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.cleared)
         app._discard_unconfirmed_scheduler_job.assert_not_called()
         app._async_clear_robot_fault.assert_awaited_once()
+
+    async def test_recheck_clears_stable_docked_orphan_hold_without_dispatch(
+        self,
+    ) -> None:
+        app = state_application()
+        discovered = app.discovery.robots["vacuum.alpha"]
+        app.discovery = DiscoverySnapshot(
+            MappingProxyType(
+                {
+                    discovered.entity_id: replace(
+                        discovered,
+                        adapter_capabilities=replace(
+                            discovered.adapter_capabilities,
+                            readiness_entity_id=None,
+                        ),
+                    )
+                }
+            ),
+            app.discovery.rooms,
+        )
+        app.state.robot_holds["registry-alpha"] = RobotHold(
+            "robot_error", "held", held_at=NOW - timedelta(hours=1)
+        )
+        app.hass.states.values["vacuum.alpha"] = SimpleNamespace(
+            state="docked", last_changed=NOW - timedelta(minutes=2)
+        )
+
+        with patch(
+            "custom_components.adaptive_robovacs.application.faults._application_now",
+            return_value=NOW,
+        ):
+            result = await app.async_recheck_and_resume("registry-alpha")
+
+        self.assertTrue(result.cleared)
+        self.assertNotIn("registry-alpha", app.state.robot_holds)
+        app.storage.async_save.assert_awaited_once()
+        app.repairs.delete_robot_error_recovery.assert_called_once_with(
+            "registry-alpha"
+        )
+        app.async_evaluate.assert_awaited_once_with(
+            dry_run=True, reason="recheck-resume"
+        )
+
+    async def test_recheck_retains_unsafe_hold_and_syncs_explanatory_repair(
+        self,
+    ) -> None:
+        app = state_application()
+        app.state.robot_holds["registry-alpha"] = RobotHold(
+            "paused", "held", held_at=NOW
+        )
+        app.hass.states.values["vacuum.alpha"] = SimpleNamespace(
+            state="paused", last_changed=NOW - timedelta(minutes=1)
+        )
+
+        result = await app.async_recheck_and_resume("registry-alpha")
+
+        self.assertFalse(result.cleared)
+        self.assertEqual(result.reason, "robot_not_docked_or_cleaning")
+        self.assertIn("registry-alpha", app.state.robot_holds)
+        app.repairs.sync_robot_holds.assert_called()
+        app.storage.async_save.assert_not_awaited()
+
+    async def test_global_recheck_partially_clears_holds_and_reports_remaining(
+        self,
+    ) -> None:
+        app = state_application()
+        alpha = app.discovery.robots["vacuum.alpha"]
+        beta = robot("vacuum.beta", registry_id="registry-beta")
+        app.discovery = DiscoverySnapshot(
+            MappingProxyType(
+                {
+                    item.entity_id: replace(
+                        item,
+                        adapter_capabilities=replace(
+                            item.adapter_capabilities,
+                            readiness_entity_id=None,
+                        ),
+                    )
+                    for item in (alpha, beta)
+                }
+            ),
+            app.discovery.rooms,
+        )
+        app.state.robot_holds = {
+            "registry-alpha": RobotHold("robot_error", "held", held_at=NOW),
+            "registry-beta": RobotHold("paused", "held", held_at=NOW),
+        }
+        app.hass.states.values.update(
+            {
+                "vacuum.alpha": SimpleNamespace(
+                    state="docked", last_changed=NOW - timedelta(minutes=1)
+                ),
+                "vacuum.beta": SimpleNamespace(
+                    state="paused", last_changed=NOW - timedelta(minutes=1)
+                ),
+            }
+        )
+
+        with patch(
+            "custom_components.adaptive_robovacs.application.faults._application_now",
+            return_value=NOW,
+        ):
+            result = await app.async_recheck_and_resume()
+
+        self.assertFalse(result.cleared)
+        self.assertEqual(result.reason, "holds_remaining")
+        self.assertEqual(result.attempted, 2)
+        self.assertEqual(result.cleared_count, 1)
+        self.assertEqual(result.remaining, ("robot_hold:registry-beta",))
+        self.assertNotIn("registry-alpha", app.state.robot_holds)
+
+    async def test_docked_active_hold_resets_stage_without_completion_credit(
+        self,
+    ) -> None:
+        app = state_application()
+        discovered = app.discovery.robots["vacuum.alpha"]
+        app.discovery = DiscoverySnapshot(
+            MappingProxyType(
+                {
+                    discovered.entity_id: replace(
+                        discovered,
+                        adapter_capabilities=replace(
+                            discovered.adapter_capabilities,
+                            readiness_entity_id=None,
+                        ),
+                    )
+                }
+            ),
+            app.discovery.rooms,
+        )
+        active = active_job(occurrence_id="occurrence-1")
+        active.phase = JobPhase.ERROR_WAITING
+        active.seen_cleaning = True
+        app.state.active_jobs["registry-alpha"] = active
+        app.state.robot_holds["registry-alpha"] = RobotHold(
+            "robot_error", "held", held_at=NOW - timedelta(hours=1)
+        )
+        app.state.occurrences["study"] = CleaningOccurrence(
+            "occurrence-1",
+            "study",
+            "registry-alpha",
+            "vacuum.alpha",
+            CleaningProgram.VACUUM_ONLY,
+            [
+                CleaningStage(
+                    CleaningOperation.VACUUM,
+                    1,
+                    StageStatus.RUNNING,
+                    started_at=NOW - timedelta(minutes=5),
+                )
+            ],
+            NOW - timedelta(minutes=5),
+            NOW - timedelta(hours=1),
+            "fake",
+            2,
+        )
+        app.hass.states.values["vacuum.alpha"] = SimpleNamespace(
+            state="docked", last_changed=NOW - timedelta(minutes=2)
+        )
+
+        with patch(
+            "custom_components.adaptive_robovacs.application.faults._application_now",
+            return_value=NOW,
+        ):
+            result = await app.async_recheck_and_resume("registry-alpha")
+
+        self.assertTrue(result.cleared)
+        self.assertIsNone(app.state.active_jobs["registry-alpha"])
+        stage = app.state.occurrences["study"].stages[0]
+        self.assertEqual(stage.status, StageStatus.PENDING)
+        self.assertIsNone(stage.started_at)
+        self.assertIsNone(app.state.room_history["study"].cleaning_completed_at)
 
     async def test_discard_and_clear_fault_restore_pending_stage(self) -> None:
         app = state_application()

@@ -183,6 +183,8 @@ class ApplicationJobsMixin:
 
         def _active_rooms(self, active: ActiveJob) -> list[str]: ...
 
+        def _sync_robot_hold_issues(self) -> None: ...
+
     async def _async_reconcile_jobs(self, now: datetime) -> None:
         """Persist completion only after an accepted command has actually cleaned."""
 
@@ -410,6 +412,7 @@ class ApplicationJobsMixin:
                 changed = True
         if changed:
             await self._async_save()
+        self._sync_robot_hold_issues()
 
     def _mark_observed_completion(
         self,

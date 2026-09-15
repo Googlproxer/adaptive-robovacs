@@ -130,19 +130,25 @@
       }
     },
     "robot_error_recovery": {
-      "title": "Adaptive RoboVacs interrupted vacuum needs review",
+      "title": "Adaptive RoboVacs scheduler hold needs review",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Abandon an unassociated interrupted clean",
-            "description": "A saved error on {robot} cannot be safely associated with one room stage. Resolve the physical error and dock the vacuum.\n\nSubmitting this Repair abandons that saved attempt without marking a room cleaned or sending a cleaning command. An identified obsolete occurrence is discarded; normal room scheduling may create a fresh clean later. Other independent faults remain in place."
+            "title": "Recheck and release this scheduler hold",
+            "description": "{reason} {state}\n\nResolve any physical error, then either let {robot} resume cleaning or return it to a stable, ready dock. Submitting this Repair rechecks fresh Home Assistant state and releases only this hold when safe. A docked interrupted attempt is reset without marking a room cleaned; normal scheduling may create a fresh clean later. No cleaning command is sent and normal occupancy, window, battery, Party Mode, and observe-only checks remain in force."
           }
         },
         "error": {
-          "awaiting_safe_dock": "Resolve the vacuum error and dock it. Wait for stable dock confirmation, then try again.",
-          "recovery_changed": "This interruption has changed. Close this Repair and open the current one.",
-          "recovery_target_unavailable": "The saved room, vacuum, or cleaning stage cannot be matched. Restore the original room and vacuum configuration, then try again.",
-          "recovery_unavailable": "Recovery is unavailable while the integration is stopping or its saved state needs repair."
+          "no_scheduler_halt": "This hold is already cleared. Close this Repair and refresh the vacuum status.",
+          "recovery_target_unavailable": "The affected vacuum is no longer available to Home Assistant. Restore it, then try again.",
+          "robot_state_unavailable": "Home Assistant cannot read the vacuum's current state. Wait for its integration to reconnect, then try again.",
+          "robot_error_present": "The vacuum still reports an error. Resolve it, then try again.",
+          "robot_error_unavailable": "Home Assistant cannot confirm that the vacuum error is cleared. Restore its error sensor, then try again.",
+          "robot_not_docked_or_cleaning": "The vacuum is neither safely docked nor cleaning. Let it resume or return it to the dock, then try again.",
+          "startup_settling": "Adaptive RoboVacs is still settling fresh Home Assistant state after startup. Wait briefly, then try again.",
+          "robot_servicing": "The vacuum is docked but its detailed status is not ready. Wait for dock servicing to finish, then try again.",
+          "robot_state_not_stable": "The vacuum has not remained docked long enough to confirm a stable reset. Wait briefly, then try again.",
+          "holds_remaining": "This hold cannot yet be released safely. Review the current vacuum state and try again."
         }
       }
     },

@@ -66,6 +66,34 @@ def room_recovery_summary(category: str) -> str:
     }.get(category, "The vacuum reported an error during this room clean.")
 
 
+def robot_hold_summary(reason: str) -> str:
+    """Describe only normalized durable robot-hold reasons."""
+
+    return {
+        "robot_error": "The scheduler retained a hold after a vacuum error.",
+        "paused": "The scheduler retained a hold after the vacuum was paused.",
+        "user_requested_return": (
+            "The scheduler is waiting for a requested return to the dock to finish."
+        ),
+    }.get(reason, "The scheduler retained an interrupted-vacuum hold.")
+
+
+def robot_state_summary(state: str | None) -> str:
+    """Return a bounded physical-state description without exposing raw data."""
+
+    return {
+        "docked": "The vacuum is docked.",
+        "cleaning": "The vacuum is cleaning.",
+        "returning": "The vacuum is returning to its dock.",
+        "paused": "The vacuum is paused.",
+        "error": "The vacuum is reporting an error state.",
+        "idle": "The vacuum is idle away from a confirmed dock.",
+        "unknown": "Home Assistant reports the vacuum state as unknown.",
+        "unavailable": "The vacuum is unavailable in Home Assistant.",
+        None: "Home Assistant has no current vacuum state.",
+    }.get(state, "The vacuum is not in a state that can safely release this hold.")
+
+
 def room_recovery_issue_id(entry_id: str, area_id: str) -> str:
     return f"room_recovery_{entry_id}_{area_id}"
 

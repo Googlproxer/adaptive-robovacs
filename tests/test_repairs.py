@@ -26,6 +26,7 @@ from custom_components.adaptive_robovacs.repairs_manager import (
 )
 from custom_components.adaptive_robovacs.state import (
     CleaningStage,
+    RobotHold,
     RobotSettings,
     RoomRecovery,
     RoomSettings,
@@ -59,6 +60,44 @@ def robot() -> DiscoveredRobot:
 
 
 class RepairServiceTests(unittest.TestCase):
+    def test_robot_holds_create_scoped_repairs_with_safe_current_reason(self):
+        registry = SimpleNamespace(
+            issues={
+                (DOMAIN, "robot_error_recovery_entry-1_stale"): object(),
+                (DOMAIN, "robot_error_recovery_other-entry_other"): object(),
+            }
+        )
+        hold = RobotHold("paused", "held", held_at=WHEN)
+        with (
+            patch(
+                "custom_components.adaptive_robovacs.repair_service.ir.async_get",
+                return_value=registry,
+            ),
+            patch(
+                "custom_components.adaptive_robovacs.repair_service.ir.async_create_issue"
+            ) as create,
+            patch(
+                "custom_components.adaptive_robovacs.repair_service.ir.async_delete_issue"
+            ) as delete,
+        ):
+            self.service.sync_robot_holds(
+                {"registry-alpha": hold},
+                [robot()],
+                {"registry-alpha": "paused"},
+            )
+
+        self.assertEqual(
+            create.call_args.args[2],
+            "robot_error_recovery_entry-1_registry-alpha",
+        )
+        placeholders = create.call_args.kwargs["translation_placeholders"]
+        self.assertIn("paused", placeholders["reason"])
+        self.assertIn("paused", placeholders["state"])
+        self.assertNotIn("vendor", str(placeholders))
+        delete.assert_called_once_with(
+            self.hass, DOMAIN, "robot_error_recovery_entry-1_stale"
+        )
+
     def test_room_recovery_issues_recreate_and_remove_only_owned_episodes(self):
         record = RoomRecovery(
             "episode",

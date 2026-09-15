@@ -99,8 +99,12 @@ affected room. Each creates a scoped Home Assistant **Repair** with a safe
 explanation while unaffected compatible work continues. A late robot state
 cannot clear its fault automatically. Resolve the underlying availability or
 mapping problem, then use the scoped Repair flow or the dashboard's confirmed
-**Recheck and resume** action. The recheck never sends a test clean, and the
-failed room remains due after scheduling is explicitly resumed.
+**Recheck and resume** action. The global action rechecks every durable robot
+hold, dispatch fault, and room recovery. It clears safe, stale holds and resets
+abandoned attempts without crediting a clean; anything that cannot be cleared
+remains held and gets a scoped Repair explaining why. The recheck never sends a
+test clean, preserves the normal occupancy/window/battery/mode gates, and keeps
+the failed room due after scheduling is explicitly resumed.
 
 Each room now has one cadence and one ordered program: vacuum only, mop only,
 vacuum then mop, or mop then vacuum. Every stage is a separate physical start

@@ -210,7 +210,7 @@ class RepairFlowTests(unittest.IsolatedAsyncioTestCase):
                     "robot_registry_id": "registry-alpha",
                     "held_at": "timestamp",
                 },
-                ErrorRecoveryRepairFlow,
+                RobotDispatchFaultRepairFlow,
             ),
             (
                 notification_delivery_issue_id("entry-1"),

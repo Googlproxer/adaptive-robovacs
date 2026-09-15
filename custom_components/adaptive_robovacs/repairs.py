@@ -284,12 +284,7 @@ async def async_create_fix_flow(
             ),
         )
     if issue_id == robot_error_recovery_issue_id(entry_id, robot_registry_id):
-        return ErrorRecoveryRepairFlow(
-            submit,
-            AcknowledgeRobotErrorCommand(
-                robot_registry_id, str((data or {}).get("held_at", ""))
-            ),
-        )
+        return RobotDispatchFaultRepairFlow(submit, robot_registry_id)
     if issue_id == room_dispatch_fault_issue_id(entry_id, area_id):
         return RoomDispatchFaultRepairFlow(submit, area_id)
     if issue_id == cleaning_program_issue_id(entry_id, area_id):

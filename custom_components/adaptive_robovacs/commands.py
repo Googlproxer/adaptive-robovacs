@@ -146,7 +146,7 @@ class StopAndReturnCommand:
 
 @dataclass(frozen=True, slots=True)
 class RecheckAndResumeCommand:
-    """Recheck a global or robot-scoped dispatch fault without dispatching."""
+    """Recheck global durable blockers or one robot without dispatching."""
 
     robot_registry_id: str | None = None
 

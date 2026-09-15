@@ -391,11 +391,18 @@ class RobotReadiness:
 
 
 type SchedulerHaltRecheckReason = Literal[
+    "all_holds_cleared",
     "cleared_docked",
     "cleared_cleaning",
+    "holds_remaining",
     "no_scheduler_halt",
     "recovery_target_unavailable",
+    "robot_error_present",
+    "robot_error_unavailable",
     "robot_state_unavailable",
+    "robot_state_not_stable",
+    "robot_servicing",
+    "startup_settling",
     "robot_not_docked_or_cleaning",
 ]
 
@@ -407,6 +414,9 @@ class SchedulerHaltRecheckResult:
     cleared: bool
     reason: SchedulerHaltRecheckReason
     robot_state: str | None = None
+    attempted: int = 0
+    cleared_count: int = 0
+    remaining: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1415,6 +1425,44 @@ def scheduler_halt_recheck_result(
     return SchedulerHaltRecheckResult(
         False, "robot_not_docked_or_cleaning", robot_state
     )
+
+
+def robot_hold_recheck_result(
+    robot_state: str | None,
+    error: RobotErrorObservation,
+    *,
+    terminal_ready: bool,
+    dock_stable: bool,
+    startup_settling: bool,
+) -> SchedulerHaltRecheckResult:
+    """Classify whether an explicit reset can safely release a robot hold.
+
+    This is deliberately narrower than dispatch readiness. Battery, room
+    occupancy, schedule windows, Party Mode, and observe-only mode remain
+    future-dispatch gates. The reset requires only authoritative evidence that
+    an interrupted robot is actively cleaning again or has safely settled at
+    its dock with no reported error.
+    """
+
+    if robot_state in {None, "unknown", "unavailable"}:
+        return SchedulerHaltRecheckResult(False, "robot_state_unavailable", robot_state)
+    if error.status == "error":
+        return SchedulerHaltRecheckResult(False, "robot_error_present", robot_state)
+    if error.status == "unknown":
+        return SchedulerHaltRecheckResult(False, "robot_error_unavailable", robot_state)
+    if robot_state == "cleaning":
+        return SchedulerHaltRecheckResult(True, "cleared_cleaning", robot_state)
+    if robot_state != "docked":
+        return SchedulerHaltRecheckResult(
+            False, "robot_not_docked_or_cleaning", robot_state
+        )
+    if startup_settling:
+        return SchedulerHaltRecheckResult(False, "startup_settling", robot_state)
+    if not terminal_ready:
+        return SchedulerHaltRecheckResult(False, "robot_servicing", robot_state)
+    if not dock_stable:
+        return SchedulerHaltRecheckResult(False, "robot_state_not_stable", robot_state)
+    return SchedulerHaltRecheckResult(True, "cleared_docked", robot_state)
 
 
 def offline_held_recovery_outcome(

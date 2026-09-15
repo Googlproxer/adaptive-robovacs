@@ -298,7 +298,7 @@ test("global card includes scheduler status and controls in role order", () => {
         perform_action: "button.press",
         target: { entity_id: "button.resume" },
         confirmation: {
-          text: "Recheck the failed request and resume scheduler dispatch? No test clean will be sent.",
+          text: "Recheck all scheduler holds and recoveries, release those now safe, and refresh the schedule? No test clean will be sent; normal safety checks still apply.",
         },
       },
     },

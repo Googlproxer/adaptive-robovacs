@@ -5,6 +5,23 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.16.4] - 2026-09-15
+
+### Fixed
+
+- **Recheck and resume** now inventories every durable robot hold, dispatch
+  fault, and room recovery instead of requiring a current dispatch fault.
+- A stable, error-free, terminally ready dock observation clears an orphaned
+  hold and resets any interrupted stage to pending without completion credit or
+  a physical vacuum command.
+- Holds that remain unsafe now create a scoped persistent Repair with a bounded
+  reason and current-state explanation. Independent blockers are rechecked even
+  when another hold cannot be cleared.
+- The robot Status sensor reports hold-only states as `Scheduler held` with an
+  active Repair, and the dashboard confirmation now describes the global reset.
+
+Detailed notes: [`docs/releases/v1.16.4.md`](docs/releases/v1.16.4.md).
+
 ## [1.16.3] - 2026-09-14
 
 ### Changed
