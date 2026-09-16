@@ -5,6 +5,21 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.16.6] - 2026-09-16
+
+### Fixed
+
+- Roborock vacuum profiles now let the operation-mode update settle before
+  writing the requested fan speed, then confirm the combined mode and fan
+  state before a room clean can start.
+- Native Roborock mop profiles now sequence route, operation mode, water
+  intensity, and suction around the device's linked-control resets and confirm
+  the complete stable profile.
+- A requested vacuum or mop profile that does not converge after bounded
+  retries blocks that dispatch instead of starting with different settings.
+
+Detailed notes: [`docs/releases/v1.16.6.md`](docs/releases/v1.16.6.md).
+
 ## [1.16.5] - 2026-09-16
 
 ### Fixed

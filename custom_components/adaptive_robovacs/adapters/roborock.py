@@ -6,7 +6,7 @@ import asyncio
 import base64
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from homeassistant.helpers import entity_registry as er
@@ -81,8 +81,12 @@ Q10_FAN_LEVELS = {
     "max_plus": 8,
 }
 NATIVE_MOP_PROFILE_TIMEOUT_SECONDS = 30
-NATIVE_MOP_PROFILE_RETRY_INTERVAL_SECONDS = 5
-NATIVE_MOP_PROFILE_RETRY_ATTEMPTS = 6
+NATIVE_MOP_PROFILE_RETRY_INTERVAL_SECONDS = 3
+NATIVE_MOP_PROFILE_RETRY_ATTEMPTS = 2
+LINKED_CONTROL_SETTLE_SECONDS = 2
+LINKED_VACUUM_PROFILE_TIMEOUT_SECONDS = 20
+LINKED_VACUUM_PROFILE_RETRY_INTERVAL_SECONDS = 3
+LINKED_VACUUM_PROFILE_RETRY_ATTEMPTS = 2
 ROBOROCK_MOP_START_STATES = frozenset({"washing_the_mop"})
 NATIVE_MOP_PROFILE_BLOCK_CODES = frozenset(
     {
@@ -637,7 +641,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
     """Enhance compatible Roborock vacuums with native cross-hatching."""
 
     adapter_id = "roborock"
-    schema_version = 10
+    schema_version = 11
     priority = 100
     platforms = frozenset({"roborock"})
 
@@ -846,6 +850,115 @@ class RoborockVacuumAdapter(VacuumAdapter):
         )
 
     @staticmethod
+    def _is_linked_vacuum_profile_request(
+        context: AdapterMatchContext, request: AdapterDispatchRequest
+    ) -> bool:
+        """Return whether Rob exposes the coupled mode and fan controls."""
+
+        return bool(
+            request.operation == "vacuum"
+            and context.profile.mode_select_entity_id
+            and isinstance(request.cleaning_profile.get("mode"), str)
+            and isinstance(request.cleaning_profile.get("fan_speed"), str)
+        )
+
+    async def _async_apply_linked_vacuum_profile(
+        self,
+        hass: Any,
+        context: AdapterMatchContext,
+        request: AdapterDispatchRequest,
+    ) -> AdapterDispatchResult:
+        """Apply and confirm Rob's coupled vacuum mode and fan speed."""
+
+        mode_entity_id = context.profile.mode_select_entity_id
+        mode = request.cleaning_profile.get("mode")
+        fan_speed = request.cleaning_profile.get("fan_speed")
+        assert mode_entity_id is not None
+        assert isinstance(mode, str)
+        assert isinstance(fan_speed, str)
+
+        def observed() -> bool:
+            mode_state = hass.states.get(mode_entity_id)
+            vacuum_state = hass.states.get(request.robot_entity_id)
+            return bool(
+                mode_state
+                and vacuum_state
+                and mode_state.state == mode
+                and vacuum_state.attributes.get("fan_speed") == fan_speed
+            )
+
+        if observed():
+            return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
+
+        try:
+            async with asyncio.timeout(LINKED_VACUUM_PROFILE_TIMEOUT_SECONDS):
+                for attempt in range(LINKED_VACUUM_PROFILE_RETRY_ATTEMPTS + 1):
+                    if context.can_mutate and not context.can_mutate():
+                        return AdapterDispatchResult(
+                            DispatchOutcome.READY, "ready", "Ready"
+                        )
+                    # Selecting the operation can asynchronously reset Rob's fan
+                    # speed. Let that linked update settle before writing the
+                    # requested fan speed as the final vacuum control.
+                    await hass.services.async_call(
+                        "select",
+                        "select_option",
+                        {"entity_id": mode_entity_id, "option": mode},
+                        blocking=True,
+                    )
+                    await asyncio.sleep(LINKED_CONTROL_SETTLE_SECONDS)
+                    if context.can_mutate and not context.can_mutate():
+                        return AdapterDispatchResult(
+                            DispatchOutcome.READY, "ready", "Ready"
+                        )
+                    await hass.services.async_call(
+                        "vacuum",
+                        "set_fan_speed",
+                        {
+                            "entity_id": request.robot_entity_id,
+                            "fan_speed": fan_speed,
+                        },
+                        blocking=True,
+                    )
+                    await asyncio.sleep(LINKED_CONTROL_SETTLE_SECONDS)
+                    if observed():
+                        return AdapterDispatchResult(
+                            DispatchOutcome.READY, "ready", "Ready"
+                        )
+                    if attempt < LINKED_VACUUM_PROFILE_RETRY_ATTEMPTS:
+                        await asyncio.sleep(
+                            LINKED_VACUUM_PROFILE_RETRY_INTERVAL_SECONDS
+                        )
+        except TimeoutError:
+            _LOGGER.warning(
+                "Adaptive RoboVacs timed out confirming Roborock vacuum "
+                "profile: robot=%s requested_mode=%s requested_fan=%s timeout=%ss",
+                request.robot_entity_id,
+                mode,
+                fan_speed,
+                LINKED_VACUUM_PROFILE_TIMEOUT_SECONDS,
+            )
+
+        mode_state = hass.states.get(mode_entity_id)
+        vacuum_state = hass.states.get(request.robot_entity_id)
+        _LOGGER.warning(
+            "Adaptive RoboVacs could not confirm Roborock vacuum profile: "
+            "robot=%s requested_mode=%s observed_mode=%s requested_fan=%s "
+            "observed_fan=%s retries=%s",
+            request.robot_entity_id,
+            mode,
+            mode_state.state if mode_state else None,
+            fan_speed,
+            vacuum_state.attributes.get("fan_speed") if vacuum_state else None,
+            LINKED_VACUUM_PROFILE_RETRY_ATTEMPTS,
+        )
+        return AdapterDispatchResult(
+            DispatchOutcome.BLOCKED,
+            "profile_apply_failed",
+            "Rob's vacuum profile could not be confirmed.",
+        )
+
+    @staticmethod
     def _native_mop_profile_values(
         context: AdapterMatchContext, request: AdapterDispatchRequest
     ) -> tuple[str, str, str, str] | None:
@@ -978,12 +1091,12 @@ class RoborockVacuumAdapter(VacuumAdapter):
                         return AdapterDispatchResult(
                             DispatchOutcome.READY, "ready", "Ready"
                         )
-                    # Route and intensity select the concrete profile first.
-                    # Rob reports a transient combined state while doing so,
-                    # but it is still docked and no clean has been dispatched.
+                    # Route and operation changes reset other Roborock controls
+                    # asynchronously. Apply them one at a time and let each
+                    # linked update settle before setting water intensity and
+                    # suction as the final concrete controls.
                     for entity_id, option in (
                         (profile.mop_mode_select_entity_id, route),
-                        (profile.mop_intensity_select_entity_id, intensity),
                         (profile.mode_select_entity_id, mode),
                     ):
                         await hass.services.async_call(
@@ -992,6 +1105,16 @@ class RoborockVacuumAdapter(VacuumAdapter):
                             {"entity_id": entity_id, "option": option},
                             blocking=True,
                         )
+                        await asyncio.sleep(LINKED_CONTROL_SETTLE_SECONDS)
+                    await hass.services.async_call(
+                        "select",
+                        "select_option",
+                        {
+                            "entity_id": profile.mop_intensity_select_entity_id,
+                            "option": intensity,
+                        },
+                        blocking=True,
+                    )
                     if context.can_mutate and not context.can_mutate():
                         return AdapterDispatchResult(
                             DispatchOutcome.READY, "ready", "Ready"
@@ -1002,6 +1125,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
                         {"entity_id": request.robot_entity_id, "fan_speed": fan_speed},
                         blocking=True,
                     )
+                    await asyncio.sleep(LINKED_CONTROL_SETTLE_SECONDS)
                     if observed():
                         return AdapterDispatchResult(
                             DispatchOutcome.READY, "ready", "Ready"
@@ -1073,6 +1197,23 @@ class RoborockVacuumAdapter(VacuumAdapter):
             return await self._async_apply_native_mop_profile(hass, context, request)
         if self._is_q10_request(hass, context, request):
             return AdapterDispatchResult(DispatchOutcome.READY, "ready", "Ready")
+        if self._is_linked_vacuum_profile_request(context, request):
+            # Retain portable pass-count application without issuing the old
+            # fan-then-mode sequence that Rob immediately overwrites.
+            portable_request = replace(
+                request,
+                cleaning_profile=replace(
+                    request.cleaning_profile,
+                    fan_speed=None,
+                    mode=None,
+                ),
+            )
+            portable = await super().async_apply_profile(
+                hass, context, portable_request
+            )
+            if not portable.ready:
+                return portable
+            return await self._async_apply_linked_vacuum_profile(hass, context, request)
         return await super().async_apply_profile(hass, context, request)
 
     async def async_preflight(

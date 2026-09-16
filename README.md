@@ -212,8 +212,9 @@ Version 1.8.0 adds Store schema v10. Roborock follow-up stages wait for a
 same-device status sensor to leave emptying or washing and then remain ready
 for the automatic dispatch settling interval. Version 1.16.5 makes that interval
 three uninterrupted minutes and prevents a running occurrence stage from being
-dispatched again. Dispatch faults hold only their robot; mapping and saved
-profile faults block only their room.
+dispatched again. Version 1.16.6 also stabilises Roborock's linked operation,
+fan, route, and water controls before dispatch. Dispatch faults hold only their
+robot; mapping and saved profile faults block only their room.
 
 Version 1.8.1 treats a same-device Roborock `washing_the_mop` transition as
 start evidence for an accepted Mop stage. The stage remains in progress while

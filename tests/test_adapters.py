@@ -1261,7 +1261,7 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             supports_area_clean=True,
             supports_send_command=True,
             profile=profile,
-            fan_speed_options=("quiet", "balanced", "off", "custom"),
+            fan_speed_options=("quiet", "balanced", "max", "off", "custom"),
         )
 
     @staticmethod
@@ -1322,6 +1322,10 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         states, hass = self._native_mop_profile_hass()
         calls: list[tuple[str, str, dict[str, object]]] = []
+        sleep = AsyncMock()
+        original_sleep = roborock.asyncio.sleep
+        roborock.asyncio.sleep = sleep
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
 
         async def service_call(domain, service, data, *, blocking):
             self.assertTrue(blocking)
@@ -1352,12 +1356,12 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
                 (
                     "select",
                     "select_option",
-                    {"entity_id": "select.test_water_intensity", "option": "high"},
+                    {"entity_id": "select.test_cleaning_mode", "option": "mop"},
                 ),
                 (
                     "select",
                     "select_option",
-                    {"entity_id": "select.test_cleaning_mode", "option": "mop"},
+                    {"entity_id": "select.test_water_intensity", "option": "high"},
                 ),
                 (
                     "vacuum",
@@ -1367,6 +1371,13 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(states["vacuum.test"].attributes["fan_speed"], "off")
+        self.assertEqual(sleep.await_count, 3)
+        self.assertTrue(
+            all(
+                item.args == (roborock.LINKED_CONTROL_SETTLE_SECONDS,)
+                for item in sleep.await_args_list
+            )
+        )
         self.assertNotIn(
             "custom", {data.get("option") for _domain, _service, data in calls}
         )
@@ -1378,21 +1389,37 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_mop_profile_stabilizes_linked_roborock_controls(self) -> None:
         states, hass = self._native_mop_profile_hass()
         calls: list[tuple[str, str, dict[str, object]]] = []
+        pending_reset: list[str] = []
 
         async def service_call(domain, service, data, *, blocking):
             self.assertTrue(blocking)
             calls.append((domain, service, data))
             if data.get("entity_id") == "select.test_mop_route":
                 states["select.test_mop_route"].state = data["option"]
-                states["select.test_cleaning_mode"].state = "vac_and_mop"
-                states["vacuum.test"].attributes["fan_speed"] = "balanced"
+                pending_reset.append("route")
             elif data.get("entity_id") == "select.test_water_intensity":
                 states["select.test_water_intensity"].state = data["option"]
             elif data.get("entity_id") == "select.test_cleaning_mode":
                 states["select.test_cleaning_mode"].state = data["option"]
+                pending_reset.append("mode")
             else:
                 states["vacuum.test"].attributes["fan_speed"] = data["fan_speed"]
 
+        async def settle(_seconds):
+            if not pending_reset:
+                return
+            reset = pending_reset.pop(0)
+            if reset == "route":
+                states["select.test_cleaning_mode"].state = "vac_and_mop"
+                states["vacuum.test"].attributes["fan_speed"] = "balanced"
+            else:
+                states["select.test_water_intensity"].state = "medium"
+                states["vacuum.test"].attributes["fan_speed"] = "off"
+
+        sleep = AsyncMock(side_effect=settle)
+        original_sleep = roborock.asyncio.sleep
+        roborock.asyncio.sleep = sleep
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
         hass.services = types.SimpleNamespace(async_call=service_call)
         result = await roborock.RoborockVacuumAdapter(
             generic.GenericVacuumAdapter()
@@ -1404,9 +1431,119 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.ready)
         self.assertEqual(states["select.test_cleaning_mode"].state, "mop")
+        self.assertEqual(states["select.test_water_intensity"].state, "high")
         self.assertEqual(states["vacuum.test"].attributes["fan_speed"], "off")
+        self.assertEqual(sleep.await_count, 3)
         self.assertNotIn("custom", {data.get("option") for _, _, data in calls})
         self.assertNotIn("vac_and_mop", {data.get("option") for _, _, data in calls})
+
+    async def test_linked_vacuum_profile_waits_for_mode_reset_before_fan(self) -> None:
+        states, hass = self._native_mop_profile_hass()
+        calls: list[tuple[str, str, dict[str, object]]] = []
+        pending_mode_reset = False
+
+        async def service_call(domain, service, data, *, blocking):
+            nonlocal pending_mode_reset
+            self.assertTrue(blocking)
+            calls.append((domain, service, data))
+            if domain == "select":
+                states[data["entity_id"]].state = data["option"]
+                pending_mode_reset = True
+            else:
+                states[data["entity_id"]].attributes["fan_speed"] = data["fan_speed"]
+
+        async def settle(_seconds):
+            nonlocal pending_mode_reset
+            if pending_mode_reset:
+                states["vacuum.test"].attributes["fan_speed"] = "balanced"
+                states["select.test_water_intensity"].state = "off"
+                pending_mode_reset = False
+
+        sleep = AsyncMock(side_effect=settle)
+        original_sleep = roborock.asyncio.sleep
+        roborock.asyncio.sleep = sleep
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
+        hass.services = types.SimpleNamespace(async_call=service_call)
+        result = await roborock.RoborockVacuumAdapter(
+            generic.GenericVacuumAdapter()
+        ).async_apply_profile(
+            hass,
+            self._native_mop_profile_context(),
+            base.AdapterDispatchRequest(
+                "vacuum.test",
+                ("room",),
+                "vacuum",
+                1,
+                profile(mode="vacuum", fan_speed="max"),
+            ),
+        )
+
+        self.assertTrue(result.ready)
+        self.assertEqual(states["select.test_cleaning_mode"].state, "vacuum")
+        self.assertEqual(states["vacuum.test"].attributes["fan_speed"], "max")
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "select",
+                    "select_option",
+                    {"entity_id": "select.test_cleaning_mode", "option": "vacuum"},
+                ),
+                (
+                    "vacuum",
+                    "set_fan_speed",
+                    {"entity_id": "vacuum.test", "fan_speed": "max"},
+                ),
+            ],
+        )
+        self.assertEqual(sleep.await_count, 2)
+
+    async def test_linked_vacuum_profile_blocks_when_fan_does_not_stay_set(
+        self,
+    ) -> None:
+        states, hass = self._native_mop_profile_hass()
+        calls: list[tuple[str, str, dict[str, object]]] = []
+        fan_was_written = False
+
+        async def service_call(domain, service, data, *, blocking):
+            nonlocal fan_was_written
+            self.assertTrue(blocking)
+            calls.append((domain, service, data))
+            if domain == "select":
+                states[data["entity_id"]].state = data["option"]
+            else:
+                states[data["entity_id"]].attributes["fan_speed"] = data["fan_speed"]
+                fan_was_written = True
+
+        async def settle(_seconds):
+            nonlocal fan_was_written
+            if fan_was_written:
+                states["vacuum.test"].attributes["fan_speed"] = "balanced"
+                fan_was_written = False
+
+        sleep = AsyncMock(side_effect=settle)
+        original_sleep = roborock.asyncio.sleep
+        roborock.asyncio.sleep = sleep
+        self.addCleanup(setattr, roborock.asyncio, "sleep", original_sleep)
+        hass.services = types.SimpleNamespace(async_call=service_call)
+        result = await roborock.RoborockVacuumAdapter(
+            generic.GenericVacuumAdapter()
+        ).async_apply_profile(
+            hass,
+            self._native_mop_profile_context(),
+            base.AdapterDispatchRequest(
+                "vacuum.test",
+                ("room",),
+                "vacuum",
+                1,
+                profile(mode="vacuum", fan_speed="max"),
+            ),
+        )
+
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.code, "profile_apply_failed")
+        self.assertEqual(len(calls), 6)
+        self.assertEqual(sleep.await_count, 8)
 
     async def test_native_mop_profile_deadline_is_a_safe_mop_block(self) -> None:
         _states, hass = self._native_mop_profile_hass()
@@ -1487,8 +1624,10 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.ready)
         self.assertEqual(len(calls), 8)
-        sleep.assert_awaited_once_with(
-            roborock.NATIVE_MOP_PROFILE_RETRY_INTERVAL_SECONDS
+        delays = [item.args[0] for item in sleep.await_args_list]
+        self.assertEqual(delays.count(roborock.LINKED_CONTROL_SETTLE_SECONDS), 6)
+        self.assertEqual(
+            delays.count(roborock.NATIVE_MOP_PROFILE_RETRY_INTERVAL_SECONDS), 1
         )
 
     async def test_native_mop_profile_timeout_blocks_before_any_clean_dispatch(
@@ -1516,8 +1655,8 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.blocked)
         self.assertEqual(result.code, "native_mop_profile_unconfirmed")
-        self.assertEqual(len(calls), 28)
-        self.assertEqual(sleep.await_count, 6)
+        self.assertEqual(len(calls), 12)
+        self.assertEqual(sleep.await_count, 11)
         self.assertNotIn(
             ("vacuum", "clean_area"),
             {(domain, service) for domain, service, _data in calls},
