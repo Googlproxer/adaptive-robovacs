@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from custom_components.adaptive_robovacs.application import SchedulerApplication
 from custom_components.adaptive_robovacs.commands import EvaluateCommand
+from custom_components.adaptive_robovacs.const import (
+    DISPATCH_READY_CONFIRMATION_DELAY,
+)
 from custom_components.adaptive_robovacs.discovery import DiscoverySnapshot
 from custom_components.adaptive_robovacs.models import (
     AdapterCapabilities,
@@ -20,6 +23,7 @@ from custom_components.adaptive_robovacs.models import (
     JobSource,
     OccurrenceSource,
     ResolvedCleaningProfile,
+    StageStatus,
 )
 from custom_components.adaptive_robovacs.state import (
     ActiveJob,
@@ -59,7 +63,7 @@ def planning_application() -> SchedulerApplication:
         state="docked", last_changed=NOW
     )
     app._robot_battery = Mock(return_value=95.0)
-    app._ready_since = {"vacuum.alpha": NOW - timedelta(minutes=1)}
+    app._ready_since = {"vacuum.alpha": NOW - timedelta(minutes=4)}
     app._ready_confirmation_timers = {}
     app._recovery_timers = {}
     app._start_confirmation_timers = {}
@@ -294,7 +298,7 @@ class RobotReadinessTests(unittest.IsolatedAsyncioTestCase):
                 app._robot_ready(candidate_robot),
                 (False, "confirming robot readiness"),
             )
-            app._ready_since[candidate_robot.entity_id] = NOW - timedelta(seconds=10)
+            app._ready_since[candidate_robot.entity_id] = NOW - timedelta(minutes=3)
             self.assertEqual(app._robot_ready(candidate_robot), (True, "ready"))
         app.hass.states.values["vacuum.alpha"].state = "cleaning"
         self.assertEqual(
@@ -302,6 +306,32 @@ class RobotReadinessTests(unittest.IsolatedAsyncioTestCase):
         )
         app.hass.states.values["vacuum.alpha"].state = "docked"
         self.assertEqual(app._manual_robot_ready(candidate_robot), (True, "docked"))
+        app.state.active_jobs["registry-alpha"] = active_job()
+        self.assertEqual(
+            app._manual_robot_ready(candidate_robot), (False, "active job")
+        )
+        app.state.active_jobs["registry-alpha"] = None
+        app.hass.states.values["sensor.alpha_status"].state = "emptying_the_bin"
+        self.assertEqual(
+            app._manual_robot_ready(candidate_robot),
+            (False, "awaiting robot servicing"),
+        )
+        app.hass.states.values["sensor.alpha_status"].state = "ready"
+        with patch(
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
+        ):
+            app._ready_since[candidate_robot.entity_id] = NOW - timedelta(
+                minutes=2, seconds=59
+            )
+            self.assertEqual(
+                app._manual_continuation_robot_ready(candidate_robot),
+                (False, "confirming robot readiness"),
+            )
+            app._ready_since[candidate_robot.entity_id] = NOW - timedelta(minutes=3)
+            self.assertEqual(
+                app._manual_continuation_robot_ready(candidate_robot), (True, "ready")
+            )
         app.hass.states.values["vacuum.alpha"].state = "idle"
         self.assertEqual(
             app._manual_robot_ready(candidate_robot), (False, "robot is not docked")
@@ -333,7 +363,7 @@ class RobotReadinessTests(unittest.IsolatedAsyncioTestCase):
         ):
             app._schedule_ready_confirmation("vacuum.alpha", NOW)
         old.assert_called_once()
-        deadline = NOW + timedelta(seconds=10)
+        deadline = NOW + DISPATCH_READY_CONFIRMATION_DELAY
         callbacks[deadline](deadline)
         await asyncio.gather(*created)
         self.assertIsInstance(app.async_execute.await_args.args[0], EvaluateCommand)
@@ -346,11 +376,11 @@ class RobotReadinessTests(unittest.IsolatedAsyncioTestCase):
         unsubscribe.assert_called_once()
         self.assertNotIn("vacuum.alpha", app._ready_since)
 
-        app._robot_technically_ready = Mock(return_value=(False, "blocked"))
+        app._robot_physically_ready = Mock(return_value=(False, "blocked"))
         app._reset_ready_confirmation = Mock()
         app._refresh_robot_readiness(NOW)
         app._reset_ready_confirmation.assert_called_once_with("vacuum.alpha")
-        app._robot_technically_ready.return_value = (True, "ready")
+        app._robot_physically_ready.return_value = (True, "ready")
         app._ready_since.clear()
         app._schedule_ready_confirmation = Mock()
         app._refresh_robot_readiness(NOW)
@@ -557,6 +587,13 @@ class RoomPolicyTests(unittest.TestCase):
         self.assertEqual(candidate.operation, CleaningOperation.MOP)
         self.assertEqual(candidate.passes, 2)
 
+        active_occurrence.stages[0].status = StageStatus.RUNNING
+        self.assertEqual(
+            app._room_candidate(discovered_room, NOW)[1],
+            "occurrence stage is already running",
+        )
+        active_occurrence.stages[0].status = StageStatus.PENDING
+
         active_occurrence.current_stage = 1
         self.assertEqual(
             app._room_candidate(discovered_room, NOW)[1], "occurrence is complete"
@@ -615,6 +652,15 @@ class CandidateResolutionTests(unittest.TestCase):
         )
 
         another.robot_registry_id = "registry-alpha"
+        another.stages[0].status = StageStatus.RUNNING
+        self.assertEqual(
+            app._resolve_candidate_for_robot(
+                base, app.discovery.robots["vacuum.alpha"]
+            )[1],
+            "occurrence stage is already running",
+        )
+
+        another.stages[0].status = StageStatus.PENDING
         another.current_stage = 1
         self.assertEqual(
             app._resolve_candidate_for_robot(
@@ -674,7 +720,9 @@ class CandidateResolutionTests(unittest.TestCase):
         candidate = app._manual_candidate(
             app.discovery.rooms["study"], NOW, "vacuum_only", None, None
         )
-        app._manual_robot_ready = Mock(return_value=(False, "robot is not docked"))
+        app._manual_continuation_robot_ready = Mock(
+            return_value=(False, "robot is not docked")
+        )
         decisions = app._candidate_robot_diagnostics(candidate)
         self.assertEqual(len(decisions), 1)
         self.assertFalse(decisions[0].eligibility.eligible)

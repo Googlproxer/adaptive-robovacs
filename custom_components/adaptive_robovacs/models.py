@@ -162,6 +162,12 @@ class StageStatus(StrEnum):
     SKIPPED_NO_MOP = "skipped_no_mop"
 
 
+def stage_status_allows_dispatch(status: StageStatus | str | None) -> bool:
+    """Return whether an occurrence stage may receive one start command."""
+
+    return status == StageStatus.PENDING
+
+
 class DispatchOutcome(StrEnum):
     """Normalized adapter transaction outcome."""
 
@@ -1847,12 +1853,12 @@ def manual_deferral(now: datetime, next_due: datetime) -> datetime | None:
 
 
 def manual_clean_robot_is_docked(state: str | None) -> bool:
-    """Return whether a robot meets the sole physical gate for a manual clean.
+    """Return whether a robot meets the raw dock-state gate for a manual clean.
 
     Dashboard-triggered room cleans are an explicit user override.  They do
     not inherit scheduler gates such as battery thresholds, room occupancy,
-    cadence, or vacancy forecasting; the robot must simply be docked before
-    accepting a new room-clean command.
+    cadence, or vacancy forecasting. Application policy separately requires
+    no active job and, where available, a dispatchable vendor status.
     """
 
     return state == "docked"

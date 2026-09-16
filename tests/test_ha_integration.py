@@ -228,7 +228,7 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
             recovery = app.state.room_recoveries["study"]
             with patch(
                 "custom_components.adaptive_robovacs.application.core._now",
-                return_value=clock + timedelta(seconds=22),
+                return_value=clock + timedelta(seconds=192),
             ):
                 result = await app.async_execute(
                     EvaluateCommand(EvaluationMode.DISPATCH, EvaluationCause.SERVICE)
@@ -626,7 +626,7 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
             UTC
         ) - timedelta(hours=1)
         application._ready_since[robot_entry.entity_id] = datetime.now(UTC) - timedelta(
-            minutes=1
+            minutes=4
         )
         result = await application.async_execute(
             EvaluateCommand(

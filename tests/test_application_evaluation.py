@@ -225,6 +225,24 @@ class EvaluationPreviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(captured_inputs[0].candidate.occurrence)
         self.assertEqual(result["assignments"][0]["operation"], "mop")
 
+    async def test_running_manual_stage_is_never_redispatched(self) -> None:
+        app = evaluation_application()
+        occurrence = delayed_mop_occurrence(
+            NOW - timedelta(minutes=1),
+            source=OccurrenceSource.MANUAL_DASHBOARD,
+        )
+        occurrence.stages[1].status = StageStatus.RUNNING
+        occurrence.stages[1].started_at = NOW - timedelta(minutes=5)
+        app.state.occurrences["study"] = occurrence
+
+        result = await evaluate(app)
+
+        self.assertEqual(
+            result["blocks"]["study"], "occurrence stage is already running"
+        )
+        self.assertEqual(result["assignments"], [])
+        app._async_dispatch.assert_not_awaited()
+
 
 class EvaluationDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_success_revalidates_twice_and_dispatches_fresh_candidate(

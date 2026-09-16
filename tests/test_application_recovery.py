@@ -637,6 +637,39 @@ class ActiveJobReconciliationTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     app._set_dock_completion_pending.assert_called_once()
 
+    async def test_nonterminal_dock_service_can_resume_the_same_active_job(
+        self,
+    ) -> None:
+        app = recovery_application()
+        job = tracked_job(seen_cleaning=True)
+        job.phase = JobPhase.RETURNING
+        app.state.active_jobs["registry-alpha"] = job
+        app.hass.states.values["vacuum.alpha"] = SimpleNamespace(
+            state="docked", last_changed=NOW
+        )
+        app._dock_completion_deadline = Mock(return_value=NOW + timedelta(minutes=5))
+
+        await app._async_reconcile_jobs(NOW)
+
+        app._set_dock_completion_pending.assert_called_once_with(
+            "vacuum.alpha", job, NOW
+        )
+        app._async_complete_job.assert_not_awaited()
+
+        app._resume_held_job.reset_mock()
+        app.hass.states.values["vacuum.alpha"] = SimpleNamespace(
+            state="cleaning", last_changed=NOW + timedelta(seconds=20)
+        )
+        await app._async_reconcile_jobs(NOW + timedelta(seconds=20))
+
+        app._resume_held_job.assert_called_once_with(
+            "vacuum.alpha",
+            job,
+            app.hass.states.values["vacuum.alpha"],
+            NOW + timedelta(seconds=20),
+        )
+        app._async_complete_job.assert_not_awaited()
+
     async def test_stale_manual_checkpoint_is_audited_but_scheduler_waits(self) -> None:
         for source, cleared in (
             (JobSource.MANUAL_HOME_ASSISTANT, True),

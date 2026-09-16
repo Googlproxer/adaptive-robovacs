@@ -18,10 +18,10 @@ from homeassistant.core import HomeAssistant, callback
 
 from ..commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
 from ..const import (
+    DISPATCH_READY_CONFIRMATION_DELAY,
     EXTRA_CLEAR_MINUTES,
     FALLBACK_SAMPLE_COUNT,
     HISTORY_DAYS,
-    READY_CONFIRMATION_DELAY,
 )
 from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
 from ..models import (
@@ -34,7 +34,6 @@ from ..models import (
     JobPhase,
     OccurrenceSource,
     ResolvedDailyWindow,
-    can_start_scheduled_clean,
     cleaning_profile_is_supported,
     cleaning_profile_sources,
     desired_window_allows,
@@ -55,6 +54,7 @@ from ..models import (
     resolve_adjacency,
     resolve_cleaning_profile,
     stage_pass_count,
+    stage_status_allows_dispatch,
     startup_dispatch_allowed,
     unresolved_occupancy_allowed,
 )
@@ -213,31 +213,9 @@ class ApplicationPolicyMixin:
             if map_recovery_hold_is_manual(hold.reason):
                 return False, "map selection confirmation pending"
             return False, "scheduler held while robot is paused"
-        active = self.state.active_jobs.get(robot.registry_id)
-        if active:
-            if active.phase == "cancelling":
-                return False, "active clean returning to dock"
-            if active.phase == "completion_held":
-                return False, "active clean held after completion"
-            if active.phase == "error_waiting":
-                return False, "active job held after robot error"
-            if active.phase == "paused":
-                return False, "active job held while robot is paused"
-            return False, "active job"
-        state = self.hass.states.get(robot.entity_id)
-        if not state or not can_start_scheduled_clean(state.state):
-            return False, f"robot is {state.state if state else 'unavailable'}"
-        readiness_entity_id = robot.adapter_capabilities.readiness_entity_id
-        readiness = (
-            self.hass.states.get(readiness_entity_id) if readiness_entity_id else None
-        )
-        readiness_state = readiness.state if readiness else None
-        if not detailed_status_is_dispatchable(
-            readiness_state,
-            required=bool(readiness_entity_id),
-            ready_states=robot.adapter_capabilities.readiness_states,
-        ):
-            return False, "awaiting robot servicing"
+        physical_ready, reason = self._robot_physically_ready(robot)
+        if not physical_ready:
+            return False, reason
         battery = self._robot_battery(robot)
         if battery is None:
             return False, "battery unavailable"
@@ -248,7 +226,7 @@ class ApplicationPolicyMixin:
     def _robot_ready(
         self, robot: DiscoveredRobot, *, ignore_scheduler_fault: bool = False
     ) -> tuple[bool, str]:
-        """Return whether a robot has remained dispatchable for ten seconds."""
+        """Return whether a robot has remained physically ready for three minutes."""
 
         technical_ready, reason = self._robot_technically_ready(
             robot, ignore_scheduler_fault=ignore_scheduler_fault
@@ -257,7 +235,9 @@ class ApplicationPolicyMixin:
             return False, reason
         now = _now()
         ready_since = self._ready_since.get(robot.entity_id)
-        if not ready_confirmation_elapsed(ready_since, now, READY_CONFIRMATION_DELAY):
+        if not ready_confirmation_elapsed(
+            ready_since, now, DISPATCH_READY_CONFIRMATION_DELAY
+        ):
             return False, "confirming robot readiness"
         return True, "ready"
 
@@ -307,7 +287,7 @@ class ApplicationPolicyMixin:
         self, robot_id: str, ready_since: datetime
     ) -> None:
         self._reset_ready_confirmation_timer(robot_id)
-        deadline = ready_since + READY_CONFIRMATION_DELAY
+        deadline = ready_since + DISPATCH_READY_CONFIRMATION_DELAY
 
         @callback
         def check_ready(_timestamp: datetime) -> None:
@@ -332,10 +312,10 @@ class ApplicationPolicyMixin:
             unsubscribe()
 
     def _refresh_robot_readiness(self, now: datetime) -> None:
-        """Start or reset transient continuous-ready timers for all robots."""
+        """Start or reset transient continuous physical-ready timers."""
 
         for robot in self.discovery.robots.values():
-            ready, _ = self._robot_technically_ready(robot)
+            ready, _ = self._robot_physically_ready(robot)
             if not ready:
                 self._reset_ready_confirmation(robot.entity_id)
                 continue
@@ -344,14 +324,61 @@ class ApplicationPolicyMixin:
             self._ready_since[robot.entity_id] = now
             self._schedule_ready_confirmation(robot.entity_id, now)
 
-    def _manual_robot_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]:
-        """Apply the documented physical readiness rule for manual work."""
+    def _robot_physically_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]:
+        """Require an idle dock and no integration-owned active job."""
+
+        active = self.state.active_jobs.get(robot.registry_id)
+        if active:
+            phase = getattr(active, "phase", None)
+            if phase == "cancelling":
+                return False, "active clean returning to dock"
+            if phase == "completion_held":
+                return False, "active clean held after completion"
+            if phase == "error_waiting":
+                return False, "active job held after robot error"
+            if phase == "paused":
+                return False, "active job held while robot is paused"
+            return False, "active job"
 
         state = self.hass.states.get(robot.entity_id)
         observed = state.state if state else None
         if not manual_clean_robot_is_docked(observed):
-            return False, "robot is not docked"
+            return False, f"robot is {observed or 'unavailable'}"
+        readiness_entity_id = robot.adapter_capabilities.readiness_entity_id
+        readiness = (
+            self.hass.states.get(readiness_entity_id) if readiness_entity_id else None
+        )
+        if not detailed_status_is_dispatchable(
+            readiness.state if readiness else None,
+            required=bool(readiness_entity_id),
+            ready_states=robot.adapter_capabilities.readiness_states,
+        ):
+            return False, "awaiting robot servicing"
         return True, "docked"
+
+    def _manual_robot_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]:
+        """Apply non-negotiable physical gates to fresh explicit manual work."""
+
+        ready, reason = self._robot_physically_ready(robot)
+        if not ready and reason.startswith("robot is "):
+            return False, "robot is not docked"
+        return ready, reason
+
+    def _manual_continuation_robot_ready(
+        self, robot: DiscoveredRobot
+    ) -> tuple[bool, str]:
+        """Apply dock settling to persisted manual work considered automatically."""
+
+        physical_ready, reason = self._manual_robot_ready(robot)
+        if not physical_ready:
+            return False, reason
+        if not ready_confirmation_elapsed(
+            self._ready_since.get(robot.entity_id),
+            _now(),
+            DISPATCH_READY_CONFIRMATION_DELAY,
+        ):
+            return False, "confirming robot readiness"
+        return True, "ready"
 
     def _room_deferral(self, room: DiscoveredRoom, operation: str) -> datetime | None:
         """Return only a room-scoped, recognised deferral."""
@@ -751,6 +778,8 @@ class ApplicationPolicyMixin:
             stages = occurrence.stages
             if stage_index >= len(stages):
                 return None, "occurrence is complete"
+            if not stage_status_allows_dispatch(stages[stage_index].status):
+                return None, "occurrence stage is already running"
             operation = stages[stage_index].operation
             passes = stages[stage_index].passes
         duration_minutes, duration_sample_count = self._effective_duration(
@@ -805,6 +834,8 @@ class ApplicationPolicyMixin:
             if stage_index >= len(occurrence_stages):
                 return None, "occurrence is complete"
             stage = occurrence_stages[stage_index]
+            if not stage_status_allows_dispatch(stage.status):
+                return None, "occurrence stage is already running"
             operation = stage.operation
             passes = stage.passes
             if not robot.adapter_capabilities.supports(operation, passes):
@@ -1001,7 +1032,7 @@ class ApplicationPolicyMixin:
                 else self._robot_ready(robot)
             )
             if candidate.manual_override:
-                ready, ready_reason = self._manual_robot_ready(robot)
+                ready, ready_reason = self._manual_continuation_robot_ready(robot)
             if not ready:
                 diagnostics.append(
                     CandidateRobotDecision(

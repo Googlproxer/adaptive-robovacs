@@ -406,7 +406,12 @@ class DispatchCheckpointTests(unittest.IsolatedAsyncioTestCase):
         candidate = resolved_candidate(app)
         active_occurrence = occurrence()
         app.state.occurrences["study"] = active_occurrence
-        candidate = replace(candidate, occurrence=active_occurrence)
+        candidate = replace(
+            candidate,
+            occurrence=active_occurrence,
+            occurrence_id=active_occurrence.occurrence_id,
+            stage_index=0,
+        )
         job = active_job(occurrence_id=active_occurrence.occurrence_id)
         job.source = "manual_dashboard"
 
@@ -429,10 +434,36 @@ class DispatchCheckpointTests(unittest.IsolatedAsyncioTestCase):
         )
         app.dispatch.async_dispatch.assert_not_awaited()
         app._closing = False
+        active_occurrence.stages[0].status = StageStatus.PENDING
         self.assertEqual(
             await app._async_dispatch(robot, candidate, NOW), (True, "started")
         )
         app.dispatch.async_dispatch.assert_awaited_once_with(robot, candidate, NOW)
+
+    async def test_dispatch_refuses_duplicate_or_stale_occurrence_stage(self) -> None:
+        app = transaction_application()
+        robot = app.discovery.robots["vacuum.alpha"]
+        active_occurrence = occurrence()
+        app.state.occurrences["study"] = active_occurrence
+        candidate = replace(
+            resolved_candidate(app),
+            occurrence=active_occurrence,
+            occurrence_id=active_occurrence.occurrence_id,
+            stage_index=0,
+        )
+
+        active_occurrence.stages[0].status = StageStatus.RUNNING
+        self.assertEqual(
+            await app._async_dispatch(robot, candidate, NOW),
+            (False, "dispatch blocked because the stage is already running"),
+        )
+        active_occurrence.stages[0].status = StageStatus.PENDING
+        app.state.active_jobs[robot.registry_id] = active_job()
+        self.assertEqual(
+            await app._async_dispatch(robot, candidate, NOW),
+            (False, "dispatch blocked because the robot has an active job"),
+        )
+        app.dispatch.async_dispatch.assert_not_awaited()
 
 
 if __name__ == "__main__":

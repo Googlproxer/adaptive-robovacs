@@ -129,12 +129,14 @@ mop stage; they never fall back to vacuum-and-mop cleaning.
 
 The three manual room actions bypass cadence, desired windows, occupancy,
 forecasting, configured enablement, battery thresholds, holds, and scheduler
-halts. A compatible same-floor robot must be physically docked; Party Mode,
-observe-only mode, storage-safe mode, startup settling, and shutdown remain
-non-bypassable. Mapping, profile, preflight, water approval, and confirmed-start
-requirements still apply. A rejected press is audited but never queued to start
-later. A manual occurrence that physically completes becomes the room's normal
-cadence anchor.
+halts. A compatible same-floor robot must be physically docked, terminally ready,
+and have no active Adaptive RoboVacs job; emptying or washing at the dock is not
+ready. Party Mode, observe-only mode, storage-safe mode, startup settling, and
+shutdown remain non-bypassable. Mapping, profile, preflight, water approval, and
+confirmed-start requirements still apply. A rejected press is audited but never
+queued to start later. A fresh explicit button press does not wait for the
+automatic dispatch settling interval. A manual occurrence that physically
+completes becomes the room's normal cadence anchor.
 
 Each robot card also has a **Stop and return to dock** button. It sends the
 native return-to-base command and marks any tracked scheduler or manual clean
@@ -208,7 +210,9 @@ not changed because they may be shared by a different vacuum.
 
 Version 1.8.0 adds Store schema v10. Roborock follow-up stages wait for a
 same-device status sensor to leave emptying or washing and then remain ready
-for ten seconds. Dispatch faults now hold only their robot; mapping and saved
+for the automatic dispatch settling interval. Version 1.16.5 makes that interval
+three uninterrupted minutes and prevents a running occurrence stage from being
+dispatched again. Dispatch faults hold only their robot; mapping and saved
 profile faults block only their room.
 
 Version 1.8.1 treats a same-device Roborock `washing_the_mop` transition as

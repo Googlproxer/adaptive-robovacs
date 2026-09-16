@@ -154,7 +154,7 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
         app.hass.states.values[beta.entity_id] = deepcopy(
             app.hass.states.values["vacuum.alpha"]
         )
-        app._ready_since[beta.entity_id] = NOW - timedelta(minutes=1)
+        app._ready_since[beta.entity_id] = NOW - timedelta(minutes=4)
         candidate, _ = app._room_candidate(app.discovery.rooms["study"], NOW)
 
         short, short_reason = app._resolve_candidate_for_robot(

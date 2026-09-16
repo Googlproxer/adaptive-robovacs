@@ -1406,6 +1406,14 @@ class ActiveJobHoldTests(unittest.TestCase):
             models.ready_confirmation_elapsed(now, now + timedelta(seconds=10), delay)
         )
 
+    def test_only_pending_occurrence_stages_allow_dispatch(self) -> None:
+        self.assertTrue(models.stage_status_allows_dispatch(models.StageStatus.PENDING))
+        self.assertTrue(models.stage_status_allows_dispatch("pending"))
+        self.assertFalse(
+            models.stage_status_allows_dispatch(models.StageStatus.RUNNING)
+        )
+        self.assertFalse(models.stage_status_allows_dispatch(None))
+
     def test_idle_does_not_close_a_held_cancellation(self) -> None:
         self.assertEqual(
             models.held_job_transition("idle", "cancelling", False), "held"

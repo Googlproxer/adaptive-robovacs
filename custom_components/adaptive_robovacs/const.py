@@ -19,6 +19,11 @@ FALLBACK_SAMPLE_COUNT: Final = 6
 EXTRA_CLEAR_MINUTES: Final = 10
 START_CONFIRMATION_TIMEOUT: Final = timedelta(minutes=2)
 READY_CONFIRMATION_DELAY: Final = timedelta(seconds=10)
+# A robot that has just completed or interrupted work may briefly report a
+# dispatchable dock state while its native integration is still settling. New
+# automatic work therefore requires a longer uninterrupted physical-ready
+# interval. Explicit dashboard button presses remain immediate user intent.
+DISPATCH_READY_CONFIRMATION_DELAY: Final = timedelta(minutes=3)
 # A follow-up mop may resume only while its prerequisite vacuum is still fresh.
 # Keep this as one integration policy until operational evidence justifies a
 # user-facing setting.

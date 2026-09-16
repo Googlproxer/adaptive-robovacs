@@ -5,6 +5,23 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.16.5] - 2026-09-16
+
+### Fixed
+
+- A persisted manual occurrence whose current stage is already running can no
+  longer become a new dispatch candidate during a mid-clean dock visit.
+- Manual dispatch retains its immediate explicit-button path while refusing an
+  active job or a vendor status that is emptying, washing, or otherwise
+  servicing at the dock.
+- Automatic work waits for three uninterrupted minutes of physical dock
+  readiness after a completed or interrupted clean. A restart begins a fresh
+  conservative interval.
+- The final dispatch boundary independently verifies that the durable stage is
+  pending and the robot has no active job before any adapter command is sent.
+
+Detailed notes: [`docs/releases/v1.16.5.md`](docs/releases/v1.16.5.md).
+
 ## [1.16.4] - 2026-09-15
 
 ### Fixed

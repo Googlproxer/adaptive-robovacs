@@ -101,6 +101,10 @@ class ApplicationEvaluationMixin:
 
         def _manual_robot_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]: ...
 
+        def _manual_continuation_robot_ready(
+            self, robot: DiscoveredRobot
+        ) -> tuple[bool, str]: ...
+
         def _candidate_robot_diagnostics(
             self,
             candidate: ScheduleCandidate,
@@ -440,7 +444,7 @@ class ApplicationEvaluationMixin:
                         prepared_room, prepare_now
                     )
                     robot_is_ready, robot_reason = (
-                        self._manual_robot_ready(robot)
+                        self._manual_continuation_robot_ready(robot)
                         if candidate.manual_override
                         else self._robot_ready(robot)
                     )
@@ -502,7 +506,7 @@ class ApplicationEvaluationMixin:
                         dispatch_room, dispatch_now
                     )
                     robot_is_ready, robot_reason = (
-                        self._manual_robot_ready(robot)
+                        self._manual_continuation_robot_ready(robot)
                         if candidate.manual_override
                         else self._robot_ready(robot)
                     )

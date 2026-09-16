@@ -25,6 +25,7 @@ from ..models import (
     OccurrenceSource,
     StageStatus,
     scheduled_mop_revalidation_allowed,
+    stage_status_allows_dispatch,
 )
 from ..planner import ScheduleCandidate
 from ..state import (
@@ -319,6 +320,11 @@ class ApplicationDispatchMixin:
             )
             await self._async_save()
         else:
+            stage_index = occurrence.current_stage
+            if stage_index >= len(occurrence.stages):
+                return None, "occurrence is complete"
+            if not stage_status_allows_dispatch(occurrence.stages[stage_index].status):
+                return None, "occurrence stage is already running"
             candidate = replace(
                 candidate,
                 occurrence=occurrence,
@@ -637,4 +643,18 @@ class ApplicationDispatchMixin:
     ) -> tuple[bool, str]:
         if self._closing:
             return False, "coordinator shutting down"
+        occurrence = self.state.occurrences.get(candidate.room_id)
+        if (
+            occurrence is None
+            or candidate.occurrence_id != occurrence.occurrence_id
+            or candidate.stage_index != occurrence.current_stage
+        ):
+            return False, "dispatch blocked because the occurrence changed"
+        stage_index = occurrence.current_stage
+        if stage_index >= len(occurrence.stages):
+            return False, "dispatch blocked because the occurrence is complete"
+        if not stage_status_allows_dispatch(occurrence.stages[stage_index].status):
+            return False, "dispatch blocked because the stage is already running"
+        if self.state.active_jobs.get(robot.registry_id):
+            return False, "dispatch blocked because the robot has an active job"
         return await self.dispatch.async_dispatch(robot, candidate, now)

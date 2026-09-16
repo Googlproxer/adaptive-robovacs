@@ -367,14 +367,16 @@ class ManualApplicationTests(unittest.IsolatedAsyncioTestCase):
                         occurrence_id="prepared"
                     )
                     app.state.water_confirmations["prepared"] = SimpleNamespace()
-                    if active_job:
-                        app.state.active_jobs["registry-alpha"] = SimpleNamespace()
                     return candidate, "ready"
 
                 app._async_prepare_occurrence = AsyncMock(side_effect=prepare)
-                app._async_dispatch = AsyncMock(
-                    return_value=(False, "safe dispatch failure")
-                )
+
+                async def fail_dispatch(*_args, active_job=active_job, app=app):
+                    if active_job:
+                        app.state.active_jobs["registry-alpha"] = SimpleNamespace()
+                    return False, "safe dispatch failure"
+
+                app._async_dispatch = AsyncMock(side_effect=fail_dispatch)
                 result = await app.async_manual_clean_room("study", "vacuum_only")
                 self.assertFalse(result["accepted"])
                 self.assertEqual(result["status"], "failed")

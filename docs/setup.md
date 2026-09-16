@@ -186,8 +186,10 @@ These actions are explicit user overrides. They bypass the room cadence,
 desired window, occupancy, adjacency protection and vacancy forecast,
 configured room/robot enablement, battery threshold, scheduler holds, and the
 global scheduler halt. A discovered compatible robot on the room's floor must
-be physically docked. Party Mode, observe-only mode, storage-safe mode, startup
-settling, and shutdown remain non-bypassable;
+be physically docked, terminally ready, and have no active Adaptive RoboVacs
+job. Emptying the bin, washing the mop, and other dock servicing states are not
+ready. Party Mode, observe-only mode, storage-safe mode, startup settling, and
+shutdown remain non-bypassable;
 the selected adapter must still be able to address the room and apply its
 profile. A blocked press is rejected immediately and is not retained as work
 that can start later.
@@ -196,7 +198,11 @@ Scripts can call `adaptive_robovacs.manual_clean_room` with one `area_id` and
 `mode: configured`, `vacuum_only`, or `mop_only`. Supply `entry_id` when more
 than one Adaptive RoboVacs config entry is loaded. A physically completed
 manual occurrence updates the room's normal cadence; a rejected or unstarted
-request does not.
+request does not. A fresh explicit button press can start immediately once the
+physical gates pass. Any persisted continuation considered automatically,
+including a later stage or confirmed-water continuation, waits for three
+uninterrupted minutes of physical dock readiness. Home Assistant restarts begin
+a fresh three-minute interval.
 
 ## Stop and return to dock
 
