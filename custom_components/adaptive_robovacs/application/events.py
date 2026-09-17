@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 
 from ..commands import (
     EvaluateCommand,
@@ -18,7 +20,9 @@ from ..commands import (
     SchedulerCommandResult,
     StateChangedCommand,
 )
+from ..const import DOMAIN
 from ..discovery import DiscoveredRoom, DiscoverySnapshot
+from ..metrics import RuntimeMetrics
 from ..models import (
     CleaningOperation,
     EvaluationCause,
@@ -29,6 +33,7 @@ from ..models import (
     parse_manual_clean_request,
 )
 from ..state import ActiveJob, ManualAuditRecord, SchedulerState
+from ..watch import WatchSpecification
 
 
 def _now() -> datetime:
@@ -46,6 +51,9 @@ class ApplicationEventsMixin:
     discovery: DiscoverySnapshot
     _lock: asyncio.Lock
     _watch_entity_ids: set[str]
+    _watch_capability_entity_ids: set[str]
+    _watch_specifications: dict[str, WatchSpecification]
+    metrics: RuntimeMetrics
 
     if TYPE_CHECKING:
 
@@ -192,34 +200,112 @@ class ApplicationEventsMixin:
     @callback
     def _on_state_changed(self, event: Event) -> None:
         entity_id = event.data.get("entity_id")
-        if entity_id in self._watch_entity_ids:
-            old_state = event.data.get("old_state")
-            new_state = event.data.get("new_state")
-            self._async_create_task(
-                self.async_execute(
-                    StateChangedCommand(
-                        entity_id=entity_id,
-                        old_state=old_state.state if old_state else None,
-                        new_state=new_state.state if new_state else None,
-                        changed_at=(new_state.last_changed if new_state else None),
-                    )
-                )
+        self.metrics.state_events["received"] += 1
+        specification = (
+            self._watch_specifications.get(entity_id)
+            if isinstance(entity_id, str)
+            else None
+        )
+        if specification is None:
+            self.metrics.state_events["ignored_unwatched"] += 1
+            return
+        assert isinstance(entity_id, str)
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        old_value = old_state.state if old_state else None
+        new_value = new_state.state if new_state else None
+        change = specification.classify(old_state, new_state)
+        if not change.evaluate:
+            self.metrics.state_events["ignored_unchanged"] += 1
+            return
+        self.metrics.state_events["meaningful"] += 1
+        if change.refresh_discovery:
+            self.metrics.state_events["capability_changes"] += 1
+        self._async_create_task(
+            self._async_handle_watched_state_change(
+                StateChangedCommand(
+                    entity_id=entity_id,
+                    old_state=old_value,
+                    new_state=new_value,
+                    changed_at=(new_state.last_changed if new_state else None),
+                ),
+                capability_changed=change.refresh_discovery,
             )
+        )
+
+    async def _async_handle_watched_state_change(
+        self,
+        command: StateChangedCommand,
+        *,
+        capability_changed: bool,
+    ) -> None:
+        """Apply ordered transition effects, then request one settled evaluation."""
+
+        await self.async_execute(command)
+        if capability_changed:
+            await self.async_execute(RefreshDiscoveryCommand("capability-options"))
+        # Allow callbacks from the same HA event burst to enqueue their cheap
+        # transition commands before all submitters share one evaluation.
+        await asyncio.sleep(0)
+        await self.async_execute(
+            EvaluateCommand(
+                mode=EvaluationMode.DISPATCH,
+                cause=EvaluationCause.STATE_CHANGE,
+                coalesce=True,
+            )
+        )
+
+    @callback
+    def _on_registry_updated(self, event: Event) -> None:
+        """Refresh only registry mutations that can change discovery."""
+
+        event_type = getattr(event, "event_type", dr.EVENT_DEVICE_REGISTRY_UPDATED)
+        changes = set(event.data.get("changes", {}))
+        action = event.data.get("action")
+        reason = str(event_type).removesuffix("_registry_updated")
+        if event_type == dr.EVENT_DEVICE_REGISTRY_UPDATED:
+            if action == "update" and changes.isdisjoint(
+                {"area_id", "identifiers", "labels", "name", "name_by_user"}
+            ):
+                return
+        elif event_type == er.EVENT_ENTITY_REGISTRY_UPDATED:
+            entity_id = event.data.get("entity_id") or event.data.get("old_entity_id")
+            if not isinstance(entity_id, str):
+                return
+            if action == "update" and changes.isdisjoint(
+                {
+                    "area_id",
+                    "device_id",
+                    "disabled_by",
+                    "entity_id",
+                    "labels",
+                    "name",
+                    "original_name",
+                    "platform",
+                }
+            ):
+                return
+            registry_entry = er.async_get(self.hass).async_get(entity_id)
+            if registry_entry and registry_entry.platform == DOMAIN:
+                return
+            if entity_id.partition(".")[0] not in {
+                "binary_sensor",
+                "select",
+                "sensor",
+                "switch",
+                "vacuum",
+            }:
+                return
+        self._async_create_task(self.async_execute(RefreshDiscoveryCommand(reason)))
 
     @callback
     def _on_device_registry_updated(self, event: Event) -> None:
-        """Refresh occupancy sources when a device's labels change."""
+        """Backward-compatible test seam for device registry callbacks."""
 
-        if event.data.get("action") != "update":
-            return
-        if "labels" not in event.data.get("changes", {}):
-            return
-        self._async_create_task(
-            self.async_execute(RefreshDiscoveryCommand("device-labels"))
-        )
+        self._on_registry_updated(event)
 
     async def _async_refresh_discovery_after_device_label_change(self) -> None:
-        """Immediately apply an occupancy device-label change."""
+        """Immediately apply one topology or capability change."""
 
         async with self._lock:
             await self.async_refresh_discovery()

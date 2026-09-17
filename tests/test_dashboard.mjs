@@ -79,6 +79,7 @@ const GlobalCard = elements.get("adaptive-robovacs-global");
 const VacuumCard = elements.get("adaptive-robovacs-vacuum");
 const RoomCard = elements.get("adaptive-robovacs-room");
 const TimestampRow = elements.get("adaptive-robovacs-timestamp-row");
+const StatusRow = elements.get("adaptive-robovacs-status-row");
 const FloorPlanCard = elements.get("adaptive-robovacs-floorplan");
 
 const entry = "entry-one";
@@ -267,6 +268,7 @@ function mount(Card, config, states = baseStates()) {
 test("registers target-scoped cards and keeps the editor private", () => {
   assert.deepEqual([...elements.keys()], [
     "adaptive-robovacs-timestamp-row",
+    "adaptive-robovacs-status-row",
     "adaptive-robovacs-global",
     "adaptive-robovacs-vacuum",
     "adaptive-robovacs-room",
@@ -850,10 +852,54 @@ test("new room layout leads with Status, Next clean, Last clean and reads Status
   }, "Scheduled");
   const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
   assert.deepEqual(configuration.entities.slice(0, 5), [
-    { entity: "sensor.kitchen_status", name: "Status" },
+    { type: "custom:adaptive-robovacs-status-row", entity: "sensor.kitchen_status", name: "Status" },
     { type: "custom:adaptive-robovacs-timestamp-row", entity: "sensor.kitchen_next_clean", name: "Next clean" },
     { type: "attribute", entity: "sensor.kitchen_last_cleaned", attribute: "last_cleaned_display", name: "Last cleaned" },
     { type: "attribute", entity: "sensor.kitchen_status", attribute: "predicted_total_minutes", name: "Predicted total (min)" },
     { type: "attribute", entity: "sensor.kitchen_status", attribute: "required_vacancy_minutes", name: "Required vacancy (min)" },
   ]);
+});
+
+test("status row derives live clear time from stable timestamps and pauses while hidden", (t) => {
+  const now = new Date("2026-09-17T00:00:21Z");
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const row = new StatusRow();
+  row.setConfig({ entity: "sensor.study_status", name: "Status" });
+  row.hass = {
+    states: {
+      "sensor.study_status": {
+        state: "Adjacent room protection: Bedroom (waiting for 30 clear minutes)",
+        attributes: {
+          adjacency_blocked: true,
+          adjacency_blockers: [{
+            area_id: "bedroom",
+            name: "Bedroom",
+            occupancy: "unoccupied",
+            vacancy_diagnostic: {
+              unoccupied_since: "2026-09-17T00:00:00Z",
+              reason: "waiting for 30 clear minutes",
+            },
+          }],
+        },
+      },
+    },
+  };
+  row.connectedCallback();
+  assert.equal(
+    row._value.textContent,
+    "Adjacent room protection: Bedroom (waiting for 30 clear minutes; clear for 0.3 minutes)"
+  );
+  t.mock.timers.tick(6000);
+  assert.equal(
+    row._value.textContent,
+    "Adjacent room protection: Bedroom (waiting for 30 clear minutes; clear for 0.5 minutes)"
+  );
+  visibilityState = "hidden";
+  visibilityListeners.get("visibilitychange")();
+  t.mock.timers.tick(12000);
+  assert.match(row._value.textContent, /clear for 0\.5 minutes/);
+  visibilityState = "visible";
+  visibilityListeners.get("visibilitychange")();
+  assert.match(row._value.textContent, /clear for 0\.7 minutes/);
+  row.disconnectedCallback();
 });

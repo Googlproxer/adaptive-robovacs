@@ -109,6 +109,92 @@ class ApplicationCommandQueueTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.seen, [interval, recovery])
 
+    async def test_duplicate_state_change_evaluations_share_one_result(self) -> None:
+        gate = asyncio.Event()
+        calls = []
+
+        async def handler(command):
+            calls.append(command)
+            await gate.wait()
+            return {"done": True}
+
+        await self.queue.async_close()
+        self.queue = ApplicationCommandQueue(self.hass, _Entry(), handler)
+        await self.queue.async_start()
+        command = EvaluateCommand(
+            EvaluationMode.DISPATCH,
+            EvaluationCause.STATE_CHANGE,
+            coalesce=True,
+        )
+        first = asyncio.create_task(self.queue.async_execute(command))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(self.queue.async_execute(command))
+        await asyncio.sleep(0)
+        gate.set()
+
+        self.assertEqual(await first, {"done": True})
+        self.assertEqual(await second, {"done": True})
+        self.assertEqual(calls, [command])
+
+    async def test_events_arriving_during_evaluation_produce_one_follow_up(
+        self,
+    ) -> None:
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+        release_second = asyncio.Event()
+        calls = []
+        evaluation_count = 0
+
+        async def handler(command):
+            nonlocal evaluation_count
+            calls.append(command)
+            if isinstance(command, EvaluateCommand):
+                evaluation_count += 1
+                if evaluation_count == 1:
+                    first_started.set()
+                    await release_first.wait()
+                elif evaluation_count == 2:
+                    second_started.set()
+                    await release_second.wait()
+            return None
+
+        await self.queue.async_close()
+        self.queue = ApplicationCommandQueue(self.hass, _Entry(), handler)
+        await self.queue.async_start()
+        evaluation = EvaluateCommand(
+            EvaluationMode.DISPATCH,
+            EvaluationCause.STATE_CHANGE,
+            coalesce=True,
+        )
+        first = asyncio.create_task(self.queue.async_execute(evaluation))
+        await first_started.wait()
+
+        async def ingest(entity_id: str) -> None:
+            await self.queue.async_execute(
+                StateChangedCommand(entity_id, "off", "on", None)
+            )
+            await asyncio.sleep(0)
+            await self.queue.async_execute(evaluation)
+
+        arrivals = [
+            asyncio.create_task(ingest("binary_sensor.one")),
+            asyncio.create_task(ingest("binary_sensor.two")),
+        ]
+        await asyncio.sleep(0)
+        release_first.set()
+        await first
+        await second_started.wait()
+        await asyncio.sleep(0)
+        release_second.set()
+        await asyncio.gather(*arrivals)
+
+        self.assertEqual(evaluation_count, 2)
+        self.assertEqual(
+            [item.entity_id for item in calls if isinstance(item, StateChangedCommand)],
+            ["binary_sensor.one", "binary_sensor.two"],
+        )
+
     async def test_shutdown_rejects_new_work_and_drains_accepted_work(self) -> None:
         started = asyncio.Event()
         release = asyncio.Event()

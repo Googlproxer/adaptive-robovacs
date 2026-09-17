@@ -11,9 +11,11 @@ from unittest.mock import patch
 from homeassistant.const import (
     EVENT_CALL_SERVICE,
     EVENT_HOMEASSISTANT_STARTED,
-    EVENT_STATE_CHANGED,
 )
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import label_registry as lr
 
 from custom_components.adaptive_robovacs.lifecycle import SchedulerRuntime
 from custom_components.adaptive_robovacs.models import (
@@ -60,7 +62,7 @@ class SchedulerRuntimeTests(unittest.IsolatedAsyncioTestCase):
             interval_handler=lambda _now: submit("interval"),
             call_service_handler=lambda _e: None,
             state_changed_handler=lambda _e: None,
-            device_registry_handler=lambda _e: None,
+            registry_handler=lambda _e: None,
             notification_action_handler=lambda _e: None,
             notification_cleared_handler=lambda _e: None,
             home_assistant_started_handler=lambda _e: None,
@@ -124,6 +126,7 @@ class SchedulerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         hass = SimpleNamespace(bus=bus)
         interval_callbacks = []
         point_callbacks = []
+        state_callbacks = []
         submitted = []
         tasks: list[asyncio.Task[object]] = []
 
@@ -144,18 +147,23 @@ class SchedulerRuntimeTests(unittest.IsolatedAsyncioTestCase):
             point_callbacks.append((callback, timestamp))
             return lambda: unsubscribed.append("point")
 
+        def track_states(_hass, entity_ids, callback):
+            state_callbacks.append((frozenset(entity_ids), callback))
+            return lambda: unsubscribed.append("states")
+
         runtime = SchedulerRuntime(
             hass,
             interval_handler=lambda _now: submit("interval"),
             call_service_handler=lambda _event: None,
             state_changed_handler=lambda _event: None,
-            device_registry_handler=lambda _event: None,
+            registry_handler=lambda _event: None,
             notification_action_handler=lambda _event: None,
             notification_cleared_handler=lambda _event: None,
             home_assistant_started_handler=lambda _event: None,
             submit=submit,
             create_task=create_task,
         )
+        runtime.update_state_watchers({"vacuum.alpha", "binary_sensor.study"})
         with (
             patch(
                 "custom_components.adaptive_robovacs.lifecycle."
@@ -171,13 +179,29 @@ class SchedulerRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "custom_components.adaptive_robovacs.lifecycle.dt_util.utcnow",
                 return_value=WHEN,
             ),
+            patch(
+                "custom_components.adaptive_robovacs.lifecycle."
+                "async_track_state_change_event",
+                side_effect=track_states,
+            ),
         ):
             await runtime.async_start(WHEN + timedelta(minutes=1))
+            runtime.update_state_watchers({"vacuum.beta"})
 
         self.assertEqual(interval_callbacks[0][1], timedelta(minutes=15))
+        self.assertEqual(
+            [item[0] for item in state_callbacks],
+            [
+                frozenset({"vacuum.alpha", "binary_sensor.study"}),
+                frozenset({"vacuum.beta"}),
+            ],
+        )
+        self.assertEqual(unsubscribed.count("states"), 1)
         self.assertIn(EVENT_CALL_SERVICE, bus.callbacks)
-        self.assertIn(EVENT_STATE_CHANGED, bus.callbacks)
         self.assertIn(dr.EVENT_DEVICE_REGISTRY_UPDATED, bus.callbacks)
+        self.assertIn(er.EVENT_ENTITY_REGISTRY_UPDATED, bus.callbacks)
+        self.assertIn(ar.EVENT_AREA_REGISTRY_UPDATED, bus.callbacks)
+        self.assertIn(lr.EVENT_LABEL_REGISTRY_UPDATED, bus.callbacks)
         self.assertIn("mobile_app_notification_action", bus.callbacks)
         self.assertIn("mobile_app_notification_cleared", bus.callbacks)
         self.assertIn(EVENT_HOMEASSISTANT_STARTED, bus.once_callbacks)
@@ -190,19 +214,20 @@ class SchedulerRuntimeTests(unittest.IsolatedAsyncioTestCase):
             callback(WHEN)
         await asyncio.gather(*tasks)
 
-        self.assertEqual(submitted[0].mode, EvaluationMode.PREVIEW)
+        self.assertEqual(submitted[0].reason, "post-start-capability-refresh")
+        self.assertEqual(submitted[1].mode, EvaluationMode.PREVIEW)
         self.assertEqual(
-            submitted[0].cause,
+            submitted[1].cause,
             EvaluationCause.CAPABILITY_REFRESH,
         )
-        self.assertTrue(submitted[0].coalesce)
-        self.assertEqual(submitted[1].mode, EvaluationMode.DISPATCH)
-        self.assertEqual(submitted[1].cause, EvaluationCause.STARTUP_SETTLED)
+        self.assertTrue(submitted[1].coalesce)
+        self.assertEqual(submitted[2].mode, EvaluationMode.DISPATCH)
+        self.assertEqual(submitted[2].cause, EvaluationCause.STARTUP_SETTLED)
 
         await runtime.async_stop()
         first_count = len(unsubscribed)
         await runtime.async_stop()
-        self.assertEqual(first_count, 9)
+        self.assertEqual(first_count, 13)
         self.assertEqual(len(unsubscribed), first_count)
 
 

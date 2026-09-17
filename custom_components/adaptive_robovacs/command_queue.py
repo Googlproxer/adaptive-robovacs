@@ -16,6 +16,7 @@ from .commands import (
     SchedulerCommandResult,
 )
 from .const import DOMAIN
+from .metrics import RuntimeMetrics
 
 
 class ApplicationClosedError(RuntimeError):
@@ -37,10 +38,12 @@ class ApplicationCommandQueue:
         hass: HomeAssistant,
         entry: ConfigEntry,
         handler: Callable[[SchedulerCommand], Awaitable[SchedulerCommandResult]],
+        metrics: RuntimeMetrics | None = None,
     ) -> None:
         self._hass = hass
         self._entry = entry
         self._handler = handler
+        self._metrics = metrics
         self._queue: asyncio.Queue[_Envelope | None] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
         self._closing = False
@@ -85,11 +88,19 @@ class ApplicationCommandQueue:
         elif isinstance(command, RefreshDiscoveryCommand) and command.coalesce:
             coalesce_key = "refresh-discovery"
         if coalesce_key and (pending := self._coalesced.get(coalesce_key)):
+            if self._metrics:
+                self._metrics.command_coalesces[
+                    "evaluation"
+                    if isinstance(command, EvaluateCommand)
+                    else "discovery"
+                ] += 1
             return await asyncio.shield(pending)
         result: asyncio.Future[SchedulerCommandResult] = self._hass.loop.create_future()
         if coalesce_key:
             self._coalesced[coalesce_key] = result
         await self._queue.put(_Envelope(command, result, coalesce_key))
+        if self._metrics:
+            self._metrics.record_queue_depth(self._queue.qsize())
         return await asyncio.shield(result)
 
     async def async_close(self) -> None:

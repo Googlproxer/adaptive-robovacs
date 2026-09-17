@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import FrozenInstanceError, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType, SimpleNamespace
 
 from custom_components.adaptive_robovacs import projections
@@ -18,6 +18,7 @@ from custom_components.adaptive_robovacs.models import (
     AdapterCapabilities,
     CleaningProgram,
 )
+from custom_components.adaptive_robovacs.planner import VacancyDiagnostic
 from custom_components.adaptive_robovacs.projections import (
     build_snapshot,
     floor_plan_view,
@@ -27,6 +28,7 @@ from custom_components.adaptive_robovacs.snapshots import (
     ObservedProfileView,
     RobotSettingsView,
     RobotView,
+    SnapshotDelta,
     thaw_json,
 )
 from custom_components.adaptive_robovacs.state import (
@@ -73,6 +75,48 @@ class _Source:
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_delta_tracks_scopes_and_ignores_live_clear_elapsed_time(self) -> None:
+        when = datetime(2026, 9, 5, 10, tzinfo=UTC)
+        first_diagnostic = VacancyDiagnostic(
+            "radar", when - timedelta(minutes=5), 30, 5.0, 0.0, 0, 0, "wait", False
+        )
+        second_diagnostic = replace(first_diagnostic, clear_minutes=5.1)
+        self.assertEqual(first_diagnostic, second_diagnostic)
+
+        scheduler = SimpleNamespace(
+            mode="ready",
+            observe_only=False,
+            party_mode=False,
+            storage_safe_mode=False,
+        )
+        floor_plan = SimpleNamespace(revision=1)
+        before = SimpleNamespace(
+            scheduler=scheduler,
+            floor_plan=floor_plan,
+            rooms=(SimpleNamespace(area_id="study", diagnostic=first_diagnostic),),
+            robots=(SimpleNamespace(registry_id="robot-1", state="docked"),),
+        )
+        unchanged = SimpleNamespace(
+            scheduler=scheduler,
+            floor_plan=floor_plan,
+            rooms=(SimpleNamespace(area_id="study", diagnostic=second_diagnostic),),
+            robots=(SimpleNamespace(registry_id="robot-1", state="docked"),),
+        )
+        self.assertEqual(
+            SnapshotDelta.between(before, unchanged),
+            SnapshotDelta(False, False, frozenset(), frozenset()),
+        )
+
+        changed = SimpleNamespace(
+            scheduler=scheduler,
+            floor_plan=floor_plan,
+            rooms=(SimpleNamespace(area_id="study", diagnostic="blocked"),),
+            robots=(SimpleNamespace(registry_id="robot-1", state="cleaning"),),
+        )
+        delta = SnapshotDelta.between(before, changed)
+        self.assertEqual(delta.room_ids, frozenset({"study"}))
+        self.assertEqual(delta.robot_registry_ids, frozenset({"robot-1"}))
+
     def test_snapshot_is_frozen_equality_comparable_and_mapping_free(self) -> None:
         source = _Source()
         source.state.evaluation.last_preview = (

@@ -85,7 +85,7 @@ class ApplicationFaultMixin:
             self, command: SchedulerCommand
         ) -> SchedulerCommandResult: ...
 
-        async def _async_save(self) -> None: ...
+        async def _async_save(self, *, force: bool = False) -> None: ...
 
         async def async_refresh_discovery(self, *, notify: bool = True) -> None: ...
 
@@ -329,7 +329,7 @@ class ApplicationFaultMixin:
             detail.map_error = fault_summary(reason_code)
         self._cancel_start_confirmation(robot.entity_id)
         self._reset_ready_confirmation(robot.entity_id)
-        await self._async_save()
+        await self._async_save(force=True)
         self._sync_dispatch_fault_issues()
         self._notify_listeners()
 
@@ -559,7 +559,7 @@ class ApplicationFaultMixin:
             self._cancel_recovery_timer(robot.entity_id)
             self._cancel_start_confirmation(robot.entity_id)
             self._reset_ready_confirmation(robot.entity_id)
-            await self._async_save()
+            await self._async_save(force=True)
             self.repairs.delete_robot_error_recovery(robot_registry_id)
             self._sync_robot_hold_issues()
             self._sync_room_recovery_issues()
@@ -597,7 +597,7 @@ class ApplicationFaultMixin:
 
         self.state.robot_faults.pop(robot.registry_id, None)
         self._reset_ready_confirmation(robot.entity_id)
-        await self._async_save()
+        await self._async_save(force=True)
         self.repairs.delete_robot_dispatch_fault(robot.registry_id)
         self._notify_listeners()
 
@@ -636,7 +636,7 @@ class ApplicationFaultMixin:
                     detail = self._room_data(area_id)
                     detail.map_status = "mapped"
                     detail.map_error = None
-                    await self._async_save()
+                    await self._async_save(force=True)
                     self.repairs.delete_room_dispatch_fault(area_id)
                     self._notify_listeners()
                     return True

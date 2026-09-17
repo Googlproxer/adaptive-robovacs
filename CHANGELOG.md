@@ -5,6 +5,24 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.16.8] - 2026-09-17
+
+### Performance
+
+- Home Assistant state subscriptions now follow only discovered scheduler inputs,
+  filter non-meaningful changes, preserve transitions in FIFO order, and coalesce
+  settled scheduling evaluations.
+- Ordinary evaluations no longer repeat registry discovery or unchanged Store
+  writes. Discovery refreshes are coalesced around topology/capability changes,
+  and immutable snapshot deltas update only affected entity scopes.
+- Room Status entities now expose stable vacancy timestamps instead of changing
+  elapsed-minute attributes; the bundled dashboard reconstructs the same live
+  wording using one visibility-aware browser timer.
+- Privacy-safe bounded diagnostics expose filtering, queue, discovery, evaluation,
+  persistence, snapshot, and entity-write performance counters.
+
+Detailed notes: [`docs/releases/v1.16.8.md`](docs/releases/v1.16.8.md).
+
 ## [1.16.7] - 2026-09-17
 
 ### Fixed

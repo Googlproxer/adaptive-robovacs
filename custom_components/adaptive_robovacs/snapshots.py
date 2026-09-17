@@ -631,3 +631,55 @@ class IntegrationSnapshot:
             (robot for robot in self.robots if robot.registry_id == registry_id),
             None,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotDelta:
+    """Typed entity scopes changed by one immutable snapshot publication."""
+
+    scheduler: bool
+    room_status_global: bool
+    room_ids: frozenset[str]
+    robot_registry_ids: frozenset[str]
+    full: bool = False
+
+    @classmethod
+    def initial(cls) -> SnapshotDelta:
+        """Force every entity to consume the coordinator's initial snapshot."""
+
+        return cls(True, True, frozenset(), frozenset(), True)
+
+    @classmethod
+    def between(
+        cls, previous: IntegrationSnapshot, current: IntegrationSnapshot
+    ) -> SnapshotDelta:
+        """Compare only stable typed views, never Home Assistant entities."""
+
+        previous_rooms = {room.area_id: room for room in previous.rooms}
+        current_rooms = {room.area_id: room for room in current.rooms}
+        room_ids = frozenset(
+            area_id
+            for area_id in previous_rooms.keys() | current_rooms.keys()
+            if previous_rooms.get(area_id) != current_rooms.get(area_id)
+        )
+        previous_robots = {robot.registry_id: robot for robot in previous.robots}
+        current_robots = {robot.registry_id: robot for robot in current.robots}
+        robot_ids = frozenset(
+            registry_id
+            for registry_id in previous_robots.keys() | current_robots.keys()
+            if previous_robots.get(registry_id) != current_robots.get(registry_id)
+        )
+        return cls(
+            scheduler=(
+                previous.scheduler != current.scheduler
+                or previous.floor_plan != current.floor_plan
+            ),
+            room_status_global=(
+                previous.scheduler.observe_only != current.scheduler.observe_only
+                or previous.scheduler.party_mode != current.scheduler.party_mode
+                or previous.scheduler.storage_safe_mode
+                != current.scheduler.storage_safe_mode
+            ),
+            room_ids=room_ids,
+            robot_registry_ids=robot_ids,
+        )

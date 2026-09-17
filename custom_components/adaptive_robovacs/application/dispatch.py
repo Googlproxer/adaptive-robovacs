@@ -61,7 +61,7 @@ class ApplicationDispatchMixin:
             self, command: SchedulerCommand
         ) -> SchedulerCommandResult: ...
 
-        async def _async_save(self) -> None: ...
+        async def _async_save(self, *, force: bool = False) -> None: ...
 
         def _notify_listeners(self) -> None: ...
 
@@ -585,7 +585,7 @@ class ApplicationDispatchMixin:
         """Persist and publish a job checkpoint before any outbound start."""
 
         self.state.active_jobs[robot.registry_id] = active
-        await self._async_save()
+        await self._async_save(force=True)
         self._notify_listeners()
 
     async def _async_abandon_dispatch_checkpoint(
@@ -595,7 +595,7 @@ class ApplicationDispatchMixin:
         """Clear an unstarted checkpoint after shutdown or a fresh safety block."""
 
         self.state.active_jobs[robot.registry_id] = None
-        await self._async_save()
+        await self._async_save(force=True)
         self._notify_listeners()
 
     async def _async_accept_dispatch(

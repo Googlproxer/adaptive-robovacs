@@ -26,10 +26,12 @@ HA events, services, and entity actions
  push-only DataUpdateCoordinator -> CoordinatorEntity platforms
 ```
 
-Each config entry owns one FIFO command worker. State transitions and user
-commands are never coalesced. Only explicitly marked refresh/evaluation work
-with the same key may share a pending result. Recursive callbacks enqueue a new
-command instead of re-entering a transaction.
+Each config entry owns one FIFO command worker. Meaningful state transitions and
+user commands are never coalesced. A burst applies every transition-side effect
+in FIFO order, then shares one settled evaluation; an event arriving during that
+evaluation schedules exactly one follow-up. Explicit refresh work with the same
+key may likewise share a pending result. Recursive callbacks enqueue a new command
+instead of re-entering a transaction.
 
 ## Layers
 
@@ -107,9 +109,13 @@ adapters.
 
 - `lifecycle.py` owns one cancellable adjacency night-boundary timer. It queues
   normal evaluations at real local-time transitions, including DST, and rearms
-  after settings changes. The independent presentation clock never dispatches.
+  after settings changes. It also atomically rebinds one filtered Home Assistant
+  state subscription to the current discovery snapshot. The independent
+  presentation clock never dispatches.
 - `discovery.py` reads current area, floor, device, entity, and label
-  registries and produces a typed `DiscoverySnapshot`.
+  registries and produces a typed `DiscoverySnapshot`. Setup, the post-start
+  vendor refresh, relevant topology/capability events, and explicit refreshes are
+  its only normal callers; an ordinary evaluation never rescans registries.
 - `observations.py` converts current HA states to typed observations.
 - `gateway.py` and `adapters/` own vacuum service calls and vendor-specific
   profile or dispatch behavior.
@@ -125,12 +131,13 @@ adapters.
 ### Presentation
 
 `snapshots.py` defines the frozen, equality-comparable
-`IntegrationSnapshot`. `projections.py` copies settled state into sorted typed
-room, robot, map, and floor-plan tuples. `coordinator.py` is a push-only
-`DataUpdateCoordinator` with no polling interval; it only forwards snapshots
-or a top-level update error. Platform entities extend `CoordinatorEntity` and
-perform Home Assistant serialization, labels, options, date formatting, units,
-and attributes at their properties.
+`IntegrationSnapshot` and the typed scheduler/room/robot `SnapshotDelta`.
+`projections.py` copies settled state into sorted typed room, robot, map, and
+floor-plan tuples. `coordinator.py` is a push-only `DataUpdateCoordinator` with
+no polling interval; it only forwards snapshots or a top-level update error.
+Platform entities extend `CoordinatorEntity`, write only when their dependency
+scope changed, and perform Home Assistant serialization, labels, options, date
+formatting, units, and attributes at their properties.
 
 The config entry runtime is typed as
 `ConfigEntry[AdaptiveRoboVacsRuntimeData]`. Its application, coordinator, and
@@ -150,6 +157,11 @@ reference, cannot dispatch, and creates a Repair. Malformed retained data or a
 newer schema is never overwritten; the entry starts in storage-safe,
 observe-only mode and publishes its diagnostic state.
 
+The application fingerprints the schema-18 durable payload without its transient
+evaluation projection. Routine evaluations skip a Store write when that
+fingerprint is unchanged; occupancy/durable transitions still persist immediately,
+and migration, repair, and dispatch checkpoints always await a forced write.
+
 Adjacency vacancy windows reuse schema 18's durable `unoccupied_since` and
 occupancy samples. The decision itself and its per-robot diagnostics are
 transient, so v1.16.1 requires no Store migration. The v1.16.2 mop-freshness
@@ -163,6 +175,12 @@ The pure planner orders due rooms with no completed clean first, then by oldest
 aggregate `cleaning_completed_at`, due time, forecast confidence, and stable
 discovery order. Ineligible rooms never reserve a robot, and independent robots
 can still receive assignments during the same evaluation.
+
+Version 1.16.8 retains schema 18. Current vacancy projections expose stable
+`unoccupied_since`, required duration, reason, confidence, samples, and
+allowed/blocking state. Live `clear_minutes` and native-state elapsed suffixes
+are presentation concerns reconstructed by the bundled dashboard; historical
+decision-audit records retain their captured `clear_minutes` values.
 
 Room recovery records are separate from mapping/profile faults and carry stable
 room, robot, occurrence, stage, and episode identities. Ten continuous seconds

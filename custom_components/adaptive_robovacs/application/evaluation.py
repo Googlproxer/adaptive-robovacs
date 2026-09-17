@@ -271,7 +271,6 @@ class ApplicationEvaluationMixin:
                     "dispatches": ["coordinator shutting down"],
                 }
             now = _now()
-            await self.async_refresh_discovery(notify=False)
             self._expire_robot_cooldowns(now)
             self._observe_occupancy(now)
             await self._async_reconcile_jobs(now)

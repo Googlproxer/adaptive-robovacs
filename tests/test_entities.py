@@ -6,7 +6,7 @@ import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -20,6 +20,7 @@ from custom_components.adaptive_robovacs.commands import (
     SetRoomSettingCommand,
 )
 from custom_components.adaptive_robovacs.entity import async_setup_dynamic_entities
+from custom_components.adaptive_robovacs.metrics import RuntimeMetrics
 from custom_components.adaptive_robovacs.models import (
     AdapterCapabilities,
     AdjacencyMode,
@@ -261,6 +262,8 @@ class _Coordinator:
         self.last_update_success = True
         self.commands = []
         self.hass = SimpleNamespace()
+        self.metrics = RuntimeMetrics()
+        self.scope_changed = Mock(return_value=True)
 
     async def async_execute(self, command):
         self.commands.append(command)
@@ -312,6 +315,32 @@ class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
         room_entity = sensor._RoomOccupancySensor(self.coordinator, "study", "Study")
         self.coordinator.data.rooms = ()
         self.assertFalse(room_entity.available)
+
+    def test_entity_writes_are_limited_to_changed_room_and_robot_scopes(self) -> None:
+        study = sensor._RoomStatusSensor(self.coordinator, "study", "Study")
+        kitchen = sensor._RoomStatusSensor(self.coordinator, "kitchen", "Kitchen")
+        robot = sensor._RobotStatusSensor(self.coordinator, "vacuum.alpha")
+        self.coordinator.scope_changed.side_effect = lambda **scope: (
+            scope["area_id"] == "study"
+            or scope["robot_registry_id"] == "registry-alpha"
+        )
+
+        with patch.object(CoordinatorEntity, "_handle_coordinator_update") as write:
+            study._handle_coordinator_update()
+            kitchen._handle_coordinator_update()
+            robot._handle_coordinator_update()
+
+        self.assertEqual(write.call_count, 2)
+        self.assertEqual(self.coordinator.metrics.entity_writes["room"], 1)
+        self.assertEqual(self.coordinator.metrics.entity_writes["robot"], 1)
+        self.assertEqual(self.coordinator.metrics.entity_skips["room"], 1)
+
+        self.coordinator.scope_changed.side_effect = lambda **_scope: False
+        with patch.object(CoordinatorEntity, "_handle_coordinator_update") as write:
+            study._handle_coordinator_update()
+            kitchen._handle_coordinator_update()
+            robot._handle_coordinator_update()
+        write.assert_not_called()
 
     async def test_values_attributes_and_actions_come_from_typed_snapshot(self) -> None:
         scheduler_entity = sensor._SchedulerSensor(self.coordinator)

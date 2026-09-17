@@ -34,6 +34,10 @@ class ApplicationLegacyMapMixin:
 
         async def async_refresh_discovery(self, *, notify: bool = True) -> None: ...
 
+        async def _async_commit_state(
+            self, state: SchedulerState, *, force: bool = True
+        ) -> None: ...
+
         def robot_for_registry_id(self, registry_id: str) -> DiscoveredRobot | None: ...
 
         def _reset_ready_confirmation(self, entity_id: str) -> None: ...
@@ -90,8 +94,7 @@ class ApplicationLegacyMapMixin:
             holds = dict(self.state.robot_holds)
             holds.pop(registry_id)
             updated = replace(self.state, robot_holds=holds)
-            await self.storage.async_save(updated)
-            self.state = updated
+            await self._async_commit_state(updated, force=True)
             self._reset_ready_confirmation(robot.entity_id)
             self._sync_retired_map_issues()
             self._notify_listeners()

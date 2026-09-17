@@ -68,6 +68,8 @@ let pendingAnimationFrame;
 let pendingAnimationFrameKind;
 let cardHelpersPromise;
 const timestampRows = new Set();
+const statusRows = new Set();
+let statusTimer;
 
 function adaptiveEntityIndex(hass) {
   const states = hass?.states;
@@ -111,6 +113,23 @@ function adaptiveEntityIndex(hass) {
 
 function isDocumentHidden() {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function cancelStatusTimer() {
+  if (statusTimer === undefined) return;
+  clearTimeout(statusTimer);
+  statusTimer = undefined;
+}
+
+function scheduleStatusRefresh() {
+  cancelStatusTimer();
+  if (isDocumentHidden() || !statusRows.size) return;
+  const delay = 6001 - (Date.now() % 6000);
+  statusTimer = setTimeout(() => {
+    statusTimer = undefined;
+    for (const row of statusRows) row._refreshStatus();
+    scheduleStatusRefresh();
+  }, delay);
 }
 
 function cancelPendingAnimationFrame() {
@@ -171,6 +190,8 @@ if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     requestPendingCardFlush();
     for (const row of timestampRows) row._refreshTimestamp();
+    for (const row of statusRows) row._refreshStatus();
+    scheduleStatusRefresh();
   });
 }
 
@@ -254,6 +275,95 @@ class AdaptiveRoboVacsTimestampRow extends HTMLElement {
 }
 
 customElements.define("adaptive-robovacs-timestamp-row", AdaptiveRoboVacsTimestampRow);
+
+class AdaptiveRoboVacsStatusRow extends HTMLElement {
+  static display(state, now = Date.now()) {
+    if (state?.state === "unavailable") return "Unavailable";
+    const attrs = state?.attributes || {};
+    const blockers = attrs.adjacency_blockers;
+    if (!attrs.adjacency_blocked || !Array.isArray(blockers) || !blockers.length) {
+      return state?.state || "—";
+    }
+    const descriptions = blockers.map((blocker) => {
+      const name = blocker?.name || blocker?.area_id || "Adjacent room";
+      if (blocker?.occupancy === "occupied") return `${name} (occupied)`;
+      if (blocker?.occupancy !== "unoccupied") {
+        return `${name} (occupancy unresolved)`;
+      }
+      const diagnostic = blocker?.vacancy_diagnostic;
+      if (!diagnostic) return `${name} (vacancy window unresolved)`;
+      const since = Date.parse(diagnostic.unoccupied_since);
+      const elapsed = Number.isFinite(since)
+        ? `; clear for ${(Math.max(0, now - since) / 60000).toFixed(1)} minutes`
+        : "";
+      return `${name} (${diagnostic.reason || "vacancy window unresolved"}${elapsed})`;
+    });
+    return `Adjacent room protection: ${descriptions.join("; ")}`;
+  }
+
+  setConfig(config) {
+    assertString(config, "entity", true);
+    this._config = { ...config };
+    this._refreshStatus();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._refreshStatus();
+  }
+
+  connectedCallback() {
+    this._connected = true;
+    statusRows.add(this);
+    if (!this._row) {
+      const root = this.attachShadow({ mode: "open" });
+      const style = document.createElement("style");
+      style.textContent = ":host { display: block; cursor: pointer; }";
+      this._row = document.createElement("hui-generic-entity-row");
+      this._value = document.createElement("span");
+      this._value.style.cssText =
+        "text-align:end;white-space:normal;overflow-wrap:anywhere";
+      this._row.append(this._value);
+      root.append(style, this._row);
+      this.setAttribute("role", "button");
+      this.tabIndex = 0;
+      this.addEventListener("click", () => this._showDetails());
+      this.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          this._showDetails();
+        }
+      });
+    }
+    this._refreshStatus();
+    scheduleStatusRefresh();
+  }
+
+  disconnectedCallback() {
+    this._connected = false;
+    statusRows.delete(this);
+    scheduleStatusRefresh();
+  }
+
+  _showDetails() {
+    this.dispatchEvent(new CustomEvent("hass-more-info", {
+      detail: { entityId: this._config.entity }, bubbles: true, composed: true,
+    }));
+  }
+
+  _refreshStatus() {
+    if (!this._connected || !this._hass || !this._config || isDocumentHidden()) {
+      return;
+    }
+    this._row.config = this._config;
+    this._row.hass = this._hass;
+    this._value.textContent = AdaptiveRoboVacsStatusRow.display(
+      this._hass.states[this._config.entity]
+    );
+  }
+}
+
+customElements.define("adaptive-robovacs-status-row", AdaptiveRoboVacsStatusRow);
 
 const COMMON_FORM_SCHEMA = [
   {
@@ -409,6 +519,13 @@ class AdaptiveRoboVacsCardBase extends HTMLElement {
       const name = nameWithoutTargetPrefix(item.attrs.friendly_name, targetName);
       if (item.attrs[ROLE_ATTRIBUTE] === "room_schedule" && item.attrs.device_class === "timestamp") {
         return { type: "custom:adaptive-robovacs-timestamp-row", entity: item.entityId, name: "Next clean" };
+      }
+      if (item.attrs[ROLE_ATTRIBUTE] === "room_status") {
+        return {
+          type: "custom:adaptive-robovacs-status-row",
+          entity: item.entityId,
+          name: "Status",
+        };
       }
       if (item.attrs[ROLE_ATTRIBUTE] === "room_last_cleaned") {
         return {

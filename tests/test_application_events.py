@@ -8,6 +8,8 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from homeassistant.helpers import entity_registry as er
+
 from custom_components.adaptive_robovacs.application import SchedulerApplication
 from custom_components.adaptive_robovacs.commands import (
     EvaluateCommand,
@@ -17,6 +19,7 @@ from custom_components.adaptive_robovacs.commands import (
 )
 from custom_components.adaptive_robovacs.models import (
     CleaningOperation,
+    EvaluationCause,
     ManualCleanRequest,
     RoomObservation,
 )
@@ -25,12 +28,16 @@ from custom_components.adaptive_robovacs.observations import (
     ObservedRoom,
 )
 from custom_components.adaptive_robovacs.state import Deferral, RobotCooldown
+from custom_components.adaptive_robovacs.watch import WatchSpecification
 from tests.test_application_state import NOW, active_job, state_application
 
 
 def event_application() -> tuple[SchedulerApplication, list[asyncio.Task]]:
     app = state_application()
     app._watch_entity_ids = {"vacuum.alpha", "sensor.alpha_battery"}
+    app._watch_specifications = {
+        entity_id: WatchSpecification(entity_id) for entity_id in app._watch_entity_ids
+    }
     app._effective_duration = Mock(return_value=(12.5, 3))
     app.async_execute = AsyncMock(return_value={})
     tasks = []
@@ -110,15 +117,143 @@ class ApplicationEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(commands[0].old_state, "docked")
         self.assertEqual(commands[0].new_state, "cleaning")
         self.assertEqual(commands[0].changed_at, NOW)
-        self.assertIsInstance(commands[1], RefreshDiscoveryCommand)
-        self.assertIsInstance(commands[2], EvaluateCommand)
-        self.assertTrue(commands[2].coalesce)
-        self.assertIsInstance(commands[3], EvaluateCommand)
-        self.assertTrue(commands[3].coalesce)
+        refreshes = [
+            item for item in commands if isinstance(item, RefreshDiscoveryCommand)
+        ]
+        evaluations = [item for item in commands if isinstance(item, EvaluateCommand)]
+        self.assertEqual(len(refreshes), 3)
+        self.assertEqual(len(evaluations), 3)
+        self.assertTrue(all(item.coalesce for item in evaluations))
 
         app.async_refresh_discovery = AsyncMock()
         await app._async_refresh_discovery_after_device_label_change()
         app.async_refresh_discovery.assert_awaited_once()
+
+    async def test_state_events_ignore_noise_and_refresh_changed_options(self) -> None:
+        app, tasks = event_application()
+        unchanged = SimpleNamespace(state="docked", attributes={}, last_changed=NOW)
+        app._on_state_changed(
+            SimpleNamespace(
+                data={
+                    "entity_id": "vacuum.alpha",
+                    "old_state": unchanged,
+                    "new_state": unchanged,
+                }
+            )
+        )
+        self.assertEqual(tasks, [])
+
+        entity_id = "select.alpha_mode"
+        app._watch_entity_ids.add(entity_id)
+        app._watch_capability_entity_ids.add(entity_id)
+        app._watch_specifications[entity_id] = WatchSpecification(
+            entity_id,
+            capability_attributes=frozenset({"options"}),
+        )
+        app._on_state_changed(
+            SimpleNamespace(
+                data={
+                    "entity_id": entity_id,
+                    "old_state": SimpleNamespace(
+                        state="vacuum",
+                        attributes={"options": ["vacuum"]},
+                    ),
+                    "new_state": SimpleNamespace(
+                        state="vacuum",
+                        attributes={"options": ["vacuum", "mop"]},
+                        last_changed=NOW,
+                    ),
+                }
+            )
+        )
+        await asyncio.gather(*tasks)
+        commands = [call.args[0] for call in app.async_execute.await_args_list]
+        self.assertIsInstance(commands[0], StateChangedCommand)
+        self.assertIsInstance(commands[1], RefreshDiscoveryCommand)
+        self.assertIsInstance(commands[2], EvaluateCommand)
+        self.assertEqual(commands[2].cause, EvaluationCause.STATE_CHANGE)
+        self.assertEqual(app.metrics.state_events["ignored_unchanged"], 1)
+        self.assertEqual(app.metrics.state_events["capability_changes"], 1)
+
+    async def test_relevant_same_state_attribute_enqueues_evaluation(self) -> None:
+        app, tasks = event_application()
+        app._watch_specifications["vacuum.alpha"] = WatchSpecification(
+            "vacuum.alpha",
+            evaluation_attributes=frozenset({"fan_speed"}),
+            capability_attributes=frozenset({"fan_speed_list"}),
+        )
+        app._on_state_changed(
+            SimpleNamespace(
+                data={
+                    "entity_id": "vacuum.alpha",
+                    "old_state": SimpleNamespace(
+                        state="docked",
+                        attributes={"fan_speed": "quiet", "battery": 80},
+                    ),
+                    "new_state": SimpleNamespace(
+                        state="docked",
+                        attributes={"fan_speed": "max", "battery": 81},
+                        last_changed=NOW,
+                    ),
+                }
+            )
+        )
+        await asyncio.gather(*tasks)
+        commands = [call.args[0] for call in app.async_execute.await_args_list]
+        self.assertIsInstance(commands[0], StateChangedCommand)
+        self.assertIsInstance(commands[1], EvaluateCommand)
+        self.assertFalse(
+            any(isinstance(item, RefreshDiscoveryCommand) for item in commands)
+        )
+
+    async def test_entity_registry_filters_noise_and_own_entities(self) -> None:
+        app, tasks = event_application()
+        irrelevant = SimpleNamespace(
+            event_type=er.EVENT_ENTITY_REGISTRY_UPDATED,
+            data={
+                "action": "update",
+                "entity_id": "sensor.vendor_status",
+                "changes": {"icon": "mdi:robot-vacuum"},
+            },
+        )
+        app._on_registry_updated(irrelevant)
+
+        registry = SimpleNamespace(
+            async_get=Mock(return_value=SimpleNamespace(platform="adaptive_robovacs"))
+        )
+        own_entity = SimpleNamespace(
+            event_type=er.EVENT_ENTITY_REGISTRY_UPDATED,
+            data={
+                "action": "create",
+                "entity_id": "sensor.study_status",
+                "changes": {},
+            },
+        )
+        with patch(
+            "custom_components.adaptive_robovacs.application.events.er.async_get",
+            return_value=registry,
+        ):
+            app._on_registry_updated(own_entity)
+        self.assertEqual(tasks, [])
+
+        registry.async_get.return_value = SimpleNamespace(platform="roborock")
+        external = SimpleNamespace(
+            event_type=er.EVENT_ENTITY_REGISTRY_UPDATED,
+            data={
+                "action": "update",
+                "entity_id": "sensor.vendor_status",
+                "changes": {"area_id": "study"},
+            },
+        )
+        with patch(
+            "custom_components.adaptive_robovacs.application.events.er.async_get",
+            return_value=registry,
+        ):
+            app._on_registry_updated(external)
+        await asyncio.gather(*tasks)
+        command = app.async_execute.await_args.args[0]
+        self.assertIsInstance(command, RefreshDiscoveryCommand)
+        self.assertEqual(command.reason, "entity")
 
     async def test_observed_manual_checkpoint_is_persisted_before_follow_up(
         self,

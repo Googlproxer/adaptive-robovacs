@@ -41,6 +41,7 @@ class AdaptiveEntity(CoordinatorEntity[AdaptiveRoboVacsCoordinator]):
         area_id: str | None = None,
         robot_entity_id: str | None = None,
         robot_name_suffix: str | None = None,
+        global_dependency: bool = False,
     ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.entry.entry_id}_{unique_key}"
@@ -55,6 +56,24 @@ class AdaptiveEntity(CoordinatorEntity[AdaptiveRoboVacsCoordinator]):
         )
         self._robot_registry_id = robot.registry_id if robot else None
         self._robot_name_suffix = robot_name_suffix
+        self._global_dependency = global_dependency
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Write only when this entity's typed projection scope changed."""
+
+        scope = (
+            "room" if self._area_id else "robot" if self._robot_entity_id else "global"
+        )
+        if self.coordinator.scope_changed(
+            area_id=self._area_id,
+            robot_registry_id=self._robot_registry_id,
+            global_dependency=self._global_dependency,
+        ):
+            self.coordinator.metrics.entity_writes[scope] += 1
+            super()._handle_coordinator_update()
+            return
+        self.coordinator.metrics.entity_skips[scope] += 1
 
     def _resolve_robot_entity_id(self) -> str | None:
         """Follow a vacuum entity rename through its stable registry entry."""

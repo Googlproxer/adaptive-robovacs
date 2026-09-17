@@ -192,13 +192,12 @@ class ApplicationCommandRouterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(payload(preview), {"preview": True})
         app.async_evaluate.assert_awaited_with(dry_run=True, reason="dashboard")
+        app.async_evaluate.reset_mock()
 
         await app._async_execute_command(
             StateChangedCommand("vacuum.alpha", "docked", "cleaning", None)
         )
-        app.async_evaluate.assert_awaited_with(
-            dry_run=False, reason="state:vacuum.alpha"
-        )
+        app.async_evaluate.assert_not_awaited()
 
         manual = await app._async_execute_command(
             ManualCleanRoomCommand("study", "vacuum_only", "context", "user")

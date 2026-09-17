@@ -129,7 +129,7 @@ class EvaluationPreviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["candidates"][0]["operation"], "cleaning")
         self.assertTrue(result["candidates"][0]["eligible"])
         self.assertEqual(result["dispatches"], [])
-        app.async_refresh_discovery.assert_awaited_once_with(notify=False)
+        app.async_refresh_discovery.assert_not_awaited()
         app._async_reconcile_jobs.assert_awaited_once_with(NOW)
         app._async_save.assert_awaited_once()
         app._notify_listeners.assert_called_once()

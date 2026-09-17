@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from datetime import datetime, timedelta
+from time import perf_counter
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -58,6 +61,7 @@ from ..discovery import (
 from ..dispatch import DispatchDependencies, DispatchPipeline
 from ..gateway import HomeAssistantVacuumGateway
 from ..lifecycle import SchedulerRuntime
+from ..metrics import RuntimeMetrics
 from ..models import (
     EvaluationCause,
     EvaluationMode,
@@ -78,6 +82,7 @@ from ..state import (
     migrate_robot_identity,
 )
 from ..storage import SchedulerStore
+from ..watch import WatchSpecification
 from .actions import ApplicationActionsMixin
 from .dispatch import ApplicationDispatchMixin
 from .evaluation import ApplicationEvaluationMixin
@@ -154,6 +159,8 @@ class SchedulerApplication(
         self.storage = SchedulerStore(hass, entry.entry_id)
         self.repairs = RepairService(hass, entry.entry_id)
         self.state = SchedulerState.create(entry.data)
+        self.metrics = RuntimeMetrics()
+        self._last_durable_fingerprint: str | None = None
         self._storage_safe_mode = False
         self.discovery = DiscoverySnapshot.empty()
         self._lock = asyncio.Lock()
@@ -162,6 +169,8 @@ class SchedulerApplication(
         self._schedule_clock = SchedulePresentationClock(hass, self._publish_snapshot)
         self._discovery_signal_pending = False
         self._watch_entity_ids: set[str] = set()
+        self._watch_capability_entity_ids: set[str] = set()
+        self._watch_specifications: dict[str, WatchSpecification] = {}
         self._recovery_timers: dict[str, Callable[[], None]] = {}
         self._start_confirmation_timers: dict[str, Callable[[], None]] = {}
         self._ready_confirmation_timers: dict[str, Callable[[], None]] = {}
@@ -177,6 +186,7 @@ class SchedulerApplication(
             hass,
             entry,
             self._async_execute_command,
+            self.metrics,
         )
         self.gateway = HomeAssistantVacuumGateway(
             hass,
@@ -204,7 +214,7 @@ class SchedulerApplication(
             interval_handler=self._async_interval,
             call_service_handler=self._on_call_service,
             state_changed_handler=self._on_state_changed,
-            device_registry_handler=self._on_device_registry_updated,
+            registry_handler=self._on_registry_updated,
             notification_action_handler=self._on_mobile_notification_action,
             notification_cleared_handler=self._on_mobile_notification_cleared,
             home_assistant_started_handler=self._on_home_assistant_started,
@@ -222,6 +232,7 @@ class SchedulerApplication(
         self._startup_state_settle_until = _now() + STARTUP_STATE_SETTLE_DELAY
         loaded = await self.storage.async_load(self.entry.data)
         self.state = loaded.state
+        self._last_durable_fingerprint = self._durable_fingerprint()
         migrated = loaded.migrated
         if loaded.safe_mode:
             # Do not overwrite a Store written by a newer version or a malformed
@@ -241,7 +252,7 @@ class SchedulerApplication(
             self.state.first_scheduler_online_at = _now()
             baseline_initialized = True
         if migrated or self._identity_migrated or baseline_initialized:
-            await self._async_save()
+            await self._async_save(force=True)
         if self.state.robot_faults or self.state.room_faults:
             self._sync_dispatch_fault_issues()
         await self._async_recover_active_jobs()
@@ -285,7 +296,7 @@ class SchedulerApplication(
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
         async with self._lock:
-            await self._async_save()
+            await self._async_save(force=True)
 
     def begin_shutdown(self) -> None:
         """Gate callbacks before Home Assistant starts unloading platforms."""
@@ -321,12 +332,19 @@ class SchedulerApplication(
 
         match command:
             case EvaluateCommand():
-                return CommandResult.from_mapping(
-                    await self.async_evaluate(
-                        dry_run=command.dry_run,
-                        reason=command.reason,
+                started = perf_counter()
+                try:
+                    return CommandResult.from_mapping(
+                        await self.async_evaluate(
+                            dry_run=command.dry_run,
+                            reason=command.reason,
+                        )
                     )
-                )
+                finally:
+                    if metrics := getattr(self, "metrics", None):
+                        metrics.record_evaluation(
+                            command.reason, perf_counter() - started
+                        )
             case StateChangedCommand(
                 entity_id=entity_id,
                 old_state=old_state,
@@ -342,12 +360,7 @@ class SchedulerApplication(
                             *capabilities.error_entity_ids,
                         }:
                             self._reset_room_recovery_dock(robot.registry_id)
-                return CommandResult.from_mapping(
-                    await self.async_evaluate(
-                        dry_run=False,
-                        reason=f"state:{entity_id}",
-                    )
-                )
+                return None
             case RefreshDiscoveryCommand():
                 await self._async_refresh_discovery_after_device_label_change()
             case SetGlobalCommand(key=key, value=value):
@@ -554,14 +567,50 @@ class SchedulerApplication(
 
         if self._closing:
             return
+        if self._snapshot == snapshot:
+            self.metrics.snapshot_equal_skips += 1
+            return
         self._snapshot = snapshot
+        self.metrics.snapshot_publications += 1
         for listener in tuple(self._listeners):
             listener(snapshot)
 
-    async def _async_save(self) -> None:
+    def _durable_fingerprint(self, state: SchedulerState | None = None) -> str:
+        """Hash only restart-relevant state, excluding transient previews."""
+
+        payload = (state or self.state).encode()
+        payload.pop("evaluation", None)
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    async def _async_save(self, *, force: bool = False) -> None:
+        await self._async_persist_state(self.state, force=force)
+
+    async def _async_persist_state(
+        self, state: SchedulerState, *, force: bool = False
+    ) -> bool:
+        """Persist one state without exposing it before the write completes."""
+
+        self.metrics.storage_attempts += 1
         if self._storage_safe_mode:
-            return
-        await self.storage.async_save(self.state)
+            self.metrics.storage_skips += 1
+            return False
+        fingerprint = self._durable_fingerprint(state)
+        if not force and fingerprint == self._last_durable_fingerprint:
+            self.metrics.storage_skips += 1
+            return False
+        await self.storage.async_save(state)
+        self._last_durable_fingerprint = fingerprint
+        self.metrics.storage_writes += 1
+        return True
+
+    async def _async_commit_state(
+        self, state: SchedulerState, *, force: bool = True
+    ) -> None:
+        """Persist replacement state before making it visible in memory."""
+
+        if await self._async_persist_state(state, force=force):
+            self.state = state
 
     async def async_refresh_discovery(self, *, notify: bool = True) -> None:
         """Refresh registry state and reset only changed room occupancy models.
@@ -572,7 +621,11 @@ class SchedulerApplication(
         """
 
         prior_discovery = self.discovery
-        self.discovery = await async_discover(self.hass)
+        started = perf_counter()
+        try:
+            self.discovery = await async_discover(self.hass)
+        finally:
+            self.metrics.record_discovery(perf_counter() - started)
         self._identity_migrated = (
             self._migrate_runtime_robot_identity(prior_discovery)
             or self._identity_migrated
@@ -601,15 +654,32 @@ class SchedulerApplication(
         self._watch_entity_ids = {
             robot.entity_id for robot in self.discovery.robots.values()
         }
+        self._watch_capability_entity_ids = set()
+        evaluation_attributes: dict[str, set[str]] = {}
+        capability_attributes: dict[str, set[str]] = {}
         for room in self.discovery.rooms.values():
             self._watch_entity_ids.update(room.radar_entity_ids)
             self._watch_entity_ids.update(room.fallback_entity_ids)
         for robot in self.discovery.robots.values():
+            evaluation_attributes.setdefault(robot.entity_id, set()).add("fan_speed")
+            capability_attributes.setdefault(robot.entity_id, set()).update(
+                {"fan_speed_list", "supported_features"}
+            )
             if robot.profile.battery_entity_id:
                 self._watch_entity_ids.add(robot.profile.battery_entity_id)
             if robot.profile.cleaning_time_entity_id:
                 self._watch_entity_ids.add(robot.profile.cleaning_time_entity_id)
             self._watch_entity_ids.update(
+                entity_id
+                for entity_id in (
+                    robot.profile.mode_select_entity_id,
+                    robot.profile.mop_mode_select_entity_id,
+                    robot.profile.mop_intensity_select_entity_id,
+                    robot.profile.passes_select_entity_id,
+                )
+                if entity_id
+            )
+            self._watch_capability_entity_ids.update(
                 entity_id
                 for entity_id in (
                     robot.profile.mode_select_entity_id,
@@ -627,7 +697,39 @@ class SchedulerApplication(
                 for evidence in robot.adapter_entities
                 if evidence.domain == "select"
             )
+            self._watch_capability_entity_ids.update(
+                evidence.entity_id
+                for evidence in robot.adapter_entities
+                if evidence.domain == "select"
+            )
+            for evidence in robot.adapter_entities:
+                capability_attributes.setdefault(evidence.entity_id, set()).update(
+                    {
+                        "device_class",
+                        "entity_description_key",
+                        "translation_key",
+                    }
+                )
+                if evidence.domain == "select":
+                    capability_attributes[evidence.entity_id].add("options")
             self._watch_entity_ids.update(robot.adapter_capabilities.watched_entity_ids)
+
+        for entity_id in self._watch_capability_entity_ids:
+            capability_attributes.setdefault(entity_id, set()).add("options")
+        self._watch_specifications = {
+            entity_id: WatchSpecification(
+                entity_id,
+                frozenset(evaluation_attributes.get(entity_id, ())),
+                frozenset(capability_attributes.get(entity_id, ())),
+            )
+            for entity_id in self._watch_entity_ids
+        }
+        self._watch_capability_entity_ids = {
+            entity_id
+            for entity_id, specification in self._watch_specifications.items()
+            if specification.capability_attributes
+        }
+        self.lifecycle.update_state_watchers(self._watch_entity_ids)
 
         for area_id in tuple(self.state.water_notification_episodes):
             episode_room = self.discovery.rooms.get(area_id)

@@ -91,7 +91,13 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         }
         self.assertEqual(
             methods,
-            {"__init__", "_handle_application_update", "close", "async_execute"},
+            {
+                "__init__",
+                "_handle_application_update",
+                "scope_changed",
+                "close",
+                "async_execute",
+            },
         )
 
     def test_application_core_composes_focused_components(self) -> None:

@@ -230,6 +230,7 @@ class _RoomStatusSensor(AdaptiveEntity, SensorEntity):
             f"{name} status",
             "room_status",
             area_id=area_id,
+            global_dependency=True,
         )
         self.area_id = area_id
 

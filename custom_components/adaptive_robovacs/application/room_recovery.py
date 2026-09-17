@@ -98,6 +98,10 @@ class ApplicationRoomRecoveryMixin:
 
         async def async_refresh_discovery(self, *, notify: bool = True) -> None: ...
 
+        async def _async_commit_state(
+            self, state: SchedulerState, *, force: bool = True
+        ) -> None: ...
+
         def _notify_listeners(self) -> None: ...
 
         def _cancel_recovery_timer(self, robot_id: str) -> None: ...
@@ -171,8 +175,7 @@ class ApplicationRoomRecoveryMixin:
 
     async def _async_commit_room_recovery(self, state: SchedulerState) -> None:
         # Do not expose an unpersisted release, including after a failed save.
-        await self.storage.async_save(state)
-        self.state = state
+        await self._async_commit_state(state, force=True)
 
     def _sync_room_recovery_issues(self) -> None:
         self.repairs.sync_room_recoveries(

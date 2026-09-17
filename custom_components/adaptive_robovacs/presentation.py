@@ -55,12 +55,7 @@ def adjacency_block_reason(
         forecast = blocker.vacancy
         if forecast is None:
             return f"{name} (vacancy window unresolved)"
-        elapsed = (
-            f"; clear for {max(0.0, forecast.clear_minutes):.1f} minutes"
-            if forecast.clear_minutes is not None
-            else ""
-        )
-        return f"{name} ({forecast.reason}{elapsed})"
+        return f"{name} ({forecast.reason})"
 
     neighbors = "; ".join(describe(blocker) for blocker in decision.blockers)
     return f"Adjacent room protection: {neighbors}"

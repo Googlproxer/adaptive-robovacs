@@ -173,10 +173,17 @@ states. Its attributes include `adjacency_mode`, `adjacency_active`,
 `adjacency_blocked`, `adjacency_reason`, `adjacent_area_ids`, and
 `adjacency_blockers` (area ID, name and occupancy for each blocking neighbour).
 A clear-but-waiting blocker also has an optional `vacancy_diagnostic` containing
-required and elapsed clear minutes, confidence, comparable and successful sample
-counts, and the forecast reason. Robot popup previews use each robot's exact
-stage duration, so their waiting requirements can differ. Running stages finish
-normally, and manual Clean retains its override.
+`unoccupied_since`, required clear minutes, confidence, comparable and successful
+sample counts, the forecast reason, and allowed/blocking state. Version 1.16.8
+removes live `clear_minutes` from this current-state projection so Recorder does
+not receive a new row merely because another minute elapsed. Consumers derive
+elapsed time as `now - unoccupied_since`; historical decision-audit entries still
+retain the elapsed value captured when the decision was made. The bundled status
+row reconstructs the prior **clear for ... minutes** wording with one shared
+browser timer that pauses while the document is hidden or no status rows are
+connected. Robot popup previews use each robot's exact stage duration, so their
+waiting requirements can differ. Running stages finish normally, and manual
+Clean retains its override.
 
 The card shows **Desired cleaning start** and **Desired cleaning end** only for
 the **Custom** period. They offer 15-minute values plus **Use global**; start

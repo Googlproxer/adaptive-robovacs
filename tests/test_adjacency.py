@@ -85,7 +85,7 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
         result = await evaluate(app)
 
         self.assertIn("waiting for 30 clear minutes", result["blocks"]["study"])
-        self.assertIn("clear for 0.3 minutes", result["blocks"]["study"])
+        self.assertNotIn("clear for", result["blocks"]["study"])
         self.assertNotIn("study", app.state.occurrences)
         self.assertTrue(all(job is None for job in app.state.active_jobs.values()))
         app._async_prepare_occurrence.assert_not_awaited()
@@ -458,7 +458,6 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
                 "occupancy_source": "radars",
                 "unoccupied_since": (NOW - timedelta(seconds=21)).isoformat(),
                 "required_clear_minutes": 30,
-                "clear_minutes": 0.3,
                 "forecast_confidence": 0.0,
                 "comparable_sample_count": 0,
                 "successful_sample_count": 0,

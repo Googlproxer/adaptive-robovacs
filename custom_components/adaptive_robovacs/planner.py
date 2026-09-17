@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from .models import (
@@ -23,7 +23,7 @@ class VacancyDiagnostic:
     occupancy_source: str
     unoccupied_since: datetime | None
     required_clear_minutes: int
-    clear_minutes: float | None
+    clear_minutes: float | None = field(compare=False)
     forecast_confidence: float
     comparable_sample_count: int
     successful_sample_count: int
@@ -64,7 +64,6 @@ class VacancyDiagnostic:
                 self.unoccupied_since.isoformat() if self.unoccupied_since else None
             ),
             "required_clear_minutes": self.required_clear_minutes,
-            "clear_minutes": self.clear_minutes,
             "forecast_confidence": self.forecast_confidence,
             "comparable_sample_count": self.comparable_sample_count,
             "successful_sample_count": self.successful_sample_count,

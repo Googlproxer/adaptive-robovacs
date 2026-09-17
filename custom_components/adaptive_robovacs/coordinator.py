@@ -11,7 +11,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .commands import SchedulerCommand, SchedulerCommandResult
-from .snapshots import IntegrationSnapshot
+from .metrics import RuntimeMetrics
+from .snapshots import IntegrationSnapshot, SnapshotDelta
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class CoordinatorSource(Protocol):
 
     hass: HomeAssistant
     entry: ConfigEntry
+    metrics: RuntimeMetrics
 
     def async_add_listener(
         self,
@@ -40,6 +42,7 @@ class AdaptiveRoboVacsCoordinator(DataUpdateCoordinator[IntegrationSnapshot]):
 
     def __init__(self, application: CoordinatorSource) -> None:
         self.entry = application.entry
+        self.metrics = getattr(application, "metrics", RuntimeMetrics())
         self._submit = application.async_execute
         super().__init__(
             application.hass,
@@ -50,6 +53,7 @@ class AdaptiveRoboVacsCoordinator(DataUpdateCoordinator[IntegrationSnapshot]):
             always_update=False,
         )
         self.data = application.current_snapshot()
+        self._delta = SnapshotDelta.initial()
         self._remove_application_listener: Callable[[], None] = (
             application.async_add_listener(self._handle_application_update)
         )
@@ -60,9 +64,38 @@ class AdaptiveRoboVacsCoordinator(DataUpdateCoordinator[IntegrationSnapshot]):
         """Publish one immutable snapshot produced by the application."""
 
         if isinstance(update, Exception):
+            self._delta = SnapshotDelta.initial()
             self.async_set_update_error(update)
             return
+        self._delta = (
+            SnapshotDelta.between(self.data, update)
+            if self.last_update_success
+            else SnapshotDelta.initial()
+        )
         self.async_set_updated_data(update)
+
+    def scope_changed(
+        self,
+        *,
+        area_id: str | None,
+        robot_registry_id: str | None,
+        global_dependency: bool,
+    ) -> bool:
+        """Return whether one entity's declared projection dependencies changed."""
+
+        if self._delta.full or not self.last_update_success:
+            return True
+        if global_dependency and self._delta.room_status_global:
+            return True
+        if area_id is not None:
+            return area_id in self._delta.room_ids
+        if robot_registry_id is not None:
+            return robot_registry_id in self._delta.robot_registry_ids
+        return bool(
+            self._delta.scheduler
+            or self._delta.room_ids
+            or self._delta.robot_registry_ids
+        )
 
     def close(self) -> None:
         """Release the application-to-coordinator update bridge."""

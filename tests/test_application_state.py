@@ -19,6 +19,7 @@ from custom_components.adaptive_robovacs.discovery import (
     RobotProfile,
 )
 from custom_components.adaptive_robovacs.floor_plans import FloorPlanWrite
+from custom_components.adaptive_robovacs.metrics import RuntimeMetrics
 from custom_components.adaptive_robovacs.models import (
     AdapterCapabilities,
     CleaningOperation,
@@ -179,11 +180,15 @@ def state_application() -> SchedulerApplication:
         delete_robot_error_recovery=Mock(),
     )
     app._storage_safe_mode = False
+    app.metrics = RuntimeMetrics()
+    app._last_durable_fingerprint = None
     app._closing = False
     app._identity_migrated = False
     app._discovery_signal_pending = False
     app._startup_state_settle_until = None
     app._watch_entity_ids = set()
+    app._watch_capability_entity_ids = set()
+    app._watch_specifications = {}
     app._start_confirmation_timers = {}
     app._ready_confirmation_timers = {}
     app._ready_since = {}
@@ -364,6 +369,41 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         await app._async_save()
         self.assertEqual(app.storage.async_save.await_count, 1)
 
+    async def test_save_skips_transient_evaluation_but_force_flushes(self) -> None:
+        app = state_application()
+        app._last_durable_fingerprint = app._durable_fingerprint()
+        app.state.evaluation.last_evaluation_at = NOW
+
+        await app._async_save()
+        app.storage.async_save.assert_not_awaited()
+        self.assertEqual(app.metrics.storage_skips, 1)
+
+        app.state.global_settings.party_mode = True
+        await app._async_save()
+        app.storage.async_save.assert_awaited_once_with(app.state)
+
+        await app._async_save(force=True)
+        self.assertEqual(app.storage.async_save.await_count, 2)
+
+    async def test_replacement_state_is_persisted_before_becoming_visible(self) -> None:
+        app = state_application()
+        replacement = replace(app.state)
+        app.storage.async_save.side_effect = RuntimeError("write failed")
+
+        with self.assertRaisesRegex(RuntimeError, "write failed"):
+            await app._async_commit_state(replacement, force=True)
+        self.assertIsNot(app.state, replacement)
+
+        app.storage.async_save.side_effect = None
+        await app._async_commit_state(replacement, force=True)
+        self.assertIs(app.state, replacement)
+        self.assertEqual(app.metrics.storage_writes, 1)
+
+        safe_replacement = replace(app.state)
+        app._storage_safe_mode = True
+        await app._async_commit_state(safe_replacement, force=True)
+        self.assertIsNot(app.state, safe_replacement)
+
     async def test_discovery_refresh_rebinds_watchers_and_resets_changed_sources(
         self,
     ) -> None:
@@ -412,6 +452,21 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sensor.alpha_battery", app._watch_entity_ids)
         self.assertIn("select.alpha_extra", app._watch_entity_ids)
         self.assertNotIn("sensor.alpha_ignored", app._watch_entity_ids)
+        self.assertEqual(
+            app._watch_specifications["vacuum.alpha"].evaluation_attributes,
+            frozenset({"fan_speed"}),
+        )
+        self.assertIn(
+            "supported_features",
+            app._watch_specifications["vacuum.alpha"].capability_attributes,
+        )
+        self.assertIn(
+            "options",
+            app._watch_specifications["select.alpha_extra"].capability_attributes,
+        )
+        self.assertFalse(
+            app._watch_specifications["sensor.alpha_battery"].capability_attributes
+        )
         self.assertNotIn("study", app.state.water_notification_episodes)
         dispatcher.assert_not_called()
         app._notify_listeners.assert_called_once()
