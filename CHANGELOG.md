@@ -5,6 +5,20 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.16.7] - 2026-09-17
+
+### Fixed
+
+- An active room recovery now owns the robot-error Repair for its matching
+  interrupted job, preventing the generic hold Repair from being recreated on
+  every watched robot state change.
+- Generic robot-hold Repairs remain available for orphaned, detached, or
+  otherwise independent durable holds.
+- Repair presentation changes do not clear the durable scheduler hold, mutate
+  the interrupted job, or send a robot command.
+
+Detailed notes: [`docs/releases/v1.16.7.md`](docs/releases/v1.16.7.md).
+
 ## [1.16.6] - 2026-09-16
 
 ### Fixed

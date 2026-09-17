@@ -39,6 +39,7 @@ from custom_components.adaptive_robovacs.state import (
     RecoveryAuditRecord,
     RobotCooldown,
     RobotHold,
+    RoomRecovery,
     SchedulerFault,
     SchedulerState,
     WaterNotificationEpisode,
@@ -212,6 +213,67 @@ def active_job(*, occurrence_id: str | None = None) -> ActiveJob:
 
 
 class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
+    def test_robot_hold_repairs_defer_to_matching_active_room_recovery(self) -> None:
+        app = state_application()
+        active = active_job(occurrence_id="occurrence-1")
+        active.phase = JobPhase.ERROR_WAITING
+        app.state.active_jobs["registry-alpha"] = active
+        app.state.robot_holds["registry-alpha"] = RobotHold(
+            "robot_error", "held", held_at=NOW
+        )
+        app.state.room_recoveries["study"] = RoomRecovery(
+            "recovery-1",
+            "study",
+            "registry-alpha",
+            "occurrence-1",
+            0,
+            CleaningOperation.VACUUM,
+            NOW,
+        )
+        app.hass.states.values["vacuum.alpha"] = SimpleNamespace(state="error")
+
+        app._sync_robot_hold_issues()
+
+        holds, _robots, observed = app.repairs.sync_robot_holds.call_args.args
+        self.assertEqual(holds, {})
+        self.assertEqual(observed, {"registry-alpha": "error"})
+        self.assertIn("registry-alpha", app.state.robot_holds)
+        self.assertIs(app.state.active_jobs["registry-alpha"], active)
+        app.storage.async_save.assert_not_awaited()
+
+    def test_robot_hold_repairs_retain_orphan_and_independent_holds(self) -> None:
+        for detached, occurrence_id, reason in (
+            (NOW, "occurrence-1", "robot_error"),
+            (None, "another-occurrence", "robot_error"),
+            (None, "occurrence-1", "paused"),
+        ):
+            with self.subTest(
+                detached=detached,
+                occurrence_id=occurrence_id,
+                reason=reason,
+            ):
+                app = state_application()
+                active = active_job(occurrence_id="occurrence-1")
+                active.phase = JobPhase.ERROR_WAITING
+                app.state.active_jobs["registry-alpha"] = active
+                hold = RobotHold(reason, "held", held_at=NOW)
+                app.state.robot_holds["registry-alpha"] = hold
+                app.state.room_recoveries["study"] = RoomRecovery(
+                    "recovery-1",
+                    "study",
+                    "registry-alpha",
+                    occurrence_id,
+                    0,
+                    CleaningOperation.VACUUM,
+                    NOW,
+                    detached_at=detached,
+                )
+
+                app._sync_robot_hold_issues()
+
+                holds = app.repairs.sync_robot_holds.call_args.args[0]
+                self.assertEqual(holds, {"registry-alpha": hold})
+
     def test_retired_label_does_not_add_cross_room_or_daytime_gates(self) -> None:
         app = state_application()
         target = replace(room(), labels=frozenset({"robovac_bedroom_transit"}))

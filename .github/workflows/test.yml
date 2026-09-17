@@ -23,7 +23,7 @@ jobs:
             homeassistant==2026.9.2 \
             pytest-homeassistant-custom-component==0.13.365 \
             pytest-cov==7.1.0 \
-            ruff==0.16.7 \
+            ruff==0.16.8 \
             mypy==2.3.1
           # The HA plugin currently pins pytest 9.0.3. The acceptance
           # environment deliberately validates the requested 9.1.1 runtime.

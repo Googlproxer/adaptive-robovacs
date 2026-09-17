@@ -154,7 +154,7 @@ class ApplicationFaultMixin:
         )
 
     def _sync_robot_hold_issues(self) -> None:
-        """Keep every unresolved non-map hold visible as a scoped Repair."""
+        """Keep unresolved holds visible without duplicating room Repairs."""
 
         observed_states = {
             robot.registry_id: (
@@ -164,8 +164,24 @@ class ApplicationFaultMixin:
             )
             for robot in self.discovery.robots.values()
         }
+        room_recovery_robots: set[str] = set()
+        for recovery in self.state.room_recoveries.values():
+            active = self.state.active_jobs.get(recovery.robot_registry_id)
+            if (
+                recovery.detached_at is None
+                and active is not None
+                and active.room_id == recovery.room_area_id
+                and active.occurrence_id == recovery.occurrence_id
+                and active.stage_index == recovery.stage_index
+            ):
+                room_recovery_robots.add(recovery.robot_registry_id)
+        visible_holds = {
+            registry_id: hold
+            for registry_id, hold in self.state.robot_holds.items()
+            if hold.reason != "robot_error" or registry_id not in room_recovery_robots
+        }
         self.repairs.sync_robot_holds(
-            self.state.robot_holds,
+            visible_holds,
             self.discovery.robots.values(),
             observed_states,
         )

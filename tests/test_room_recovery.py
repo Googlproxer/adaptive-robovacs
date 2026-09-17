@@ -151,6 +151,22 @@ async def detach(app):
 
 
 class RoomRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_room_recovery_owns_repair_without_generic_hold_churn(self):
+        app = recovery_application()
+
+        await reconcile(app)
+        app.repairs.sync_robot_holds.reset_mock()
+        app._sync_robot_hold_issues()
+        app._sync_robot_hold_issues()
+
+        self.assertIn("study", app.state.room_recoveries)
+        self.assertIn("registry-alpha", app.state.robot_holds)
+        app.repairs.delete_robot_error_recovery.assert_called_with("registry-alpha")
+        self.assertEqual(app.repairs.sync_robot_holds.call_count, 2)
+        for call in app.repairs.sync_robot_holds.call_args_list:
+            self.assertEqual(call.args[0], {})
+        app.gateway.async_start.assert_not_awaited()
+
     async def test_detached_attempt_cannot_complete_and_retry_can_complete_normally(
         self,
     ):
