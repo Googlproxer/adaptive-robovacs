@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
@@ -371,12 +371,12 @@ class RoomView:
     occupancy_source: str
     unavailable_radars: int
     last_cleaned: datetime | None
-    last_cleaned_display: str
+    last_cleaned_display: str = field(compare=False)
     using_initial_cadence_baseline: bool
     last_vacuum: datetime | None
     last_mop: datetime | None
     next_due: datetime
-    desired_window_start: datetime
+    desired_window_start: datetime = field(compare=False)
     next_candidate: CandidateView | None
     assignment_available: bool
     robot_eligibility: tuple[RobotEligibilityView, ...]
@@ -405,9 +405,9 @@ class RoomView:
     water_notification_episode: WaterNotificationEpisodeView | None
     failure: FaultView | None
     recovery: RoomRecoveryView | None = None
-    next_clean_at: datetime | None = None
+    next_clean_at: datetime | None = field(default=None, compare=False)
     schedule_due_at: datetime | None = None
-    next_clean_window_end_at: datetime | None = None
+    next_clean_window_end_at: datetime | None = field(default=None, compare=False)
     robot_previews: tuple[RoomRobotPreviewView, ...] = ()
     adjacency_mode: AdjacencyMode = AdjacencyMode.NIGHT_ONLY
     adjacency_active: bool = False

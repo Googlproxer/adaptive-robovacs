@@ -5,6 +5,18 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.16.9] - 2026-09-17
+
+### Fixed
+
+- Clock-only room projection values no longer mark a room scope as changed, so
+  ordinary evaluations inside an active cleaning window do not fan out writes
+  to every entity for that room.
+- Occupancy, scheduling, readiness, safety, and other meaningful room changes
+  remain equality-significant and continue to publish immediately.
+
+Detailed notes: [`docs/releases/v1.16.9.md`](docs/releases/v1.16.9.md).
+
 ## [1.16.8] - 2026-09-17
 
 ### Performance

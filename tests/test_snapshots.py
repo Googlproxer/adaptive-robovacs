@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import MISSING, FrozenInstanceError, fields, replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType, SimpleNamespace
 
@@ -28,6 +28,7 @@ from custom_components.adaptive_robovacs.snapshots import (
     ObservedProfileView,
     RobotSettingsView,
     RobotView,
+    RoomView,
     SnapshotDelta,
     thaw_json,
 )
@@ -75,6 +76,66 @@ class _Source:
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_room_delta_ignores_clock_only_projection_fields(self) -> None:
+        """Time-derived display values must not fan out idle entity writes."""
+
+        compared = {item.name: item.compare for item in fields(RoomView)}
+
+        self.assertFalse(compared["last_cleaned_display"])
+        self.assertFalse(compared["desired_window_start"])
+        self.assertFalse(compared["next_clean_at"])
+        self.assertFalse(compared["next_clean_window_end_at"])
+        self.assertTrue(compared["occupancy"])
+        self.assertTrue(compared["block_reason"])
+
+        required = {
+            item.name: None
+            for item in fields(RoomView)
+            if item.default is MISSING and item.default_factory is MISSING
+        }
+        required.update(area_id="study", occupancy="unoccupied", block_reason="ready")
+        first_room = RoomView(**required)
+        later_room = replace(
+            first_room,
+            last_cleaned_display="3 days ago",
+            desired_window_start=datetime(2026, 9, 5, 10, 15, tzinfo=UTC),
+            next_clean_at=datetime(2026, 9, 5, 10, 15, tzinfo=UTC),
+            next_clean_window_end_at=datetime(2026, 9, 5, 18, tzinfo=UTC),
+        )
+        scheduler = SimpleNamespace(
+            observe_only=False,
+            party_mode=False,
+            storage_safe_mode=False,
+        )
+        floor_plan = SimpleNamespace(revision=1)
+        before = SimpleNamespace(
+            scheduler=scheduler,
+            floor_plan=floor_plan,
+            rooms=(first_room,),
+            robots=(),
+        )
+        clock_only = SimpleNamespace(
+            scheduler=scheduler,
+            floor_plan=floor_plan,
+            rooms=(later_room,),
+            robots=(),
+        )
+        self.assertEqual(
+            SnapshotDelta.between(before, clock_only).room_ids,
+            frozenset(),
+        )
+        occupancy_changed = replace(later_room, occupancy="occupied")
+        meaningful = SimpleNamespace(
+            scheduler=scheduler,
+            floor_plan=floor_plan,
+            rooms=(occupancy_changed,),
+            robots=(),
+        )
+        self.assertEqual(
+            SnapshotDelta.between(before, meaningful).room_ids,
+            frozenset({"study"}),
+        )
+
     def test_delta_tracks_scopes_and_ignores_live_clear_elapsed_time(self) -> None:
         when = datetime(2026, 9, 5, 10, tzinfo=UTC)
         first_diagnostic = VacancyDiagnostic(
