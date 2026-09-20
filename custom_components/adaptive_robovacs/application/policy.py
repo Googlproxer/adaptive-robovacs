@@ -30,6 +30,7 @@ from ..models import (
     CleaningProgram,
     EvaluationCause,
     EvaluationMode,
+    FaultCode,
     Forecast,
     JobPhase,
     OccurrenceSource,
@@ -142,8 +143,34 @@ class ApplicationPolicyMixin:
             self, robot_id: str, deadline: datetime
         ) -> None: ...
 
+        def _room_recovery_dock_confirmed(
+            self,
+            robot: DiscoveredRobot | None,
+            now: datetime,
+            *,
+            delay: timedelta = ...,
+        ) -> bool: ...
+
     def fault_affects_robot(self, robot: DiscoveredRobot) -> bool:
-        return robot.registry_id in self.state.robot_faults
+        fault = self.state.robot_faults.get(robot.registry_id)
+        if fault is None:
+            return False
+        now = _now()
+        if not fault.retry_due(now):
+            return True
+        if fault.reason_code == FaultCode.START_CONFIRMATION_FAILED:
+            observed = self.hass.states.get(robot.entity_id)
+            if (
+                observed is None
+                or observed.last_changed is None
+                or observed.last_changed > fault.occurred_at
+            ):
+                # A later transition could hide a short physical clean.
+                return True
+            return not self._room_recovery_dock_confirmed(
+                robot, now, delay=DISPATCH_READY_CONFIRMATION_DELAY
+            )
+        return False
 
     def _observe_occupancy(self, now: datetime) -> None:
         """Update durable occupancy history from one typed house observation."""
@@ -193,7 +220,7 @@ class ApplicationPolicyMixin:
         """Check every immediate physical and scheduler gate except the delay."""
 
         settings = self._robot_settings(robot)
-        if robot.registry_id in self.state.robot_faults and not ignore_scheduler_fault:
+        if self.fault_affects_robot(robot) and not ignore_scheduler_fault:
             return False, "scheduler held after robot dispatch fault"
         if not settings.enabled:
             return False, "robot disabled"
@@ -720,7 +747,8 @@ class ApplicationPolicyMixin:
 
         settings = self._room_settings(room)
         detail = self._room_data(room.area_id)
-        if room.area_id in self.state.room_faults:
+        room_fault = self.state.room_faults.get(room.area_id)
+        if room_fault and not room_fault.retry_due(now):
             return None, "room dispatch blocked pending Repair"
         if room.area_id in self.state.room_recoveries:
             return None, "room recovery blocked pending Repair"

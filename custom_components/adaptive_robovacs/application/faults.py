@@ -17,7 +17,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from ..commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
-from ..const import READY_CONFIRMATION_DELAY, START_CONFIRMATION_TIMEOUT
+from ..const import (
+    DISPATCH_READY_CONFIRMATION_DELAY,
+    READY_CONFIRMATION_DELAY,
+    START_CONFIRMATION_TIMEOUT,
+)
 from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
 from ..dispatch import DispatchPipeline
 from ..jobs import should_assume_native_app_clean
@@ -29,6 +33,8 @@ from ..models import (
     SchedulerHaltRecheckResult,
     StageStatus,
     detailed_status_is_dispatchable,
+    fault_can_retry,
+    fault_retry_delay,
     map_recovery_hold_is_manual,
     ready_confirmation_elapsed,
     robot_hold_recheck_result,
@@ -73,6 +79,7 @@ class ApplicationFaultMixin:
     repairs: RepairService
     _lock: asyncio.Lock
     _start_confirmation_timers: dict[str, Callable[[], None]]
+    _fault_retry_timers: dict[str, Callable[[], None]]
     _startup_state_settle_until: datetime | None
 
     if TYPE_CHECKING:
@@ -226,6 +233,10 @@ class ApplicationFaultMixin:
             "failure_since": fault.occurred_at.isoformat(),
             "failure_phase": fault.phase,
             "repair_active": True,
+            "retry_attempts": fault.retry_attempts,
+            "retry_after": (
+                fault.retry_after.isoformat() if fault.retry_after else None
+            ),
             "robot": robot.name if robot else None,
             "room": room.name if room else None,
         }
@@ -239,10 +250,41 @@ class ApplicationFaultMixin:
         return [self._fault_view(fault) for _, fault in sorted(faults.items())]
 
     def fault_affects_robot(self, robot: DiscoveredRobot) -> bool:
-        return robot.registry_id in self.state.robot_faults
+        fault = self.state.robot_faults.get(robot.registry_id)
+        return bool(fault and not fault.retry_due(_application_now()))
 
     def fault_affects_room(self, room: DiscoveredRoom) -> bool:
-        return room.area_id in self.state.room_faults
+        fault = self.state.room_faults.get(room.area_id)
+        return bool(fault and not fault.retry_due(_application_now()))
+
+    def _schedule_fault_retry(
+        self, section: str, key: str, fault: SchedulerFault
+    ) -> None:
+        timer_key = f"{section}:{key}"
+        self._cancel_fault_retry(section, key)
+        if fault.retry_after is None:
+            return
+
+        @callback
+        def retry(_timestamp: datetime) -> None:
+            self._fault_retry_timers.pop(timer_key, None)
+            self._async_create_task(
+                self.async_execute(
+                    EvaluateCommand(
+                        mode=EvaluationMode.DISPATCH,
+                        cause=EvaluationCause.RECOVERY,
+                        detail="scheduler-fault-retry",
+                    )
+                )
+            )
+
+        self._fault_retry_timers[timer_key] = _track_deadline(
+            self.hass, retry, fault.retry_after
+        )
+
+    def _cancel_fault_retry(self, section: str, key: str) -> None:
+        if unsubscribe := self._fault_retry_timers.pop(f"{section}:{key}", None):
+            unsubscribe()
 
     def robot_fault_view(self, robot: DiscoveredRobot) -> dict[str, Any] | None:
         fault = self.state.robot_faults.get(robot.registry_id)
@@ -283,8 +325,7 @@ class ApplicationFaultMixin:
             if section == "room_faults"
             else self.state.robot_faults
         )
-        if scope_key in faults:
-            return
+        previous = faults.get(scope_key)
         occurred_at = _application_now()
         try:
             fault_code = FaultCode(reason_code)
@@ -298,6 +339,35 @@ class ApplicationFaultMixin:
                 reason_code,
             )
             fault_code = FaultCode.UNRECOGNIZED_ADAPTER_FAILURE
+        retryable = fault_can_retry(
+            fault_code,
+            native_command_may_have_started=native_command_may_have_started,
+            outcome_uncertain=outcome_uncertain,
+        )
+        if (
+            fault_code == FaultCode.START_CONFIRMATION_FAILED
+            and previous
+            and previous.reason_code == fault_code
+            and previous.retry_attempts >= 1
+        ):
+            retryable = False
+        if previous and (
+            not previous.retry_after
+            or (
+                previous.retry_after > occurred_at
+                and previous.reason_code == fault_code
+            )
+        ):
+            return
+        attempts = (
+            previous.retry_attempts + 1
+            if previous
+            and previous.reason_code == fault_code
+            and (retryable or fault_code == FaultCode.START_CONFIRMATION_FAILED)
+            else 1
+            if retryable
+            else 0
+        )
         faults[scope_key] = SchedulerFault(
             reason_code=fault_code,
             robot_registry_id=robot.registry_id,
@@ -306,7 +376,19 @@ class ApplicationFaultMixin:
             phase=phase,
             native_command_may_have_started=native_command_may_have_started,
             outcome_uncertain=outcome_uncertain,
+            retry_attempts=attempts,
+            retry_after=(
+                occurred_at
+                + (
+                    DISPATCH_READY_CONFIRMATION_DELAY
+                    if fault_code == FaultCode.START_CONFIRMATION_FAILED
+                    else fault_retry_delay(attempts)
+                )
+                if retryable
+                else None
+            ),
         )
+        self._schedule_fault_retry(section, scope_key, faults[scope_key])
         active = self.state.active_jobs.get(robot.registry_id)
         if outcome_uncertain and active:
             active.phase = JobPhase.START_OUTCOME_UNCERTAIN
@@ -596,6 +678,7 @@ class ApplicationFaultMixin:
         """Clear one robot fault without changing a physical clean."""
 
         self.state.robot_faults.pop(robot.registry_id, None)
+        self._cancel_fault_retry("robot_faults", robot.registry_id)
         self._reset_ready_confirmation(robot.entity_id)
         await self._async_save(force=True)
         self.repairs.delete_robot_dispatch_fault(robot.registry_id)
@@ -633,6 +716,7 @@ class ApplicationFaultMixin:
                     continue
                 if preflight.ready and profile.ready:
                     self.state.room_faults.pop(area_id, None)
+                    self._cancel_fault_retry("room_faults", area_id)
                     detail = self._room_data(area_id)
                     detail.map_status = "mapped"
                     detail.map_error = None

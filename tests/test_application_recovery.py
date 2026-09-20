@@ -509,12 +509,25 @@ class ActiveJobReconciliationTests(unittest.IsolatedAsyncioTestCase):
         job.accepted_at = NOW - timedelta(minutes=10)
         app.state.active_jobs["registry-alpha"] = job
         app.hass.states.values["vacuum.alpha"] = SimpleNamespace(
-            state="docked", last_changed=NOW
+            state="docked", last_changed=NOW - timedelta(minutes=11)
         )
         await app._async_reconcile_jobs(NOW)
         self.assertEqual(
             app._async_latch_scheduler_fault.await_args.args[2],
             "start_confirmation_failed",
+        )
+
+        app = recovery_application()
+        job = tracked_job()
+        job.accepted_at = NOW - timedelta(minutes=10)
+        app.state.active_jobs["registry-alpha"] = job
+        app.hass.states.values["vacuum.alpha"] = SimpleNamespace(
+            state="docked", last_changed=NOW
+        )
+        await app._async_reconcile_jobs(NOW)
+        self.assertEqual(
+            app._async_latch_scheduler_fault.await_args.args[2],
+            "start_outcome_uncertain",
         )
 
     async def test_pending_completion_and_each_hold_outcome(self) -> None:

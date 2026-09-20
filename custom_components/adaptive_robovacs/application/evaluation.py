@@ -57,6 +57,10 @@ class ApplicationEvaluationMixin:
 
         async def _async_save(self) -> None: ...
 
+        async def _async_release_ready_room_recoveries(self, now: datetime) -> None: ...
+
+        async def _async_queue_ready_hold_rechecks(self, now: datetime) -> None: ...
+
         def _async_create_task(
             self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
         ) -> asyncio.Task[Any] | None: ...
@@ -184,10 +188,12 @@ class ApplicationEvaluationMixin:
             if room_ids is not None and room_id not in room_ids:
                 continue
             active = self.state.active_jobs.get(occurrence.robot_registry_id)
+            room_fault = self.state.room_faults.get(room_id)
+            robot_fault = self.state.robot_faults.get(occurrence.robot_registry_id)
             if (
                 room_id in self.state.room_recoveries
-                or room_id in self.state.room_faults
-                or occurrence.robot_registry_id in self.state.robot_faults
+                or (room_fault is not None and not room_fault.retry_due(now))
+                or (robot_fault is not None and not robot_fault.retry_due(now))
                 or (
                     active is not None
                     and active.occurrence_id == occurrence.occurrence_id
@@ -274,6 +280,8 @@ class ApplicationEvaluationMixin:
             self._expire_robot_cooldowns(now)
             self._observe_occupancy(now)
             await self._async_reconcile_jobs(now)
+            await self._async_release_ready_room_recoveries(now)
+            await self._async_queue_ready_hold_rechecks(now)
             await self._async_rewind_expired_mop_occurrences(now)
             self._refresh_robot_readiness(now)
             candidates: list[ScheduleCandidate] = []

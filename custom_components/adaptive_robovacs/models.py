@@ -213,6 +213,36 @@ class FaultCode(StrEnum):
     UNRECOGNIZED_ADAPTER_FAILURE = "unrecognized_adapter_failure"
 
 
+RETRYABLE_SCHEDULER_FAULTS = frozenset(
+    {
+        FaultCode.ADAPTER_PREFLIGHT_FAILED,
+        FaultCode.PROFILE_VALIDATION_FAILED,
+        FaultCode.PROFILE_APPLY_FAILED,
+        FaultCode.Q10_MAX_PLUS_PROFILE_WRITE_FAILED,
+        FaultCode.START_CONFIRMATION_FAILED,
+    }
+)
+
+
+def fault_retry_delay(attempt: int) -> timedelta:
+    """Bound repeated pre-start retries without sending commands from a timer."""
+
+    minutes = (2, 5, 15, 30)
+    return timedelta(minutes=minutes[min(max(attempt, 1), len(minutes)) - 1])
+
+
+def fault_can_retry(
+    code: FaultCode, *, native_command_may_have_started: bool, outcome_uncertain: bool
+) -> bool:
+    """Allow only pre-start failures or a confirmed no-start retry."""
+
+    return (
+        code in RETRYABLE_SCHEDULER_FAULTS
+        and not native_command_may_have_started
+        and not outcome_uncertain
+    )
+
+
 class EvaluationMode(StrEnum):
     """Whether an evaluation may dispatch physical work."""
 

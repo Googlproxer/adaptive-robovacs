@@ -21,6 +21,8 @@ from .commands import (
     RecheckNotificationTargetsCommand,
     RecheckRoomFaultCommand,
     RecheckTwoPassCompatibilityCommand,
+    ResetIncompatibleSettingsCommand,
+    ResetUnsafeStoreCommand,
     SchedulerCommand,
     SchedulerCommandResult,
 )
@@ -127,9 +129,80 @@ class ErrorRecoveryRepairFlow(RepairsFlow):
 class RoomDispatchFaultRepairFlow(RepairsFlow):
     """Recheck one blocked room configuration without dispatching work."""
 
-    def __init__(self, submit: CommandSubmitter, area_id: str) -> None:
+    def __init__(
+        self, submit: CommandSubmitter, area_id: str, *, allow_reset: bool = True
+    ) -> None:
         self._submit = submit
         self._area_id = area_id
+        self._allow_reset = allow_reset
+        self._reset_scope = "room"
+
+    def _action_schema(self) -> vol.Schema:
+        choices = {"recheck": "Recheck"}
+        if self._allow_reset:
+            choices.update(
+                {
+                    "reset_room": "Reset room cleaning settings",
+                    "reset_room_and_pending": (
+                        "Reset room settings and discard pending attempt"
+                    ),
+                    "reset_robot": "Reset robot cleaning settings",
+                    "reset_robot_and_pending": (
+                        "Reset robot settings and discard pending attempt"
+                    ),
+                }
+            )
+        return vol.Schema({vol.Optional("action", default="recheck"): vol.In(choices)})
+
+    async def async_step_reset_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
+        """Require a second deliberate action before changing saved settings."""
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if user_input.get("confirm_reset") is True:
+                result = await self._submit(
+                    ResetIncompatibleSettingsCommand(self._area_id, self._reset_scope)
+                )
+                response = result.as_response() if result else {}
+                if response.get("cleared"):
+                    return self.async_create_entry(title="", data={})
+                errors["base"] = str(response.get("reason", "reset_failed"))
+            else:
+                errors["base"] = "confirmation_required"
+        return self.async_show_form(
+            step_id="reset_confirm",
+            data_schema=vol.Schema(
+                {vol.Required("confirm_reset", default=False): bool}
+            ),
+            errors=errors,
+            description_placeholders={
+                **(_description_placeholders(self) or {}),
+                "scope": self._reset_scope.replace("_", " "),
+            },
+        )
+
+    async def _reset_selected(
+        self, user_input: dict[str, Any]
+    ) -> data_entry_flow.FlowResult | None:
+        action = user_input.get("action", "recheck")
+        if action == "recheck":
+            return None
+        if not self._allow_reset or action not in {
+            "reset_room",
+            "reset_room_and_pending",
+            "reset_robot",
+            "reset_robot_and_pending",
+        }:
+            return self.async_show_form(
+                step_id="confirm",
+                data_schema=self._action_schema(),
+                errors={"base": "invalid_reset_scope"},
+                description_placeholders=_description_placeholders(self),
+            )
+        self._reset_scope = action.removeprefix("reset_")
+        return await self.async_step_reset_confirm()
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -141,6 +214,8 @@ class RoomDispatchFaultRepairFlow(RepairsFlow):
     ) -> data_entry_flow.FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            if selected := await self._reset_selected(user_input):
+                return selected
             result = await self._submit(RecheckRoomFaultCommand(self._area_id))
             response = result.as_response() if result else {}
             if response.get("cleared"):
@@ -148,18 +223,14 @@ class RoomDispatchFaultRepairFlow(RepairsFlow):
             errors["base"] = "recheck_failed"
         return self.async_show_form(
             step_id="confirm",
-            data_schema=vol.Schema({}),
+            data_schema=self._action_schema(),
             errors=errors,
             description_placeholders=_description_placeholders(self),
         )
 
 
-class TwoPassCompatibilityRepairFlow(RepairsFlow):
+class TwoPassCompatibilityRepairFlow(RoomDispatchFaultRepairFlow):
     """Recheck whether a room again has a compatible two-pass vacuum."""
-
-    def __init__(self, submit: CommandSubmitter, area_id: str) -> None:
-        self._submit = submit
-        self._area_id = area_id
 
     async def async_step_init(
         self, user_input: dict[str, str] | None = None
@@ -173,6 +244,8 @@ class TwoPassCompatibilityRepairFlow(RepairsFlow):
     ) -> data_entry_flow.FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            if selected := await self._reset_selected(user_input):
+                return selected
             result = await self._submit(
                 RecheckTwoPassCompatibilityCommand(self._area_id)
             )
@@ -182,7 +255,7 @@ class TwoPassCompatibilityRepairFlow(RepairsFlow):
             errors["base"] = "recheck_failed"
         return self.async_show_form(
             step_id="confirm",
-            data_schema=vol.Schema({}),
+            data_schema=self._action_schema(),
             errors=errors,
             description_placeholders=_description_placeholders(self),
         )
@@ -226,6 +299,8 @@ class CleaningProgramCompatibilityRepairFlow(TwoPassCompatibilityRepairFlow):
     ) -> data_entry_flow.FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            if selected := await self._reset_selected(user_input):
+                return selected
             result = await self._submit(RecheckCleaningProgramCommand(self._area_id))
             response = result.as_response() if result else {}
             if response.get("cleared"):
@@ -233,7 +308,41 @@ class CleaningProgramCompatibilityRepairFlow(TwoPassCompatibilityRepairFlow):
             errors["base"] = "recheck_failed"
         return self.async_show_form(
             step_id="confirm",
-            data_schema=vol.Schema({}),
+            data_schema=self._action_schema(),
+            errors=errors,
+            description_placeholders=_description_placeholders(self),
+        )
+
+
+class UnsafeStoreRepairFlow(RepairsFlow):
+    """Offer a backed-up reset only after explicit user confirmation."""
+
+    def __init__(self, submit: CommandSubmitter) -> None:
+        self._submit = submit
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> data_entry_flow.FlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if user_input.get("confirm_reset") is True:
+                result = await self._submit(ResetUnsafeStoreCommand())
+                response = result.as_response() if result else {}
+                if response.get("cleared"):
+                    return self.async_create_entry(title="", data={})
+                errors["base"] = str(response.get("reason", "reset_failed"))
+            else:
+                errors["base"] = "confirmation_required"
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema(
+                {vol.Required("confirm_reset", default=False): bool}
+            ),
             errors=errors,
             description_placeholders=_description_placeholders(self),
         )
@@ -263,6 +372,9 @@ async def async_create_fix_flow(
     if runtime is None:
         raise ValueError("The Adaptive RoboVacs repair is no longer available")
     submit = runtime.application.async_execute
+
+    if issue_id == f"storage_unsafe_{entry_id}":
+        return UnsafeStoreRepairFlow(submit)
     robot_registry_id = str((data or {}).get("robot_registry_id", ""))
     if issue_id == retired_map_hold_issue_id(entry_id, robot_registry_id):
         return ErrorRecoveryRepairFlow(
@@ -286,7 +398,12 @@ async def async_create_fix_flow(
     if issue_id == robot_error_recovery_issue_id(entry_id, robot_registry_id):
         return RobotDispatchFaultRepairFlow(submit, robot_registry_id)
     if issue_id == room_dispatch_fault_issue_id(entry_id, area_id):
-        return RoomDispatchFaultRepairFlow(submit, area_id)
+        reason_code = str((data or {}).get("reason_code", ""))
+        return RoomDispatchFaultRepairFlow(
+            submit,
+            area_id,
+            allow_reset=not reason_code.startswith("area_mapping_"),
+        )
     if issue_id == cleaning_program_issue_id(entry_id, area_id):
         return CleaningProgramCompatibilityRepairFlow(submit, area_id)
     if issue_id == two_pass_issue_id(entry_id, area_id):

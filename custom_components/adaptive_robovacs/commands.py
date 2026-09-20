@@ -152,6 +152,13 @@ class RecheckAndResumeCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class AutoReleaseRobotHoldCommand:
+    """Recheck one physically recovered hold without touching dispatch faults."""
+
+    robot_registry_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class AcknowledgeRoomRecoveryCommand:
     """Allow a later retry of exactly one detached interruption episode."""
 
@@ -197,6 +204,19 @@ class RecheckCleaningProgramCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ResetUnsafeStoreCommand:
+    """User-confirmed backup and reset of one invalid scheduler Store."""
+
+
+@dataclass(frozen=True, slots=True)
+class ResetIncompatibleSettingsCommand:
+    """User-confirmed reset of a room or robot cleaning profile."""
+
+    area_id: str
+    scope: str
+
+
+@dataclass(frozen=True, slots=True)
 class RecheckNotificationTargetsCommand:
     """Recheck Companion notification delivery availability."""
 
@@ -239,12 +259,15 @@ type SchedulerCommand = (
     | ExpireWaterConfirmationCommand
     | StopAndReturnCommand
     | RecheckAndResumeCommand
+    | AutoReleaseRobotHoldCommand
     | RecheckRoomFaultCommand
     | AcknowledgeRoomRecoveryCommand
     | AcknowledgeRobotErrorCommand
     | AcknowledgeRetiredMapCommand
     | RecheckTwoPassCompatibilityCommand
     | RecheckCleaningProgramCommand
+    | ResetUnsafeStoreCommand
+    | ResetIncompatibleSettingsCommand
     | RecheckNotificationTargetsCommand
     | ClearLegacyDeferralsCommand
     | SetRoomAdjacencyCommand

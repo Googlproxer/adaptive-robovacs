@@ -32,6 +32,7 @@ from ..jobs import (
 )
 from ..models import (
     CleaningOperation,
+    FaultCode,
     JobPhase,
     elapsed_total_duration_minutes,
     managed_clean_duration_failed,
@@ -74,6 +75,10 @@ class ApplicationJobsMixin:
             state_text: str,
             now: datetime,
         ) -> bool: ...
+
+        async def _async_clear_robot_fault(
+            self, robot: DiscoveredRobot, room: DiscoveredRoom
+        ) -> None: ...
 
         def _async_create_task(
             self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
@@ -235,7 +240,14 @@ class ApplicationJobsMixin:
                             await self._async_downgrade_q10_max_plus(
                                 robot, room, active
                             )
-                        uncertain = state_text not in {"docked", "idle"}
+                        # A dock transition after acceptance could hide a short
+                        # clean. Only an unchanged dock proves no observed start.
+                        uncertain = not (
+                            state_text == "docked"
+                            and state is not None
+                            and accepted_at is not None
+                            and state.last_changed <= accepted_at
+                        )
                         await self._async_latch_scheduler_fault(
                             robot,
                             room,
@@ -340,6 +352,17 @@ class ApplicationJobsMixin:
 
             if state_text == "cleaning":
                 self._resume_held_job(robot_id, active, state, now)
+                if (
+                    fault
+                    and fault.reason_code == FaultCode.START_CONFIRMATION_FAILED
+                    and fault.retry_after is not None
+                    and active.accepted_at
+                    and active.accepted_at > fault.occurred_at
+                    and fault.room_area_id == active.room_id
+                    and robot
+                    and fault_room
+                ):
+                    await self._async_clear_robot_fault(robot, fault_room)
                 changed = True
                 continue
             if active.seen_cleaning and state_text == "returning":

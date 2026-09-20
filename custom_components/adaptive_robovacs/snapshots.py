@@ -91,6 +91,8 @@ class FaultView:
     failure_phase: str
     robot_name: str | None
     room_name: str | None
+    retry_attempts: int = 0
+    retry_after: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -20,7 +20,7 @@
         "step": {
           "confirm": {
             "title": "Recheck held vacuum",
-            "description": "Adaptive RoboVacs held {robot} after a cleaning request for {room} failed. {reason}\n\nOnly this vacuum is held; other compatible vacuums and rooms remain schedulable. When {robot} is docked, submitting this Repair clears this vacuum's fault without sending a cleaning command. If it is already cleaning and the integration cannot confirm which room it is cleaning, that clean is treated as native-app activity and is not credited to the scheduled room."
+            "description": "Adaptive RoboVacs held {robot} after a cleaning request for {room} failed. {reason}\n\nSafe preparation failures retry after 2, 5, 15, then at most 30 minutes. A start that remained docked and never reported cleaning gets one retry after a stable ready dock. Uncertain physical starts still need review. This Repair rechecks fresh state without sending a cleaning command."
           }
         },
         "error": {
@@ -37,11 +37,31 @@
         "step": {
           "confirm": {
             "title": "Recheck blocked room",
-            "description": "Adaptive RoboVacs blocked {room} because its saved room mapping or cleaning profile could not be used. {reason}\n\nThis affects only {room}; vacuums remain available for other compatible rooms. Submitting this Repair refreshes discovery and validates the room without starting a clean."
+            "description": "Adaptive RoboVacs blocked {room} because its saved room mapping or cleaning profile could not be used. {reason}\n\nThis affects only {room}; vacuums remain available for other compatible rooms. Submitting this Repair refreshes discovery and validates the room without starting a clean.\n\nChoose Recheck, or select a reset option. A reset is validated before it is saved and never starts a clean.",
+            "data": {
+              "action": "Action"
+            }
+          },
+          "reset_confirm": {
+            "title": "Confirm cleaning settings reset",
+            "description": "Reset scope: {scope}. Room reset restores the default cleaning program, passes, and profile controls while retaining cadence and scheduling preferences. Robot reset restores its default cleaning program and profile controls and may affect other rooms. An option ending in pending also discards the saved incomplete cleaning attempt without crediting it. No clean is started.",
+            "data": {
+              "confirm_reset": "Confirm reset"
+            }
           }
         },
         "error": {
-          "recheck_failed": "No compatible vacuum can currently validate this room's mapping and cleaning profile. Restore the mapping or update the room settings, then try again."
+          "recheck_failed": "No compatible vacuum can currently validate this room's mapping and cleaning profile. Restore the mapping or update the room settings, then try again.",
+          "confirmation_required": "Tick the confirmation box to continue.",
+          "reset_failed": "The reset did not complete. The Repair remains open.",
+          "reset_unavailable": "The reset is unavailable while the integration is closing or storage is unsafe.",
+          "pending_attempt_requires_discard": "A saved cleaning attempt exists. Choose the option that explicitly discards the pending attempt, or recheck after resolving it.",
+          "active_job": "A clean is still tracked. Wait for it to finish or return to the dock.",
+          "room_unavailable": "The room is not currently available in Home Assistant.",
+          "robot_ambiguous": "More than one vacuum could serve this room. Choose a room reset or change the intended vacuum settings directly.",
+          "defaults_incompatible": "The defaults still cannot be executed by a vacuum on this floor. No settings were changed.",
+          "mapping_requires_review": "The room mapping needs manual review; a settings reset cannot clear it.",
+          "invalid_reset_scope": "Choose one of the listed actions."
         }
       }
     },
@@ -68,11 +88,31 @@
         "step": {
           "confirm": {
             "title": "Recheck two-pass compatibility",
-            "description": "{room} is configured for two passes, but no compatible vacuum currently serves its floor. This refreshes vacuum discovery and verifies compatibility without sending a cleaning command. Restore a compatible vacuum or change the room's Cleaning passes control to Robot default or 1 pass."
+            "description": "{room} is configured for two passes, but no compatible vacuum currently serves its floor. This refreshes vacuum discovery and verifies compatibility without sending a cleaning command. Restore a compatible vacuum or change the room's Cleaning passes control to Robot default or 1 pass.\n\nChoose Recheck, or select a reset option. A reset is validated before it is saved and never starts a clean.",
+            "data": {
+              "action": "Action"
+            }
+          },
+          "reset_confirm": {
+            "title": "Confirm cleaning settings reset",
+            "description": "Reset scope: {scope}. Room reset restores the default cleaning program, passes, and profile controls while retaining cadence and scheduling preferences. Robot reset restores its default cleaning program and profile controls and may affect other rooms. An option ending in pending also discards the saved incomplete cleaning attempt without crediting it. No clean is started.",
+            "data": {
+              "confirm_reset": "Confirm reset"
+            }
           }
         },
         "error": {
-          "recheck_failed": "No compatible two-pass vacuum currently serves this room. Restore compatibility or change the room's Cleaning passes control."
+          "recheck_failed": "No compatible two-pass vacuum currently serves this room. Restore compatibility or change the room's Cleaning passes control.",
+          "confirmation_required": "Tick the confirmation box to continue.",
+          "reset_failed": "The reset did not complete. The Repair remains open.",
+          "reset_unavailable": "The reset is unavailable while the integration is closing or storage is unsafe.",
+          "pending_attempt_requires_discard": "A saved cleaning attempt exists. Choose the option that explicitly discards the pending attempt, or recheck after resolving it.",
+          "active_job": "A clean is still tracked. Wait for it to finish or return to the dock.",
+          "room_unavailable": "The room is not currently available in Home Assistant.",
+          "robot_ambiguous": "More than one vacuum could serve this room. Choose a room reset or change the intended vacuum settings directly.",
+          "defaults_incompatible": "The defaults still cannot be executed by a vacuum on this floor. No settings were changed.",
+          "mapping_requires_review": "The room mapping needs manual review; a settings reset cannot clear it.",
+          "invalid_reset_scope": "Choose one of the listed actions."
         }
       }
     },
@@ -96,17 +136,54 @@
         "step": {
           "confirm": {
             "title": "Recheck room cleaning profile",
-            "description": "{room} is configured with a cleaning program, pass count, fan speed, mode, mop mode, or mop intensity that no vacuum on its floor can currently execute. Restore a compatible vacuum or update the room/robot controls, then submit to recheck without starting a clean."
+            "description": "{room} is configured with a cleaning program, pass count, fan speed, mode, mop mode, or mop intensity that no vacuum on its floor can currently execute. Restore a compatible vacuum or update the room/robot controls, then submit to recheck without starting a clean.\n\nChoose Recheck, or select a reset option. A reset is validated before it is saved and never starts a clean.",
+            "data": {
+              "action": "Action"
+            }
+          },
+          "reset_confirm": {
+            "title": "Confirm cleaning settings reset",
+            "description": "Reset scope: {scope}. Room reset restores the default cleaning program, passes, and profile controls while retaining cadence and scheduling preferences. Robot reset restores its default cleaning program and profile controls and may affect other rooms. An option ending in pending also discards the saved incomplete cleaning attempt without crediting it. No clean is started.",
+            "data": {
+              "confirm_reset": "Confirm reset"
+            }
           }
         },
         "error": {
-          "recheck_failed": "No compatible vacuum can currently execute this room's complete cleaning profile."
+          "recheck_failed": "No compatible vacuum can currently execute this room's complete cleaning profile.",
+          "confirmation_required": "Tick the confirmation box to continue.",
+          "reset_failed": "The reset did not complete. The Repair remains open.",
+          "reset_unavailable": "The reset is unavailable while the integration is closing or storage is unsafe.",
+          "pending_attempt_requires_discard": "A saved cleaning attempt exists. Choose the option that explicitly discards the pending attempt, or recheck after resolving it.",
+          "active_job": "A clean is still tracked. Wait for it to finish or return to the dock.",
+          "room_unavailable": "The room is not currently available in Home Assistant.",
+          "robot_ambiguous": "More than one vacuum could serve this room. Choose a room reset or change the intended vacuum settings directly.",
+          "defaults_incompatible": "The defaults still cannot be executed by a vacuum on this floor. No settings were changed.",
+          "mapping_requires_review": "The room mapping needs manual review; a settings reset cannot clear it.",
+          "invalid_reset_scope": "Choose one of the listed actions."
         }
       }
     },
     "storage_unsafe": {
       "title": "Adaptive RoboVacs storage needs attention",
-      "description": "Adaptive RoboVacs could not safely validate its saved scheduler state ({reason}). Dispatch is disabled and the original Store has not been overwritten. Back up the Store, repair or remove only this integration's damaged data, then reload the integration."
+      "description": "Adaptive RoboVacs could not validate its saved scheduler state ({reason}). Dispatch is disabled and the original Store remains untouched. Open this Repair to back up and reset only this integration data, or repair the saved data manually.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Back up and reset scheduler data",
+            "description": "This discards this integration’s saved jobs, holds, cleaning history, learned durations, floor plan and settings. The exact unsafe payload is copied to a separate Home Assistant Store and verified before replacement. The new scheduler starts in observe-only mode; enabling dispatch later is a separate action. No clean is started.",
+            "data": {
+              "confirm_reset": "I understand and want to reset scheduler data"
+            }
+          }
+        },
+        "error": {
+          "confirmation_required": "Tick the confirmation box to continue.",
+          "reset_unavailable": "Storage is no longer unsafe, or the integration is closing. Refresh the Repair.",
+          "backup_or_reset_failed": "The original Store could not be backed up and verified, or the reset failed. Dispatch remains disabled.",
+          "reset_failed": "The reset did not complete. Dispatch remains disabled."
+        }
+      }
     },
     "unresolved_robot_reference": {
       "title": "Adaptive RoboVacs cannot identify a saved vacuum",
@@ -118,7 +195,7 @@
         "step": {
           "confirm": {
             "title": "Allow the unfinished room stage to retry",
-            "description": "The {operation} stage in {room} was interrupted on {robot}. {reason}\n\nCheck the room and resolve the obstruction or error. Once the vacuum has safely docked, it can clean other eligible rooms while this Repair remains open.\n\nSubmitting this Repair allows the unfinished stage to retry through normal scheduling. Previously completed stages stay completed. Confirmation sends no cleaning command and does not override occupancy, cleaning windows, battery, or water checks."
+            "description": "The {operation} stage in {room} was interrupted on {robot}. {reason}\n\nResolve the physical error and return the vacuum to a ready dock. The unfinished stage is released automatically after three uninterrupted minutes of ready docking; it is never marked complete. You can also submit this Repair after the interruption has been safely detached. Normal occupancy, cleaning windows, battery, and water checks still apply."
           }
         },
         "error": {
@@ -135,7 +212,7 @@
         "step": {
           "confirm": {
             "title": "Recheck and release this scheduler hold",
-            "description": "{reason} {state}\n\nResolve any physical error, then either let {robot} resume cleaning or return it to a stable, ready dock. Submitting this Repair rechecks fresh Home Assistant state and releases only this hold when safe. A docked interrupted attempt is reset without marking a room cleaned; normal scheduling may create a fresh clean later. No cleaning command is sent and normal occupancy, window, battery, Party Mode, and observe-only checks remain in force."
+            "description": "{reason} {state}\n\nResolve any physical error, then let {robot} return to a ready dock. This hold clears automatically after three uninterrupted minutes when the saved attempt can be safely identified or abandoned. You can also submit this Repair for a fresh recheck. No cleaning command is sent and normal occupancy, window, battery, Party Mode, and observe-only checks remain in force."
           }
         },
         "error": {

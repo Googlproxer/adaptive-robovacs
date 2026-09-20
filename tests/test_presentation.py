@@ -197,6 +197,8 @@ class PresentationTests(unittest.TestCase):
                 "failure_summary": "The start could not be confirmed.",
                 "failure_since": WHEN.isoformat(),
                 "failure_phase": "dispatch",
+                "retry_attempts": 0,
+                "retry_after": None,
                 "repair_active": True,
                 "robot": "Alpha",
                 "room": "Study",

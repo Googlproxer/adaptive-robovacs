@@ -81,6 +81,8 @@ def fault_attributes(fault: FaultView | None) -> dict[str, object] | None:
         "failure_summary": fault.failure_summary,
         "failure_since": fault.failure_since.isoformat(),
         "failure_phase": fault.failure_phase,
+        "retry_attempts": fault.retry_attempts,
+        "retry_after": fault.retry_after.isoformat() if fault.retry_after else None,
         "repair_active": True,
         "robot": fault.robot_name,
         "room": fault.room_name,

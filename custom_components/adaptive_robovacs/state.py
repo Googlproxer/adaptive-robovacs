@@ -1290,6 +1290,11 @@ class SchedulerFault:
     phase: str
     native_command_may_have_started: bool = False
     outcome_uncertain: bool = False
+    retry_attempts: int = 0
+    retry_after: datetime | None = None
+
+    def retry_due(self, now: datetime) -> bool:
+        return self.retry_after is not None and now >= self.retry_after
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> SchedulerFault | None:
@@ -1298,12 +1303,20 @@ class SchedulerFault:
         room_area_id = _string(value.get("room_area_id"))
         occurred_at = _timestamp(value.get("occurred_at"))
         phase = _string(value.get("phase"))
+        attempts = value.get("retry_attempts", 0)
+        raw_retry_after = value.get("retry_after")
+        retry_after = _timestamp(raw_retry_after)
         if (
             not reason_code
             or not robot_registry_id
             or not room_area_id
             or occurred_at is None
             or not phase
+            or isinstance(attempts, bool)
+            or not isinstance(attempts, int)
+            or attempts < 0
+            or (raw_retry_after is not None and retry_after is None)
+            or (retry_after is not None and attempts == 0)
         ):
             return None
         try:
@@ -1317,6 +1330,8 @@ class SchedulerFault:
                     value.get("native_command_may_have_started", False)
                 ),
                 outcome_uncertain=bool(value.get("outcome_uncertain", False)),
+                retry_attempts=attempts,
+                retry_after=retry_after,
             )
         except ValueError:
             return None
@@ -1330,6 +1345,8 @@ class SchedulerFault:
             "phase": self.phase,
             "native_command_may_have_started": self.native_command_may_have_started,
             "outcome_uncertain": self.outcome_uncertain,
+            "retry_attempts": self.retry_attempts,
+            "retry_after": _iso(self.retry_after),
         }
 
 

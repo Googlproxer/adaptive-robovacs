@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -11,11 +12,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from ..discovery import DiscoveredRobot, DiscoveredRoom, DiscoverySnapshot
+from ..dispatch import DispatchPipeline
 from ..floor_plans import FloorPlanWrite, replace_floor_plan, replace_room_adjacency
 from ..models import (
     ROOM_PROFILE_OVERRIDE_KEYS,
     AdjacencyMode,
     CleaningProgram,
+    FaultCode,
     JobPhase,
     ResolvedDailyWindow,
     is_native_mop_profile_value,
@@ -32,14 +35,17 @@ from ..planner import ScheduleCandidate
 from ..presentation import floor_plan_attributes
 from ..projections import ProjectionSource
 from ..projections import floor_plan_view as build_floor_plan_view
+from ..repair_service import RepairService
 from ..state import (
     ActiveJob,
     FloorPlanState,
+    RecoveryAuditRecord,
     RobotSettings,
     RoomHistory,
     RoomSettings,
     SchedulerState,
 )
+from ..storage import SchedulerStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +72,10 @@ class ApplicationSettingsMixin:
     _startup_state_settle_until: datetime | None
     _identity_migrated: bool
     _lock: asyncio.Lock
+    storage: SchedulerStore
+    repairs: RepairService
+    dispatch: DispatchPipeline
+    _last_durable_fingerprint: str | None
 
     if TYPE_CHECKING:
 
@@ -86,6 +96,189 @@ class ApplicationSettingsMixin:
         def _sync_cleaning_program_issues(self) -> None: ...
 
         def _cancel_start_confirmation(self, robot_id: str) -> None: ...
+
+        async def _async_commit_state(
+            self, state: SchedulerState, *, force: bool = True
+        ) -> None: ...
+
+        def _durable_fingerprint(self, state: SchedulerState | None = None) -> str: ...
+
+        def _sync_dispatch_fault_issues(self) -> None: ...
+
+        def _sync_two_pass_issues(self) -> None: ...
+
+        def _recheck_candidate(self, room: DiscoveredRoom, now: datetime) -> Any: ...
+
+        def _candidate_for_robot(
+            self, candidate: Any, robot: DiscoveredRobot
+        ) -> Any: ...
+
+    async def async_reset_unsafe_store(self) -> dict[str, object]:
+        """Reset only after the user confirms the unsafe Store Repair."""
+
+        async with self._lock:
+            if self._closing or not self._storage_safe_mode:
+                return {"cleared": False, "reason": "reset_unavailable"}
+            try:
+                restored, backup_key = await self.storage.async_reset_unsafe_state(
+                    self.entry.data
+                )
+            except (OSError, ValueError) as err:
+                _LOGGER.error("Adaptive RoboVacs Store reset failed: %s", err)
+                return {"cleared": False, "reason": "backup_or_reset_failed"}
+            self.state = restored
+            self._storage_safe_mode = False
+            self._last_durable_fingerprint = self._durable_fingerprint()
+            self.repairs.set_storage_unsafe(False)
+            await self.async_refresh_discovery(notify=False)
+            self._notify_listeners()
+            return {
+                "cleared": True,
+                "reason": "reset_to_observe_only",
+                "backup_key": backup_key,
+                "dispatch_started": False,
+            }
+
+    async def async_reset_incompatible_settings(
+        self, area_id: str, scope: str
+    ) -> dict[str, object]:
+        """Validate a narrowly scoped profile reset before persisting it."""
+
+        async with self._lock:
+            if self._closing or self._storage_safe_mode:
+                return {"cleared": False, "reason": "reset_unavailable"}
+            await self.async_refresh_discovery(notify=False)
+            room = self.discovery.rooms.get(area_id)
+            if room is None:
+                return {"cleared": False, "reason": "room_unavailable"}
+            fault = self.state.room_faults.get(area_id)
+            if fault and fault.reason_code in {
+                FaultCode.AREA_MAPPING_MISSING,
+                FaultCode.AREA_MAPPING_STALE,
+                FaultCode.AREA_MAPPING_AMBIGUOUS,
+                FaultCode.AREA_MAPPING_RECHECK_REQUIRED,
+            }:
+                return {"cleared": False, "reason": "mapping_requires_review"}
+            occurrence = self.state.occurrences.get(area_id)
+            if occurrence and any(
+                active and active.occurrence_id == occurrence.occurrence_id
+                for active in self.state.active_jobs.values()
+            ):
+                return {"cleared": False, "reason": "active_job"}
+            proposed = replace(self.state)
+            proposed.room_settings = dict(self.state.room_settings)
+            proposed.robot_settings = dict(self.state.robot_settings)
+            proposed.occurrences = dict(self.state.occurrences)
+            proposed.room_faults = dict(self.state.room_faults)
+            if scope in {"room", "room_and_pending"}:
+                if occurrence and scope == "room":
+                    return {
+                        "cleared": False,
+                        "reason": "pending_attempt_requires_discard",
+                    }
+                settings = replace(
+                    self.state.room_settings.get(
+                        area_id, RoomSettings.defaults(room.is_bedroom)
+                    )
+                )
+                for key, value in room_cleaning_profile_update("Robot default").items():
+                    setattr(settings, key, value)
+                settings.cleaning_program = None
+                settings.mop_pass_count = None
+                proposed.room_settings[area_id] = settings
+                if scope == "room_and_pending":
+                    proposed.occurrences.pop(area_id, None)
+            elif scope in {"robot", "robot_and_pending"}:
+                robots = [
+                    robot
+                    for robot in self.discovery.robots.values()
+                    if robot.floor_id == room.floor_id and robot.supports_area_clean
+                ]
+                if occurrence:
+                    robots = [
+                        robot
+                        for robot in robots
+                        if robot.registry_id == occurrence.robot_registry_id
+                    ]
+                elif fault:
+                    robots = [
+                        robot
+                        for robot in robots
+                        if robot.registry_id == fault.robot_registry_id
+                    ]
+                if len(robots) != 1:
+                    return {"cleared": False, "reason": "robot_ambiguous"}
+                robot = robots[0]
+                defaults = RobotSettings.defaults(
+                    "mop" in robot.adapter_capabilities.supported_operations
+                )
+                current = self.state.robot_settings.get(robot.registry_id, defaults)
+                proposed.robot_settings[robot.registry_id] = replace(
+                    defaults,
+                    enabled=current.enabled,
+                    minimum_battery=current.minimum_battery,
+                )
+                if occurrence and scope == "robot":
+                    return {
+                        "cleared": False,
+                        "reason": "pending_attempt_requires_discard",
+                    }
+                if scope == "robot_and_pending":
+                    proposed.occurrences.pop(area_id, None)
+            else:
+                return {"cleared": False, "reason": "invalid_reset_scope"}
+
+            if occurrence and scope.endswith("and_pending"):
+                proposed.audit = replace(
+                    self.state.audit,
+                    recovery_events=[
+                        *self.state.audit.recovery_events,
+                        RecoveryAuditRecord(
+                            occurrence.robot_registry_id,
+                            (area_id,),
+                            _now(),
+                            "settings_reset_pending_discarded",
+                        ),
+                    ][-20:],
+                )
+
+            # Build requests against the proposal, but restore the published
+            # state before any adapter I/O awaits.
+            original = self.state
+            self.state = proposed
+            try:
+                base = self._recheck_candidate(room, _now())
+                candidates = [
+                    (robot, candidate)
+                    for robot in self.discovery.robots.values()
+                    if robot.floor_id == room.floor_id
+                    if fault is None or robot.registry_id == fault.robot_registry_id
+                    if (candidate := self._candidate_for_robot(base, robot)) is not None
+                ]
+            finally:
+                self.state = original
+            compatible = False
+            for robot, candidate in candidates:
+                try:
+                    preflight = await self.dispatch.async_preflight(robot, candidate)
+                    profile = await self.dispatch.async_validate_profile(
+                        robot, candidate
+                    )
+                except Exception:
+                    continue
+                if preflight.ready and profile.ready:
+                    compatible = True
+                    break
+            if not compatible:
+                return {"cleared": False, "reason": "defaults_incompatible"}
+            if fault is not None:
+                proposed.room_faults.pop(area_id, None)
+            await self._async_commit_state(proposed)
+            self._sync_dispatch_fault_issues()
+            self._sync_two_pass_issues()
+            self._sync_cleaning_program_issues()
+            self._notify_listeners()
+            return {"cleared": True, "dispatch_started": False}
 
     def _room_data(self, area_id: str) -> RoomHistory:
         return self.state.room_history.setdefault(area_id, RoomHistory())

@@ -58,6 +58,11 @@ def should_assume_native_app_clean(
         and active
         and active.source in {"scheduler", "manual_dashboard"}
         and not active.seen_cleaning
+        and not (
+            scheduler_fault.retry_after is not None
+            and active.accepted_at is not None
+            and active.accepted_at > scheduler_fault.occurred_at
+        )
     )
 
 

@@ -18,6 +18,8 @@ from custom_components.adaptive_robovacs.commands import (
     RecheckNotificationTargetsCommand,
     RecheckRoomFaultCommand,
     RecheckTwoPassCompatibilityCommand,
+    ResetIncompatibleSettingsCommand,
+    ResetUnsafeStoreCommand,
 )
 from custom_components.adaptive_robovacs.repairs import (
     CleaningProgramCompatibilityRepairFlow,
@@ -26,6 +28,7 @@ from custom_components.adaptive_robovacs.repairs import (
     RobotDispatchFaultRepairFlow,
     RoomDispatchFaultRepairFlow,
     TwoPassCompatibilityRepairFlow,
+    UnsafeStoreRepairFlow,
     async_create_fix_flow,
 )
 from custom_components.adaptive_robovacs.repairs_manager import (
@@ -44,6 +47,42 @@ from custom_components.adaptive_robovacs.runtime_data import (
 
 
 class RepairFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_settings_reset_requires_a_second_confirmation(self) -> None:
+        submit = AsyncMock(return_value=CommandResult.from_mapping({"cleared": True}))
+        flow = RoomDispatchFaultRepairFlow(submit, "study")
+        with patch(
+            "custom_components.adaptive_robovacs.repairs._description_placeholders",
+            return_value={"room": "Study"},
+        ):
+            opened = await flow.async_step_confirm({"action": "reset_room_and_pending"})
+            self.assertEqual(opened["step_id"], "reset_confirm")
+            submit.assert_not_awaited()
+            self.assertEqual(
+                (await flow.async_step_reset_confirm({"confirm_reset": False}))[
+                    "errors"
+                ]["base"],
+                "confirmation_required",
+            )
+            completed = await flow.async_step_reset_confirm({"confirm_reset": True})
+        self.assertEqual(completed["type"].value, "create_entry")
+        submit.assert_awaited_once_with(
+            ResetIncompatibleSettingsCommand("study", "room_and_pending")
+        )
+
+    async def test_unsafe_store_reset_requires_explicit_confirmation(self) -> None:
+        submit = AsyncMock(return_value=CommandResult.from_mapping({"cleared": True}))
+        flow = UnsafeStoreRepairFlow(submit)
+        with patch(
+            "custom_components.adaptive_robovacs.repairs._description_placeholders",
+            return_value={},
+        ):
+            opened = await flow.async_step_init({"confirm_reset": True})
+            self.assertEqual(opened["type"].value, "form")
+            submit.assert_not_awaited()
+            completed = await flow.async_step_confirm({"confirm_reset": True})
+        self.assertEqual(completed["type"].value, "create_entry")
+        submit.assert_awaited_once_with(ResetUnsafeStoreCommand())
+
     async def test_error_recovery_requires_confirmation_and_keeps_failed_issue_open(
         self,
     ):
@@ -185,6 +224,11 @@ class RepairFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         cases = (
             (
+                "storage_unsafe_entry-1",
+                {"entry_id": "entry-1"},
+                UnsafeStoreRepairFlow,
+            ),
+            (
                 retired_map_hold_issue_id("entry-1", "registry-alpha"),
                 {
                     "entry_id": "entry-1",
@@ -237,6 +281,20 @@ class RepairFlowTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(issue=issue_id):
                 flow = await async_create_fix_flow(hass, issue_id, data)
                 self.assertIsInstance(flow, expected_type)
+
+        mapping_flow = await async_create_fix_flow(
+            hass,
+            room_dispatch_fault_issue_id("entry-1", "study"),
+            {
+                "entry_id": "entry-1",
+                "area_id": "study",
+                "reason_code": "area_mapping_stale",
+            },
+        )
+        self.assertEqual(
+            next(iter(mapping_flow._action_schema().schema.values())).container,
+            {"recheck": "Recheck"},
+        )
 
         with self.assertRaisesRegex(ValueError, "no longer available"):
             await async_create_fix_flow(hass, "unknown", {"entry_id": "entry-1"})

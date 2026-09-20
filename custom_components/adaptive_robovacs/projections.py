@@ -345,6 +345,8 @@ def _fault_view(source: ProjectionSource, fault: SchedulerFault) -> FaultView:
         failure_phase=fault.phase,
         robot_name=robot.name if robot else None,
         room_name=room.name if room else None,
+        retry_attempts=fault.retry_attempts,
+        retry_after=fault.retry_after,
     )
 
 

@@ -62,7 +62,7 @@ class RepairService:
             self._hass,
             DOMAIN,
             self.storage_issue_id,
-            is_fixable=False,
+            is_fixable=True,
             is_persistent=True,
             severity=ir.IssueSeverity.ERROR,
             translation_key="storage_unsafe",
@@ -170,7 +170,11 @@ class RepairService:
                     "room": room.name if room else "the selected room",
                     "reason": fault_summary(fault.reason_code),
                 },
-                data={"entry_id": self._entry_id, "area_id": area_id},
+                data={
+                    "entry_id": self._entry_id,
+                    "area_id": area_id,
+                    "reason_code": str(fault.reason_code),
+                },
             )
 
     def sync_room_recoveries(

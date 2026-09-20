@@ -20,6 +20,47 @@ sys.modules[SPEC.name] = models
 SPEC.loader.exec_module(models)
 
 
+class FaultRetryPolicyTests(unittest.TestCase):
+    def test_only_prestart_preparation_faults_receive_bounded_retry(self) -> None:
+        self.assertEqual(
+            [models.fault_retry_delay(value) for value in (1, 2, 3, 4, 9)],
+            [
+                timedelta(minutes=2),
+                timedelta(minutes=5),
+                timedelta(minutes=15),
+                timedelta(minutes=30),
+                timedelta(minutes=30),
+            ],
+        )
+        self.assertTrue(
+            models.fault_can_retry(
+                models.FaultCode.PROFILE_APPLY_FAILED,
+                native_command_may_have_started=False,
+                outcome_uncertain=False,
+            )
+        )
+        for code in (
+            models.FaultCode.AREA_MAPPING_STALE,
+            models.FaultCode.PROFILE_OPTION_UNSUPPORTED,
+            models.FaultCode.NATIVE_DISPATCH_FAILED,
+            models.FaultCode.START_OUTCOME_UNCERTAIN,
+        ):
+            self.assertFalse(
+                models.fault_can_retry(
+                    code,
+                    native_command_may_have_started=False,
+                    outcome_uncertain=False,
+                )
+            )
+        self.assertFalse(
+            models.fault_can_retry(
+                models.FaultCode.PROFILE_APPLY_FAILED,
+                native_command_may_have_started=True,
+                outcome_uncertain=True,
+            )
+        )
+
+
 class AdjacencyPolicyTests(unittest.TestCase):
     def decision(self, *, area="hall", mode="night_only", now=None, occupancy=None):
         return models.resolve_adjacency(

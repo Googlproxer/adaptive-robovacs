@@ -23,6 +23,7 @@ from ..commands import (
     AcknowledgeRetiredMapCommand,
     AcknowledgeRobotErrorCommand,
     AcknowledgeRoomRecoveryCommand,
+    AutoReleaseRobotHoldCommand,
     ClearLegacyDeferralsCommand,
     CommandResult,
     EvaluateCommand,
@@ -36,6 +37,8 @@ from ..commands import (
     RecheckTwoPassCompatibilityCommand,
     RecordManualCleanCommand,
     RefreshDiscoveryCommand,
+    ResetIncompatibleSettingsCommand,
+    ResetUnsafeStoreCommand,
     SaveFloorPlanCommand,
     SchedulerCommand,
     SchedulerCommandResult,
@@ -65,8 +68,11 @@ from ..metrics import RuntimeMetrics
 from ..models import (
     EvaluationCause,
     EvaluationMode,
+    FaultCode,
     effective_cleaning_program,
     expand_cleaning_program,
+    fault_can_retry,
+    fault_retry_delay,
 )
 from ..notifications import NotificationService
 from ..observations import HomeAssistantObserver
@@ -177,6 +183,8 @@ class SchedulerApplication(
         self._ready_since: dict[str, datetime] = {}
         self._room_recovery_since: dict[str, datetime] = {}
         self._room_recovery_timers: dict[str, Callable[[], None]] = {}
+        self._auto_hold_rechecks: set[str] = set()
+        self._fault_retry_timers: dict[str, Callable[[], None]] = {}
         self._water_confirmation_timers: dict[str, Callable[[], None]] = {}
         self._startup_state_settle_until: datetime | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -246,6 +254,25 @@ class SchedulerApplication(
             self.repairs.set_storage_unsafe(True, str(loaded.error))
         else:
             self.repairs.set_storage_unsafe(False)
+            for faults in (self.state.robot_faults, self.state.room_faults):
+                for key, fault in tuple(faults.items()):
+                    if (
+                        fault.reason_code != FaultCode.START_CONFIRMATION_FAILED
+                        and fault.retry_after is None
+                        and fault_can_retry(
+                            fault.reason_code,
+                            native_command_may_have_started=(
+                                fault.native_command_may_have_started
+                            ),
+                            outcome_uncertain=fault.outcome_uncertain,
+                        )
+                    ):
+                        faults[key] = replace(
+                            fault,
+                            retry_attempts=1,
+                            retry_after=_now() + fault_retry_delay(1),
+                        )
+                        migrated = True
         await self.async_refresh_discovery()
         baseline_initialized = False
         if self.state.first_scheduler_online_at is None:
@@ -255,6 +282,10 @@ class SchedulerApplication(
             await self._async_save(force=True)
         if self.state.robot_faults or self.state.room_faults:
             self._sync_dispatch_fault_issues()
+            for key, fault in self.state.robot_faults.items():
+                self._schedule_fault_retry("robot_faults", key, fault)
+            for key, fault in self.state.room_faults.items():
+                self._schedule_fault_retry("room_faults", key, fault)
         await self._async_recover_active_jobs()
         self._sync_robot_hold_issues()
         self._sync_room_recovery_issues()
@@ -283,6 +314,8 @@ class SchedulerApplication(
             self._ready_confirmation_timers.popitem()[1]()
         while self._room_recovery_timers:
             self._room_recovery_timers.popitem()[1]()
+        while self._fault_retry_timers:
+            self._fault_retry_timers.popitem()[1]()
         while self._water_confirmation_timers:
             self._water_confirmation_timers.popitem()[1]()
         current = asyncio.current_task()
@@ -436,6 +469,11 @@ class SchedulerApplication(
                         "remaining": list(halt_result.remaining),
                     }
                 )
+            case AutoReleaseRobotHoldCommand(robot_registry_id=registry_id):
+                result = await self._async_recheck_robot_hold(registry_id)
+                return CommandResult.from_mapping(
+                    {"cleared": result.cleared, "reason": result.reason}
+                )
             case RecheckRoomFaultCommand(area_id=area_id):
                 return CommandResult.from_mapping(
                     {"cleared": await self.async_recheck_room_fault(area_id)}
@@ -471,6 +509,12 @@ class SchedulerApplication(
                             )
                         )
                     }
+                )
+            case ResetUnsafeStoreCommand():
+                return CommandResult.from_mapping(await self.async_reset_unsafe_store())
+            case ResetIncompatibleSettingsCommand(area_id=area_id, scope=scope):
+                return CommandResult.from_mapping(
+                    await self.async_reset_incompatible_settings(area_id, scope)
                 )
             case RecheckNotificationTargetsCommand():
                 available = self.has_notification_targets()

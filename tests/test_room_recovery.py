@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from copy import deepcopy
 from dataclasses import replace
@@ -15,6 +16,7 @@ from custom_components.adaptive_robovacs.application.room_recovery import (
 from custom_components.adaptive_robovacs.commands import (
     AcknowledgeRobotErrorCommand,
     AcknowledgeRoomRecoveryCommand,
+    CommandResult,
     StateChangedCommand,
 )
 from custom_components.adaptive_robovacs.models import (
@@ -151,6 +153,105 @@ async def detach(app):
 
 
 class RoomRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_robot_error_hold_queues_safe_abandonment(self):
+        app = recovery_application()
+        app.state.occurrences["study"].occurrence_id = "unmatched"
+        app.state.robot_holds["registry-alpha"] = RobotHold(
+            "robot_error", "held", held_at=NOW
+        )
+        set_observation(app, "docked")
+        app.async_execute = AsyncMock(
+            return_value=CommandResult.from_mapping({"cleared": True})
+        )
+        app._async_create_task = lambda coro: asyncio.create_task(coro)
+        with patch(
+            "custom_components.adaptive_robovacs.application.core._track_point",
+            return_value=Mock(),
+        ):
+            await app._async_queue_ready_hold_rechecks(NOW + timedelta(seconds=1))
+            app.async_execute.assert_not_awaited()
+            await app._async_queue_ready_hold_rechecks(
+                NOW + timedelta(minutes=3, seconds=1)
+            )
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        first = app.async_execute.await_args_list[0].args[0]
+        self.assertEqual(
+            first, AcknowledgeRobotErrorCommand("registry-alpha", NOW.isoformat())
+        )
+        app.gateway.async_start.assert_not_awaited()
+
+    async def test_ready_status_change_restarts_recovery_dwell(self):
+        app = recovery_application()
+        await detach(app)
+        with patch(
+            "custom_components.adaptive_robovacs.application.core._track_point",
+            return_value=Mock(),
+        ):
+            await app._async_release_ready_room_recoveries(NOW + timedelta(seconds=12))
+            app.hass.states.values["sensor.alpha_status"].last_changed = (
+                NOW + timedelta(minutes=1)
+            )
+            await app._async_release_ready_room_recoveries(
+                NOW + timedelta(minutes=3, seconds=12)
+            )
+            self.assertIn("study", app.state.room_recoveries)
+            await app._async_release_ready_room_recoveries(
+                NOW + timedelta(minutes=6, seconds=12)
+            )
+        self.assertNotIn("study", app.state.room_recoveries)
+
+    async def test_detached_hardware_error_releases_after_three_safe_minutes(self):
+        app = recovery_application()
+        await detach(app)
+        recovery = app.state.room_recoveries["study"]
+        before = deepcopy(app.state.room_history["study"])
+        with patch(
+            "custom_components.adaptive_robovacs.application.core._track_point",
+            return_value=Mock(),
+        ):
+            await app._async_release_ready_room_recoveries(NOW + timedelta(seconds=12))
+            await app._async_release_ready_room_recoveries(
+                NOW + timedelta(minutes=3, seconds=11)
+            )
+            self.assertEqual(app.state.room_recoveries["study"], recovery)
+            await app._async_release_ready_room_recoveries(
+                NOW + timedelta(minutes=3, seconds=12)
+            )
+        self.assertNotIn("study", app.state.room_recoveries)
+        self.assertEqual(app.state.room_history["study"], before)
+        self.assertEqual(app.state.occurrences["study"].stages[1].status, "pending")
+        app.gateway.async_start.assert_not_awaited()
+
+    async def test_hardware_recovery_dwell_resets_on_error_and_restart(self):
+        app = recovery_application()
+        await detach(app)
+        with patch(
+            "custom_components.adaptive_robovacs.application.core._track_point",
+            return_value=Mock(),
+        ):
+            await app._async_release_ready_room_recoveries(NOW + timedelta(seconds=12))
+            app.hass.states.values["sensor.alpha_error"].state = "main_brush_jammed"
+            await app._async_release_ready_room_recoveries(NOW + timedelta(minutes=2))
+            self.assertFalse(app._room_recovery_since)
+            app.hass.states.values["sensor.alpha_error"].state = "none"
+            await app._async_release_ready_room_recoveries(
+                NOW + timedelta(minutes=2, seconds=1)
+            )
+            restored = recovery_application()
+            restored.state, _ = SchedulerState.from_store(
+                app.state.encode(), ENTRY_DATA
+            )
+            set_observation(restored, "docked")
+            await restored._async_release_ready_room_recoveries(
+                NOW + timedelta(minutes=4)
+            )
+            self.assertIn("study", restored.state.room_recoveries)
+            await restored._async_release_ready_room_recoveries(
+                NOW + timedelta(minutes=7)
+            )
+        self.assertNotIn("study", restored.state.room_recoveries)
+
     async def test_room_recovery_owns_repair_without_generic_hold_churn(self):
         app = recovery_application()
 

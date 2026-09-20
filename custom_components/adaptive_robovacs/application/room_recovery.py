@@ -9,14 +9,20 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Coroutine
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from homeassistant.core import HomeAssistant, callback
 
-from ..commands import EvaluateCommand, SchedulerCommand, SchedulerCommandResult
-from ..const import READY_CONFIRMATION_DELAY
+from ..commands import (
+    AcknowledgeRobotErrorCommand,
+    AutoReleaseRobotHoldCommand,
+    EvaluateCommand,
+    SchedulerCommand,
+    SchedulerCommandResult,
+)
+from ..const import DISPATCH_READY_CONFIRMATION_DELAY, READY_CONFIRMATION_DELAY
 from ..discovery import DiscoveredRobot, DiscoverySnapshot
 from ..jobs import active_rooms, interrupted_occurrence
 from ..models import (
@@ -85,6 +91,7 @@ class ApplicationRoomRecoveryMixin:
     _startup_state_settle_until: datetime | None
     _room_recovery_since: dict[str, datetime]
     _room_recovery_timers: dict[str, Callable[[], None]]
+    _auto_hold_rechecks: set[str]
 
     if TYPE_CHECKING:
 
@@ -118,7 +125,11 @@ class ApplicationRoomRecoveryMixin:
             unsubscribe()
 
     def _room_recovery_dock_confirmed(
-        self, robot: DiscoveredRobot | None, now: datetime
+        self,
+        robot: DiscoveredRobot | None,
+        now: datetime,
+        *,
+        delay: timedelta = READY_CONFIRMATION_DELAY,
     ) -> bool:
         if robot is None:
             return False
@@ -150,6 +161,19 @@ class ApplicationRoomRecoveryMixin:
             self._reset_room_recovery_dock(robot.registry_id)
             return False
         since = self._room_recovery_since.get(robot.registry_id)
+        relevant_states = [self.hass.states.get(robot.entity_id), status]
+        relevant_states.extend(
+            self.hass.states.get(entity_id)
+            for entity_id in capabilities.error_entity_ids
+        )
+        if since and any(
+            state is not None
+            and getattr(state, "last_changed", None) is not None
+            and state.last_changed > since
+            for state in relevant_states
+        ):
+            self._reset_room_recovery_dock(robot.registry_id)
+            since = None
         if since is None:
             self._room_recovery_since[robot.registry_id] = now
 
@@ -159,7 +183,11 @@ class ApplicationRoomRecoveryMixin:
                 self._async_create_task(
                     self.async_execute(
                         EvaluateCommand(
-                            mode=EvaluationMode.PREVIEW,
+                            mode=(
+                                EvaluationMode.DISPATCH
+                                if delay == DISPATCH_READY_CONFIRMATION_DELAY
+                                else EvaluationMode.PREVIEW
+                            ),
                             cause=EvaluationCause.RECOVERY,
                             detail="room-error-dock-confirmation",
                         )
@@ -169,9 +197,9 @@ class ApplicationRoomRecoveryMixin:
             from .core import _track_point
 
             self._room_recovery_timers[robot.registry_id] = _track_point(
-                self.hass, check, now + READY_CONFIRMATION_DELAY
+                self.hass, check, now + delay
             )
-        return ready_confirmation_elapsed(since, now, READY_CONFIRMATION_DELAY)
+        return ready_confirmation_elapsed(since, now, delay)
 
     async def _async_commit_room_recovery(self, state: SchedulerState) -> None:
         # Do not expose an unpersisted release, including after a failed save.
@@ -183,6 +211,134 @@ class ApplicationRoomRecoveryMixin:
             self.discovery.robots.values(),
             self.discovery.rooms,
         )
+
+    def _detached_recovery_target(
+        self, area_id: str, recovery: RoomRecovery
+    ) -> CleaningOccurrence | None:
+        """Identify the exact pending stage without inferring cleaning credit."""
+
+        active = self.state.active_jobs.get(recovery.robot_registry_id)
+        occurrence = self.state.occurrences.get(area_id)
+        if (
+            recovery.detached_at is None
+            or (active and active.occurrence_id == recovery.occurrence_id)
+            or area_id not in self.discovery.rooms
+            or self.robot_for_registry_id(recovery.robot_registry_id) is None
+            or occurrence is None
+            or occurrence.room_id != area_id
+            or occurrence.occurrence_id != recovery.occurrence_id
+            or occurrence.robot_registry_id != recovery.robot_registry_id
+            or occurrence.current_stage != recovery.stage_index
+            or not 0 <= recovery.stage_index < len(occurrence.stages)
+            or occurrence.stages[recovery.stage_index].operation != recovery.operation
+            or occurrence.stages[recovery.stage_index].status != "pending"
+        ):
+            return None
+        return occurrence
+
+    async def _async_release_detached_recovery(
+        self, area_id: str, recovery: RoomRecovery
+    ) -> bool:
+        """Persist one episode release before exposing it to scheduling."""
+
+        occurrence = self._detached_recovery_target(area_id, recovery)
+        if occurrence is None:
+            return False
+        recoveries = dict(self.state.room_recoveries)
+        recoveries.pop(area_id)
+        await self._async_commit_room_recovery(
+            replace(
+                self.state,
+                room_recoveries=recoveries,
+                occurrences={
+                    **self.state.occurrences,
+                    area_id: replace(
+                        occurrence,
+                        manual_override=False,
+                        bypass_desired_window=False,
+                    ),
+                },
+            )
+        )
+        self._reset_room_recovery_dock(recovery.robot_registry_id)
+        self._sync_room_recovery_issues()
+        self._notify_listeners()
+        return True
+
+    async def _async_release_ready_room_recoveries(self, now: datetime) -> None:
+        """Automatically release interrupted rooms after sustained safe docking."""
+
+        if self._storage_safe_mode or self._closing:
+            return
+        for area_id, recovery in tuple(self.state.room_recoveries.items()):
+            if recovery.detached_at is None:
+                continue
+            robot = self.robot_for_registry_id(recovery.robot_registry_id)
+            if not self._room_recovery_dock_confirmed(
+                robot, now, delay=DISPATCH_READY_CONFIRMATION_DELAY
+            ):
+                continue
+            await self._async_release_detached_recovery(area_id, recovery)
+
+    async def _async_queue_ready_hold_rechecks(self, now: datetime) -> None:
+        """Let the existing non-dispatching recheck clear settled simple holds."""
+
+        if self._storage_safe_mode or self._closing:
+            return
+        for registry_id, hold in tuple(self.state.robot_holds.items()):
+            if hold.reason not in {"paused", "robot_error"}:
+                continue
+            if registry_id in self._auto_hold_rechecks:
+                continue
+            if registry_id in self.state.robot_faults:
+                continue
+            if any(
+                recovery.robot_registry_id == registry_id
+                for recovery in self.state.room_recoveries.values()
+            ):
+                continue
+            active = self.state.active_jobs.get(registry_id)
+            if active:
+                matched = matching_occurrence(self.state, registry_id, active)
+                if hold.reason == "paused" and matched is None:
+                    continue
+                if hold.reason == "robot_error" and matched is not None:
+                    continue
+            if hold.reason == "robot_error" and active and hold.held_at is None:
+                continue
+            robot = self.robot_for_registry_id(registry_id)
+            if not self._room_recovery_dock_confirmed(
+                robot, now, delay=DISPATCH_READY_CONFIRMATION_DELAY
+            ):
+                continue
+            self._auto_hold_rechecks.add(registry_id)
+
+            async def release(robot_id: str, legacy_hold_at: str | None) -> None:
+                try:
+                    result = await self.async_execute(
+                        AcknowledgeRobotErrorCommand(robot_id, legacy_hold_at)
+                        if legacy_hold_at
+                        else AutoReleaseRobotHoldCommand(robot_id)
+                    )
+                    if result and result.as_response().get("cleared"):
+                        await self.async_execute(
+                            EvaluateCommand(
+                                mode=EvaluationMode.DISPATCH,
+                                cause=EvaluationCause.RECOVERY,
+                                detail="robot-hold-auto-released",
+                            )
+                        )
+                finally:
+                    self._auto_hold_rechecks.discard(robot_id)
+
+            self._async_create_task(
+                release(
+                    registry_id,
+                    hold.held_at.isoformat()
+                    if active and hold.reason == "robot_error" and hold.held_at
+                    else None,
+                )
+            )
 
     async def _async_handle_room_error(
         self,
@@ -355,44 +511,14 @@ class ApplicationRoomRecoveryMixin:
                 return {"cleared": True, "reason": "already_cleared"}
             if recovery.recovery_id != recovery_id:
                 return {"cleared": False, "reason": "recovery_changed"}
-            active = self.state.active_jobs.get(recovery.robot_registry_id)
-            if recovery.detached_at is None or (
-                active and active.occurrence_id == recovery.occurrence_id
-            ):
+            if recovery.detached_at is None:
                 return {"cleared": False, "reason": "awaiting_safe_dock"}
-            occurrence = self.state.occurrences.get(area_id)
-            if (
-                area_id not in self.discovery.rooms
-                or self.robot_for_registry_id(recovery.robot_registry_id) is None
-                or occurrence is None
-                or occurrence.room_id != area_id
-                or occurrence.occurrence_id != recovery.occurrence_id
-                or occurrence.robot_registry_id != recovery.robot_registry_id
-                or occurrence.current_stage != recovery.stage_index
-                or not 0 <= recovery.stage_index < len(occurrence.stages)
-                or occurrence.stages[recovery.stage_index].operation
-                != recovery.operation
-                or occurrence.stages[recovery.stage_index].status != "pending"
-            ):
+            active = self.state.active_jobs.get(recovery.robot_registry_id)
+            if active and active.occurrence_id == recovery.occurrence_id:
+                return {"cleared": False, "reason": "awaiting_safe_dock"}
+            if self._detached_recovery_target(area_id, recovery) is None:
                 return {"cleared": False, "reason": "recovery_target_unavailable"}
-            recoveries = dict(self.state.room_recoveries)
-            recoveries.pop(area_id)
-            await self._async_commit_room_recovery(
-                replace(
-                    self.state,
-                    room_recoveries=recoveries,
-                    occurrences={
-                        **self.state.occurrences,
-                        area_id: replace(
-                            occurrence,
-                            manual_override=False,
-                            bypass_desired_window=False,
-                        ),
-                    },
-                )
-            )
-            self._sync_room_recovery_issues()
-            self._notify_listeners()
+            await self._async_release_detached_recovery(area_id, recovery)
             return {
                 "cleared": True,
                 "reason": "retry_allowed",

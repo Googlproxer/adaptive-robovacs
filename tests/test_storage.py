@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from custom_components.adaptive_robovacs.state import SCHEMA_VERSION, SchedulerState
 from custom_components.adaptive_robovacs.storage import SchedulerStore
@@ -25,6 +26,7 @@ class _Store:
 
     async def async_save(self, payload):
         self.saved.append(payload)
+        self.payload = payload
 
     async def async_remove(self):
         self.payload = None
@@ -37,6 +39,53 @@ def scheduler_store(payload):
 
 
 class SchedulerStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_user_reset_preserves_unsafe_payload_and_forces_observe_only(
+        self,
+    ) -> None:
+        payload = {"schema_version": SCHEMA_VERSION + 1, "future": "value"}
+        store = scheduler_store(payload)
+        store._hass = object()
+        store._entry_id = "entry-1"
+        backups = []
+
+        def make_backup(*_args):
+            backup = _Store(None)
+            backups.append(backup)
+            return backup
+
+        with patch(
+            "custom_components.adaptive_robovacs.storage.Store",
+            side_effect=make_backup,
+        ):
+            state, key = await store.async_reset_unsafe_state(ENTRY_DATA)
+        self.assertIn("reset_backup", key)
+        self.assertEqual(backups[0].payload, {"original_payload": payload})
+        self.assertEqual(store._store.payload["schema_version"], SCHEMA_VERSION)
+        self.assertTrue(state.global_settings.observe_only)
+
+    async def test_reset_aborts_before_write_when_backup_cannot_be_verified(
+        self,
+    ) -> None:
+        payload = {"schema_version": SCHEMA_VERSION + 1, "future": "value"}
+        store = scheduler_store(payload)
+        store._hass = object()
+        store._entry_id = "entry-1"
+        backup = _Store(None)
+        backup.async_load = lambda: self._wrong_backup()
+        with (
+            patch(
+                "custom_components.adaptive_robovacs.storage.Store",
+                return_value=backup,
+            ),
+            self.assertRaisesRegex(ValueError, "backup could not be verified"),
+        ):
+            await store.async_reset_unsafe_state(ENTRY_DATA)
+        self.assertIs(store._store.payload, payload)
+        self.assertEqual(store._store.saved, [])
+
+    async def _wrong_backup(self):
+        return {"wrong": True}
+
     async def test_retired_keys_cannot_trigger_a_write_of_malformed_state(self) -> None:
         payload = SchedulerState.create(ENTRY_DATA).to_store()
         payload["global"].update(hall_start="09:00", hall_end="20:00")

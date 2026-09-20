@@ -178,6 +178,7 @@ def state_application() -> SchedulerApplication:
         sync_robot_holds=Mock(),
         set_robot_error_recovery=Mock(),
         delete_robot_error_recovery=Mock(),
+        set_storage_unsafe=Mock(),
     )
     app._storage_safe_mode = False
     app.metrics = RuntimeMetrics()
@@ -194,6 +195,8 @@ def state_application() -> SchedulerApplication:
     app._ready_since = {}
     app._room_recovery_since = {}
     app._room_recovery_timers = {}
+    app._fault_retry_timers = {}
+    app._auto_hold_rechecks = set()
     app._recovery_timers = {}
     app._lock = asyncio.Lock()
     app._notify_listeners = Mock()
@@ -202,6 +205,7 @@ def state_application() -> SchedulerApplication:
     app.async_evaluate = AsyncMock(return_value={})
     app.async_refresh_discovery = AsyncMock()
     app._async_create_task = Mock()
+    app._schedule_fault_retry = Mock()
     return app
 
 
@@ -218,6 +222,124 @@ def active_job(*, occurrence_id: str | None = None) -> ActiveJob:
 
 
 class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_durable_retry_timer_reenters_dispatch_evaluation(self) -> None:
+        app = state_application()
+        fault = SchedulerFault(
+            FaultCode.PROFILE_APPLY_FAILED,
+            "registry-alpha",
+            "study",
+            NOW,
+            "profile_apply",
+            retry_attempts=1,
+            retry_after=NOW + timedelta(minutes=2),
+        )
+        app.async_execute = AsyncMock()
+        app._async_create_task = lambda coro: asyncio.create_task(coro)
+        cancelled = Mock()
+        with patch(
+            "custom_components.adaptive_robovacs.application.faults._track_deadline",
+            return_value=cancelled,
+        ) as track:
+            type(app)._schedule_fault_retry(
+                app, "robot_faults", "registry-alpha", fault
+            )
+            callback = track.call_args.args[1]
+            callback(NOW + timedelta(minutes=2))
+            await asyncio.sleep(0)
+        command = app.async_execute.await_args.args[0]
+        self.assertEqual(command.mode.value, "dispatch")
+        self.assertNotIn("robot_faults:registry-alpha", app._fault_retry_timers)
+
+    async def test_confirmed_no_start_gets_one_dock_gated_retry(self) -> None:
+        app = state_application()
+        robot = app.discovery.robots["vacuum.alpha"]
+        discovered_room = app.discovery.rooms["study"]
+        app.hass.states.values[robot.entity_id] = SimpleNamespace(
+            state="docked", last_changed=NOW - timedelta(minutes=1)
+        )
+        app._room_recovery_dock_confirmed = Mock(return_value=False)
+        with patch(
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
+        ):
+            await app._async_latch_scheduler_fault(
+                robot,
+                discovered_room,
+                "start_confirmation_failed",
+                "start_confirmation",
+                native_command_may_have_started=False,
+                outcome_uncertain=False,
+            )
+        first = app.state.robot_faults[robot.registry_id]
+        self.assertEqual(first.retry_after, NOW + timedelta(minutes=3))
+        self.assertTrue(app.fault_affects_robot(robot))
+        with patch(
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW + timedelta(minutes=3),
+        ):
+            self.assertTrue(app.fault_affects_robot(robot))
+            app.hass.states.values[robot.entity_id].last_changed = NOW + timedelta(
+                minutes=1
+            )
+            app._room_recovery_dock_confirmed.return_value = True
+            self.assertTrue(app.fault_affects_robot(robot))
+            app.hass.states.values[robot.entity_id].last_changed = NOW - timedelta(
+                minutes=1
+            )
+            app._room_recovery_dock_confirmed.return_value = True
+            self.assertFalse(app.fault_affects_robot(robot))
+            await app._async_latch_scheduler_fault(
+                robot,
+                discovered_room,
+                "start_confirmation_failed",
+                "start_confirmation",
+                native_command_may_have_started=False,
+                outcome_uncertain=False,
+            )
+        second = app.state.robot_faults[robot.registry_id]
+        self.assertEqual(second.retry_attempts, 2)
+        self.assertIsNone(second.retry_after)
+        self.assertTrue(app.fault_affects_robot(robot))
+
+    async def test_prestart_fault_retries_after_durable_backoff(self) -> None:
+        app = state_application()
+        robot = app.discovery.robots["vacuum.alpha"]
+        discovered_room = app.discovery.rooms["study"]
+        with patch(
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW,
+        ):
+            await app._async_latch_scheduler_fault(
+                robot,
+                discovered_room,
+                "profile_apply_failed",
+                "profile_apply",
+                native_command_may_have_started=False,
+                outcome_uncertain=False,
+            )
+            self.assertTrue(app.fault_affects_robot(robot))
+        first = app.state.robot_faults[robot.registry_id]
+        self.assertEqual(first.retry_attempts, 1)
+        self.assertEqual(first.retry_after, NOW + timedelta(minutes=2))
+        restored = SchedulerFault.from_mapping(first.to_store())
+        self.assertEqual(restored, first)
+        with patch(
+            "custom_components.adaptive_robovacs.application.core._now",
+            return_value=NOW + timedelta(minutes=2),
+        ):
+            self.assertFalse(app.fault_affects_robot(robot))
+            await app._async_latch_scheduler_fault(
+                robot,
+                discovered_room,
+                "profile_apply_failed",
+                "profile_apply",
+                native_command_may_have_started=False,
+                outcome_uncertain=False,
+            )
+        second = app.state.robot_faults[robot.registry_id]
+        self.assertEqual(second.retry_attempts, 2)
+        self.assertEqual(second.retry_after, NOW + timedelta(minutes=7))
+
     def test_robot_hold_repairs_defer_to_matching_active_room_recovery(self) -> None:
         app = state_application()
         active = active_job(occurrence_id="occurrence-1")

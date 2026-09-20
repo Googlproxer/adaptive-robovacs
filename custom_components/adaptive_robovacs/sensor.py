@@ -40,6 +40,8 @@ def _fault_fields(failure: dict[str, object] | None) -> dict[str, object]:
         "failure_code": failure.get("failure_code") if failure else None,
         "failure_summary": failure.get("failure_summary") if failure else None,
         "failure_since": failure.get("failure_since") if failure else None,
+        "retry_attempts": failure.get("retry_attempts") if failure else None,
+        "retry_after": failure.get("retry_after") if failure else None,
         "repair_active": bool(failure),
     }
 

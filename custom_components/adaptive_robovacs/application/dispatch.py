@@ -21,6 +21,7 @@ from ..models import (
     CleaningProgram,
     EvaluationCause,
     EvaluationMode,
+    FaultCode,
     JobPhase,
     OccurrenceSource,
     StageStatus,
@@ -91,6 +92,10 @@ class ApplicationDispatchMixin:
             native_command_may_have_started: bool,
             outcome_uncertain: bool,
         ) -> None: ...
+
+        def _cancel_fault_retry(self, section: str, key: str) -> None: ...
+
+        def _sync_dispatch_fault_issues(self) -> None: ...
 
         def _schedule_start_confirmation(self, robot_id: str) -> None: ...
 
@@ -608,6 +613,22 @@ class ApplicationDispatchMixin:
     ) -> None:
         """Commit the accepted stage and schedule confirmation observation."""
 
+        cleared_retry = False
+        robot_fault = self.state.robot_faults.get(robot.registry_id)
+        if (
+            robot_fault
+            and robot_fault.retry_after is not None
+            and robot_fault.reason_code != FaultCode.START_CONFIRMATION_FAILED
+        ):
+            self.state.robot_faults.pop(robot.registry_id)
+            self._cancel_fault_retry("robot_faults", robot.registry_id)
+            cleared_retry = True
+        room_fault = self.state.room_faults.get(room.area_id)
+        if room_fault and room_fault.retry_after is not None:
+            self.state.room_faults.pop(room.area_id)
+            self._cancel_fault_retry("room_faults", room.area_id)
+            cleared_retry = True
+
         active.phase = JobPhase.ACCEPTED
         active.accepted_at = accepted_at
         if active.source == "manual_dashboard":
@@ -632,6 +653,8 @@ class ApplicationDispatchMixin:
         history.map_status = "mapped"
         history.map_error = None
         await self._async_save()
+        if cleared_retry:
+            self._sync_dispatch_fault_issues()
         self._schedule_start_confirmation(robot.entity_id)
         self._notify_listeners()
 
