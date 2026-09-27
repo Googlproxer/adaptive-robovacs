@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from custom_components.adaptive_robovacs.adapters.base import AdapterEntityEvidence
 from custom_components.adaptive_robovacs.application import SchedulerApplication
+from custom_components.adaptive_robovacs.commands import StateChangedCommand
 from custom_components.adaptive_robovacs.discovery import (
     DiscoveredOccupancySource,
     DiscoveredRobot,
@@ -506,6 +507,38 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
 
         await app._async_save(force=True)
         self.assertEqual(app.storage.async_save.await_count, 2)
+
+    async def test_native_timer_progress_is_persisted_once_and_survives_restart(
+        self,
+    ) -> None:
+        app = state_application()
+        job = active_job()
+        job.seen_cleaning = True
+        job.timer_start = 0
+        app.state.active_jobs["registry-alpha"] = job
+        app._last_durable_fingerprint = app._durable_fingerprint()
+        entity_id = "sensor.alpha_cleaning_time"
+
+        for value in (1.75, 2.0, 0.0):
+            await app._async_execute_command(
+                StateChangedCommand(entity_id, None, str(value), NOW, value)
+            )
+
+        self.assertTrue(job.native_timer_progress_seen)
+        self.assertEqual(app.storage.async_save.await_count, 1)
+        restored, _ = SchedulerState.from_store(app.state.encode(), ENTRY_DATA)
+        self.assertTrue(
+            restored.active_jobs["registry-alpha"].native_timer_progress_seen
+        )
+
+        prior_checkpoint = app.state.encode()
+        prior_checkpoint["active_jobs"]["registry-alpha"].pop(
+            "native_timer_progress_seen"
+        )
+        legacy, _ = SchedulerState.from_store(prior_checkpoint, ENTRY_DATA)
+        self.assertFalse(
+            legacy.active_jobs["registry-alpha"].native_timer_progress_seen
+        )
 
     async def test_replacement_state_is_persisted_before_becoming_visible(self) -> None:
         app = state_application()

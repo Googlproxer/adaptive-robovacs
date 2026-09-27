@@ -30,6 +30,7 @@ from ..models import (
     JobPhase,
     JobSource,
     ManualCleanRequest,
+    cleaning_timer_minutes,
     parse_manual_clean_request,
 )
 from ..state import ActiveJob, ManualAuditRecord, SchedulerState
@@ -214,6 +215,18 @@ class ApplicationEventsMixin:
         new_state = event.data.get("new_state")
         old_value = old_state.state if old_state else None
         new_value = new_state.state if new_state else None
+        timer_entity = any(
+            robot.profile.cleaning_time_entity_id == entity_id
+            for robot in self.discovery.robots.values()
+        )
+        native_timer_minutes = (
+            cleaning_timer_minutes(
+                new_value,
+                new_state.attributes.get("unit_of_measurement", "min"),
+            )
+            if timer_entity and new_state is not None
+            else None
+        )
         change = specification.classify(old_state, new_state)
         if not change.evaluate:
             self.metrics.state_events["ignored_unchanged"] += 1
@@ -228,6 +241,7 @@ class ApplicationEventsMixin:
                     old_state=old_value,
                     new_state=new_value,
                     changed_at=(new_state.last_changed if new_state else None),
+                    native_timer_minutes=native_timer_minutes,
                 ),
                 capability_changed=change.refresh_discovery,
             )

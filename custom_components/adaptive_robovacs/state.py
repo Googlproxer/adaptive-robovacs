@@ -847,6 +847,7 @@ class ActiveJob:
     completion_confidence: str | None = None
     timer_start: float | None = None
     native_timer_elapsed: float | None = None
+    native_timer_progress_seen: bool = False
     duration_source: str | None = None
     measured_minutes: float | None = None
     docked_at: datetime | None = None
@@ -908,6 +909,7 @@ class ActiveJob:
             completion_confidence=_string(value.get("completion_confidence")),
             timer_start=_optional_number(value.get("timer_start")),
             native_timer_elapsed=_optional_number(value.get("native_timer_elapsed")),
+            native_timer_progress_seen=value.get("native_timer_progress_seen") is True,
             duration_source=_string(value.get("duration_source")),
             measured_minutes=_optional_number(value.get("measured_minutes")),
             docked_at=_timestamp(value.get("docked_at")),
@@ -973,6 +975,7 @@ class ActiveJob:
             "completion_confidence": self.completion_confidence,
             "timer_start": self.timer_start,
             "native_timer_elapsed": self.native_timer_elapsed,
+            "native_timer_progress_seen": self.native_timer_progress_seen,
             "duration_source": self.duration_source,
             "measured_minutes": self.measured_minutes,
             "docked_at": _iso(self.docked_at),

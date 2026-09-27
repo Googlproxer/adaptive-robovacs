@@ -34,6 +34,7 @@ from ..models import (
     CleaningOperation,
     FaultCode,
     JobPhase,
+    cleaning_timer_minutes,
     elapsed_total_duration_minutes,
     managed_clean_duration_failed,
     pending_completion_is_docked,
@@ -466,16 +467,9 @@ class ApplicationJobsMixin:
         state = self.hass.states.get(entity_id) if entity_id else None
         if state is None:
             return None
-        try:
-            value = float(state.state)
-        except TypeError, ValueError:
-            return None
-        unit = str(state.attributes.get("unit_of_measurement", "min")).lower()
-        if unit in {"h", "hour", "hours"}:
-            return value * 60
-        if unit in {"s", "second", "seconds"}:
-            return value / 60
-        return value
+        return cleaning_timer_minutes(
+            state.state, state.attributes.get("unit_of_measurement", "min")
+        )
 
     def _native_timer_elapsed_minutes(
         self, robot_id: str, active: ActiveJob
@@ -629,6 +623,7 @@ class ApplicationJobsMixin:
             active.duration_source,
             active.measured_minutes,
             active.native_timer_elapsed,
+            active.native_timer_progress_seen,
         ):
             robot = self.discovery.robots.get(robot_id)
             room = self.discovery.rooms.get(active.room_id)
@@ -639,11 +634,15 @@ class ApplicationJobsMixin:
                 detail.last_stage_at = completion
                 _LOGGER.warning(
                     "Adaptive RoboVacs rejected zero-duration native clean: "
-                    "robot=%s room=%s duration_source=%s measured_minutes=%s",
+                    "robot=%s room=%s duration_source=%s measured_minutes=%s "
+                    "timer_start=%s native_timer_elapsed=%s timer_progress_seen=%s",
                     robot.entity_id,
                     room.name,
                     active.duration_source,
                     active.measured_minutes,
+                    active.timer_start,
+                    active.native_timer_elapsed,
+                    active.native_timer_progress_seen,
                 )
                 if robot.registry_id in self.state.robot_faults:
                     self._cancel_job(
@@ -659,6 +658,19 @@ class ApplicationJobsMixin:
                         outcome_uncertain=False,
                     )
                 return False
+        if (
+            active.native_timer_progress_seen
+            and active.native_timer_elapsed is not None
+            and active.native_timer_elapsed <= 0
+        ):
+            _LOGGER.info(
+                "Adaptive RoboVacs native cleaning timer reset before completion: "
+                "robot=%s room=%s timer_start=%s native_timer_elapsed=%s",
+                robot_id,
+                active.room_id,
+                active.timer_start,
+                active.native_timer_elapsed,
+            )
         self._complete_job(robot_id, active, completion, confidence)
         return True
 

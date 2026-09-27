@@ -73,6 +73,7 @@ from ..models import (
     expand_cleaning_program,
     fault_can_retry,
     fault_retry_delay,
+    native_timer_progress_observed,
 )
 from ..notifications import NotificationService
 from ..observations import HomeAssistantObserver
@@ -382,7 +383,24 @@ class SchedulerApplication(
                 entity_id=entity_id,
                 old_state=old_state,
                 new_state=new_state,
+                native_timer_minutes=native_timer_minutes,
             ):
+                if native_timer_minutes is not None:
+                    async with self._lock:
+                        for robot in self.discovery.robots.values():
+                            if robot.profile.cleaning_time_entity_id != entity_id:
+                                continue
+                            active = self.state.active_jobs.get(robot.registry_id)
+                            if (
+                                active is not None
+                                and active.seen_cleaning
+                                and not active.native_timer_progress_seen
+                                and native_timer_progress_observed(
+                                    active.timer_start, native_timer_minutes
+                                )
+                            ):
+                                active.native_timer_progress_seen = True
+                                await self._async_save()
                 if old_state != new_state:
                     for robot in self.discovery.robots.values():
                         capabilities = robot.adapter_capabilities

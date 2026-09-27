@@ -40,6 +40,7 @@ class StateChangedCommand:
     old_state: str | None
     new_state: str | None
     changed_at: datetime | None
+    native_timer_minutes: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

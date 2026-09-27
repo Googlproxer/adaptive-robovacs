@@ -1003,6 +1003,22 @@ class CadenceTests(unittest.TestCase):
         self.assertFalse(
             models.managed_clean_duration_failed("native_app", "robot_timer", 0)
         )
+        self.assertFalse(
+            models.managed_clean_duration_failed(
+                "scheduler", "elapsed_total_v2", None, 0, True
+            )
+        )
+
+    def test_native_timer_observations_require_finite_progress_after_baseline(
+        self,
+    ) -> None:
+        self.assertEqual(models.cleaning_timer_minutes("90", "seconds"), 1.5)
+        self.assertEqual(models.cleaning_timer_minutes("0.5", "hours"), 30)
+        for value in ("unknown", "nan", "inf", "-1"):
+            self.assertIsNone(models.cleaning_timer_minutes(value))
+        self.assertFalse(models.native_timer_progress_observed(None, 1))
+        self.assertFalse(models.native_timer_progress_observed(0, 0))
+        self.assertTrue(models.native_timer_progress_observed(0, 0.05))
 
 
 class CleaningProfileTests(unittest.TestCase):

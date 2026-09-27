@@ -9,7 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from custom_components.adaptive_robovacs.application import SchedulerApplication
-from custom_components.adaptive_robovacs.commands import EvaluateCommand
+from custom_components.adaptive_robovacs.commands import (
+    EvaluateCommand,
+    StateChangedCommand,
+)
 from custom_components.adaptive_robovacs.models import (
     CleaningOperation,
     JobPhase,
@@ -710,6 +713,52 @@ class ActiveJobReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class JobCompletionApplicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timer_reset_after_interrupted_clean_does_not_create_zero_fault(
+        self,
+    ) -> None:
+        app = state_application()
+        job = tracked_job(phase=JobPhase.CLEANING, seen_cleaning=True)
+        job.observed_started_at = NOW - timedelta(minutes=6)
+        job.timer_start = 0
+        job.forecast_sample_eligible = True
+        app.state.active_jobs["registry-alpha"] = job
+        timer_entity = "sensor.alpha_cleaning_time"
+        app.hass.states.values[timer_entity] = SimpleNamespace(
+            state="0", attributes={"unit_of_measurement": "min"}
+        )
+
+        await app._async_execute_command(
+            StateChangedCommand(
+                timer_entity, "0", "1.75", NOW - timedelta(minutes=4), 1.75
+            )
+        )
+        self.assertTrue(job.native_timer_progress_seen)
+        app._hold_active_job("vacuum.alpha", job, "paused", NOW - timedelta(minutes=3))
+        app._hold_active_job(
+            "vacuum.alpha", job, "error", NOW - timedelta(minutes=2, seconds=57)
+        )
+        job.forecast_sample_eligible = False
+        app._resume_held_job(
+            "vacuum.alpha",
+            job,
+            SimpleNamespace(last_changed=NOW - timedelta(minutes=2)),
+            NOW - timedelta(minutes=2),
+        )
+        await app._async_execute_command(
+            StateChangedCommand(timer_entity, "1.75", "0", NOW, 0.0)
+        )
+        self.assertTrue(job.native_timer_progress_seen)
+        job.phase = JobPhase.RETURNING
+        app._mark_observed_completion("vacuum.alpha", job, NOW)
+
+        self.assertEqual(job.native_timer_elapsed, 0)
+        self.assertIsNone(job.measured_minutes)
+        self.assertTrue(
+            await app._async_complete_job("vacuum.alpha", job, NOW, "observed")
+        )
+        self.assertFalse(app.state.robot_faults)
+        self.assertEqual(app.state.room_history["study"].cleaning_completed_at, NOW)
+
     def test_native_timer_and_elapsed_measurement_are_normalized(self) -> None:
         app = state_application()
         entity_id = "sensor.alpha_cleaning_time"
@@ -826,6 +875,17 @@ class JobCompletionApplicationTests(unittest.IsolatedAsyncioTestCase):
             await app._async_complete_job("vacuum.alpha", job, NOW, "observed")
         )
         app._complete_job.assert_called_once()
+
+        app = state_application()
+        app._async_latch_scheduler_fault = AsyncMock()
+        job = tracked_job(seen_cleaning=True)
+        job.duration_source = "elapsed_total_v2"
+        job.measured_minutes = 9
+        job.native_timer_elapsed = 0
+        self.assertFalse(
+            await app._async_complete_job("vacuum.alpha", job, NOW, "observed")
+        )
+        app._async_latch_scheduler_fault.assert_awaited_once()
 
     def test_manual_deferrals_ignore_unknown_robot_and_missing_rooms(self) -> None:
         app = state_application()

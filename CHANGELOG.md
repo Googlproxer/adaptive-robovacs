@@ -5,6 +5,27 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.17.1] - 2026-09-27
+
+### Fixed
+
+- A managed clean whose native cleaning timer advances and then resets to zero
+  no longer creates a false zero-duration dispatch fault. A timer that never
+  advances still holds the schedule for review.
+- Timer progress is captured from each Home Assistant state-change event and
+  saved once in the active job so it survives an integration restart.
+
+Detailed notes: [`docs/releases/v1.17.1.md`](docs/releases/v1.17.1.md).
+
+## [1.17.0] - 2026-09-26
+
+### Changed
+
+- Added bounded recovery for ready, docked robots after interrupted cleans and
+  retry deadlines for safe pre-start faults.
+
+Detailed notes: [`docs/releases/v1.17.0.md`](docs/releases/v1.17.0.md).
+
 ## [1.16.9] - 2026-09-17
 
 ### Fixed

@@ -1409,6 +1409,37 @@ def elapsed_total_duration_minutes(
     return max(0, elapsed - max(0, interruption_minutes))
 
 
+def cleaning_timer_minutes(value: object, unit: object = "min") -> float | None:
+    """Normalize one native cleaning-timer observation to finite minutes."""
+
+    try:
+        minutes = float(value)  # type: ignore[arg-type]
+    except TypeError, ValueError:
+        return None
+    if not math.isfinite(minutes) or minutes < 0:
+        return None
+    normalized_unit = str(unit).lower()
+    if normalized_unit in {"h", "hour", "hours"}:
+        minutes *= 60
+    elif normalized_unit in {"s", "second", "seconds"}:
+        minutes /= 60
+    return minutes if math.isfinite(minutes) else None
+
+
+def native_timer_progress_observed(
+    timer_start: float | None, timer_minutes: float | None
+) -> bool:
+    """Recognize native work only after an attributed timer baseline exists."""
+
+    return bool(
+        timer_start is not None
+        and timer_minutes is not None
+        and math.isfinite(timer_start)
+        and math.isfinite(timer_minutes)
+        and timer_minutes > timer_start
+    )
+
+
 def mop_stage_start_is_observed(
     operation: str | None,
     detailed_status: str | None,
@@ -1949,6 +1980,7 @@ def managed_clean_duration_failed(
     duration_source: object,
     measured_minutes: object,
     native_timer_elapsed: object | None = None,
+    native_timer_progress_seen: bool = False,
 ) -> bool:
     """Return whether an integration-attributed clean did not run.
 
@@ -1974,6 +2006,7 @@ def managed_clean_duration_failed(
         and isinstance(timer_minutes, (float, int))
         and not isinstance(timer_minutes, bool)
         and timer_minutes <= 0
+        and not native_timer_progress_seen
     )
 
 

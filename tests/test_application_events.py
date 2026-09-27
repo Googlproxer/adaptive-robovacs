@@ -206,6 +206,28 @@ class ApplicationEventTests(unittest.IsolatedAsyncioTestCase):
             any(isinstance(item, RefreshDiscoveryCommand) for item in commands)
         )
 
+    async def test_timer_event_carries_its_own_normalized_value(self) -> None:
+        app, tasks = event_application()
+        entity_id = "sensor.alpha_cleaning_time"
+        app._watch_specifications[entity_id] = WatchSpecification(entity_id)
+        app._on_state_changed(
+            SimpleNamespace(
+                data={
+                    "entity_id": entity_id,
+                    "old_state": SimpleNamespace(state="0", attributes={}),
+                    "new_state": SimpleNamespace(
+                        state="90",
+                        attributes={"unit_of_measurement": "s"},
+                        last_changed=NOW,
+                    ),
+                }
+            )
+        )
+        await asyncio.gather(*tasks)
+        command = app.async_execute.await_args_list[0].args[0]
+        self.assertIsInstance(command, StateChangedCommand)
+        self.assertEqual(command.native_timer_minutes, 1.5)
+
     async def test_entity_registry_filters_noise_and_own_entities(self) -> None:
         app, tasks = event_application()
         irrelevant = SimpleNamespace(
