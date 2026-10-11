@@ -20,6 +20,7 @@ from ..models import EvaluationCause, EvaluationMode
 from ..planner import (
     CandidateRobotDecision,
     PlanningInput,
+    RoomEvaluation,
     ScheduleCandidate,
     build_schedule_plan,
 )
@@ -48,6 +49,7 @@ class ApplicationEvaluationMixin:
     _closing: bool
     _lock: asyncio.Lock
     _startup_state_settle_until: datetime | None
+    _room_evaluations: dict[str, RoomEvaluation]
 
     if TYPE_CHECKING:
 
@@ -56,6 +58,9 @@ class ApplicationEvaluationMixin:
         async def async_refresh_discovery(self, *, notify: bool = True) -> None: ...
 
         async def _async_save(self) -> None: ...
+        async def _async_update_opportunities(
+            self, now: datetime, *, dry_run: bool
+        ) -> None: ...
 
         async def _async_release_ready_room_recoveries(self, now: datetime) -> None: ...
 
@@ -286,19 +291,16 @@ class ApplicationEvaluationMixin:
             self._refresh_robot_readiness(now)
             candidates: list[ScheduleCandidate] = []
             reasons: dict[str, str] = {}
+            self._room_evaluations = {}
             for room in self.discovery.rooms.values():
                 candidate, block_reason = self._room_candidate(room, now)
                 if candidate:
                     candidates.append(candidate)
                 else:
                     reasons[room.area_id] = block_reason
-                    if self._room_settings(room).enabled:
-                        self._record_room_decision(
-                            room,
-                            block_reason,
-                            now,
-                            self._room_settings(room).expected_minutes,
-                        )
+                    self._room_evaluations[room.area_id] = RoomEvaluation(
+                        now, None, block_reason
+                    )
             robot_ready = {
                 robot.entity_id: self._robot_ready(robot)
                 for robot in self.discovery.robots.values()
@@ -332,23 +334,30 @@ class ApplicationEvaluationMixin:
                 (self.discovery.robots[item.robot_id], item.candidate)
                 for item in plan.assignments
             ]
-            for _robot, candidate in assignments:
-                room = self.discovery.rooms[candidate.room_id]
-                self._record_room_decision(
-                    room,
-                    "assigned to compatible robot",
-                    now,
-                    candidate.duration_minutes,
+            selected = {
+                item.candidate.room_id: item.robot_id for item in plan.assignments
+            }
+            for planned in plan.candidates:
+                decisions = next(
+                    item.decisions
+                    for item in plan_inputs
+                    if item.candidate.room_id == planned.room_id
                 )
+                self._room_evaluations[planned.room_id] = RoomEvaluation(
+                    now,
+                    planned,
+                    dict(plan.blocks).get(
+                        planned.room_id, "assigned to compatible robot"
+                    ),
+                    decisions,
+                    selected.get(planned.room_id),
+                )
+            for area_id, decision in self._room_evaluations.items():
+                room = self.discovery.rooms[area_id]
+                if self._room_settings(room).enabled:
+                    self._record_room_decision(room, decision.reason, now, 0)
             for room_id, rejection in plan.blocks:
-                candidate = next(item for item in candidates if item.room_id == room_id)
                 reasons.setdefault(room_id, rejection)
-                self._record_room_decision(
-                    self.discovery.rooms[candidate.room_id],
-                    rejection,
-                    now,
-                    candidate.duration_minutes,
-                )
 
             preview = {
                 "at": _iso(now),
@@ -370,17 +379,15 @@ class ApplicationEvaluationMixin:
                         "confidence": item.confidence,
                         "basis": item.reason,
                         "passes": item.passes,
+                        "selected_robot_id": self._room_evaluations[
+                            item.room_id
+                        ].selected_robot_id,
                         "eligible": any(
                             decision.eligible for decision in item.robot_eligibility
                         ),
                         "robot_eligibility": [
-                            {
-                                "robot_entity_id": decision.robot_id,
-                                "robot_name": decision.robot_name,
-                                "eligible": decision.eligible,
-                                "reason": decision.reason,
-                            }
-                            for decision in item.robot_eligibility
+                            decision.as_attributes()
+                            for decision in self._room_evaluations[item.room_id].robots
                         ],
                     }
                     for item in candidates
@@ -412,7 +419,7 @@ class ApplicationEvaluationMixin:
             }
             self.state.evaluation.last_evaluation_at = now
             self.state.evaluation.last_preview = FrozenJsonObject.from_mapping(preview)
-            await self._async_save()
+            await self._async_update_opportunities(now, dry_run=dry_run)
 
             dispatches: list[str] = []
             if (

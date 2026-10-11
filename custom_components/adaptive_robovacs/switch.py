@@ -110,6 +110,8 @@ class _RoomSwitch(_AdaptiveSwitch):
     @property
     def is_on(self) -> bool:
         room = self.room_view(self.area_id)
+        if self.setting_key == "vacancy_fallback_enabled":
+            return room.vacancy_fallback_enabled
         return (
             room.enabled
             if self.setting_key == "enabled"
@@ -151,6 +153,12 @@ def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
     for room in coordinator.data.rooms:
         entities.extend(
             [
+                _RoomSwitch(
+                    coordinator,
+                    room.area_id,
+                    "vacancy_fallback_enabled",
+                    f"{room.name} stable vacancy fallback",
+                ),
                 _RoomSwitch(
                     coordinator, room.area_id, "enabled", f"{room.name} enabled"
                 ),

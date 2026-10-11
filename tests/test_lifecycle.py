@@ -6,7 +6,7 @@ import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from homeassistant.const import (
     EVENT_CALL_SERVICE,
@@ -42,6 +42,55 @@ class _Bus:
 
 
 class SchedulerRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_opportunity_deadline_replaces_cancels_and_ignores_stale_callbacks(
+        self,
+    ):
+        tasks, points = [], []
+        submit = AsyncMock()
+
+        def track(_hass, callback, when):
+            cancel = Mock()
+            points.append((callback, when, cancel))
+            return cancel
+
+        runtime = SchedulerRuntime(
+            SimpleNamespace(bus=_Bus([])),
+            interval_handler=AsyncMock(),
+            call_service_handler=Mock(),
+            state_changed_handler=Mock(),
+            registry_handler=Mock(),
+            notification_action_handler=Mock(),
+            notification_cleared_handler=Mock(),
+            home_assistant_started_handler=Mock(),
+            submit=submit,
+            create_task=lambda coro: tasks.append(asyncio.create_task(coro)),
+        )
+        with patch(
+            "custom_components.adaptive_robovacs.lifecycle.async_track_point_in_utc_time",
+            side_effect=track,
+        ):
+            runtime.update_opportunity_deadline(WHEN)
+            self.assertFalse(points)
+            runtime._running = True
+            runtime.update_opportunity_deadline(WHEN)
+            runtime.update_opportunity_deadline(WHEN)
+            self.assertEqual(len(points), 1)
+            runtime.update_opportunity_deadline(WHEN + timedelta(minutes=1))
+            points[0][2].assert_called_once()
+            points[0][0](WHEN)
+            self.assertFalse(tasks)
+            points[1][0](points[1][1])
+            await asyncio.gather(*tasks)
+            self.assertEqual(
+                submit.call_args.args[0].cause, EvaluationCause.OPPORTUNITY_BOUNDARY
+            )
+            self.assertEqual(submit.call_args.args[0].mode, EvaluationMode.DISPATCH)
+            runtime.update_opportunity_deadline(WHEN + timedelta(minutes=2))
+            await runtime.async_stop()
+            points[2][2].assert_called_once()
+            points[2][0](points[2][1])
+            self.assertEqual(len(tasks), 1)
+
     async def test_night_boundaries_rearm_without_duplicate_or_stale_wakeups(self):
         submitted, tasks, points, cancelled = [], [], [], []
         now = WHEN

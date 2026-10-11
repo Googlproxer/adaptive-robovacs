@@ -77,6 +77,7 @@ from ..models import (
 )
 from ..notifications import NotificationService
 from ..observations import HomeAssistantObserver
+from ..planner import RoomEvaluation
 from ..projections import (
     build_snapshot,
 )
@@ -97,6 +98,7 @@ from .events import ApplicationEventsMixin
 from .faults import ApplicationFaultMixin
 from .jobs import ApplicationJobsMixin
 from .legacy_map import ApplicationLegacyMapMixin
+from .opportunities import ApplicationOpportunityMixin
 from .policy import ApplicationPolicyMixin
 from .recovery import ApplicationRecoveryMixin
 from .room_recovery import ApplicationRoomRecoveryMixin
@@ -148,6 +150,7 @@ class SchedulerApplication(
     ApplicationLegacyMapMixin,
     ApplicationSettingsMixin,
     ApplicationEventsMixin,
+    ApplicationOpportunityMixin,
     ApplicationEvaluationMixin,
     ApplicationDispatchMixin,
     ApplicationActionsMixin,
@@ -173,6 +176,8 @@ class SchedulerApplication(
         self._lock = asyncio.Lock()
         self._listeners: set[EntityListener] = set()
         self._snapshot: IntegrationSnapshot | None = None
+        self._room_evaluations: dict[str, RoomEvaluation] = {}
+        self._last_opportunity_observation: datetime | None = None
         self._schedule_clock = SchedulePresentationClock(hass, self._publish_snapshot)
         self._discovery_signal_pending = False
         self._watch_entity_ids: set[str] = set()
@@ -241,6 +246,11 @@ class SchedulerApplication(
         self._startup_state_settle_until = _now() + STARTUP_STATE_SETTLE_DELAY
         loaded = await self.storage.async_load(self.entry.data)
         self.state = loaded.state
+        # Persisted vacancy is history, not proof that nobody entered while HA
+        # was offline. Fresh observations start a new continuous clear period.
+        for history in self.state.room_history.values():
+            history.unoccupied_since = None
+            history.occupancy = "unresolved"
         self._last_durable_fingerprint = self._durable_fingerprint()
         migrated = loaded.migrated
         if loaded.safe_mode:
@@ -703,6 +713,7 @@ class SchedulerApplication(
             )
             if detail.source_fingerprint not in {None, fingerprint}:
                 detail.occupancy_samples.clear()
+                detail.occupancy_transitions.clear()
                 detail.unoccupied_since = None
                 detail.occupancy = "unresolved"
                 detail.occupancy_source = "sources_changed"

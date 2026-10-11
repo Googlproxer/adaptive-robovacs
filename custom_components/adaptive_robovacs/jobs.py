@@ -295,6 +295,7 @@ def rewind_expired_mop_stage(
     return replace(
         occurrence,
         current_stage=0,
+        mop_delay_expirations=min(1000000, occurrence.mop_delay_expirations + 1),
         stages=[
             replace(
                 vacuum_stage,

@@ -28,6 +28,21 @@ def room_status(room: RoomView) -> str:
         )
     if not room.enabled:
         return "disabled"
+    if room.overdue:
+        if room.block_reason == "waiting for desired cleaning window":
+            return "Overdue — outside cleaning hours"
+        if room.adjacency_reason:
+            return f"Overdue — {room.adjacency_reason}"[:255]
+        if room.selected_robot_id:
+            return "ready now"
+        if any(item.eligible for item in room.robot_eligibility):
+            return "Eligible — waiting for a robot"
+        forecast = room.vacancy_diagnostic
+        if forecast.decision_source in {"low_confidence", "insufficient_history"}:
+            return "Overdue — forecast blocked"
+        if room.occupancy == "occupied":
+            return "Overdue — occupied"
+        return f"Overdue — {room.block_reason}"[:255]
     if room.adjacency_reason:
         return (
             room.adjacency_reason

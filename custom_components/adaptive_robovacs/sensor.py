@@ -19,7 +19,9 @@ from .presentation import (
     eligibility_attributes,
     fault_attributes,
     manual_audit_attributes,
+    occupancy_quality_attributes,
     occurrence_attributes,
+    opportunity_attributes,
     robot_hold_attributes,
     robot_settings_attributes,
     room_decision_attributes,
@@ -262,6 +264,21 @@ class _RoomStatusSensor(AdaptiveEntity, SensorEntity):
             "room": room.name,
             "floor_id": room.floor_id,
             "enabled": room.enabled,
+            "overdue": room.overdue,
+            "occupancy_sensitivity_minutes": room.occupancy_sensitivity_minutes,
+            "vacancy_fallback_enabled": room.vacancy_fallback_enabled,
+            "vacancy_fallback_minutes": room.vacancy_fallback_minutes,
+            "selected_robot_id": room.selected_robot_id,
+            "decision_evaluated_at": room.decision_evaluated_at.isoformat()
+            if room.decision_evaluated_at
+            else None,
+            "last_vacuum": room.last_vacuum.isoformat() if room.last_vacuum else None,
+            "last_mop": room.last_mop.isoformat() if room.last_mop else None,
+            "last_full_clean": room.last_cleaned.isoformat()
+            if room.last_cleaned
+            else None,
+            "opportunity": opportunity_attributes(room.opportunity),
+            "occupancy_quality": occupancy_quality_attributes(room.occupancy_quality),
             "robot_entity_ids": [item.robot_entity_id for item in room.robot_previews],
             "robot_previews": [
                 {
@@ -309,7 +326,7 @@ class _RoomStatusSensor(AdaptiveEntity, SensorEntity):
             "mop_due_at": None,
             "estimated_start": candidate.due_at.isoformat() if candidate else None,
             "operation": candidate.operation.value if candidate else None,
-            "forecast_confidence": candidate.confidence if candidate else 0,
+            "forecast_confidence": room.vacancy_diagnostic.forecast_confidence,
             "occupancy": room.occupancy,
             "adjacency_mode": room.adjacency_mode.value,
             "adjacency_active": room.adjacency_active,

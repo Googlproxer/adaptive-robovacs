@@ -40,6 +40,11 @@ automatically on supported versions.
 
 ## Installation
 
+Requires Home Assistant 2026.10.0 or newer. Version 1.18.0
+adds conditional vacancy forecasts, a configurable stable-vacancy fallback,
+and missed-window diagnostics. See the [release notes](docs/releases/v1.18.0.md)
+and [migration guide](docs/migration-v1.18.0.md) before activation.
+
 1. Copy `custom_components/adaptive_robovacs` to your Home Assistant
    `custom_components` directory and restart Home Assistant.
 2. Add **Adaptive RoboVacs** from Settings > Devices & services. It starts in
@@ -77,6 +82,15 @@ Desired bounds), Off, named periods, and Custom; only Custom shows detailed
 room Desired bounds. The simple profile view hides detailed room program, pass,
 and power overrides until Custom is selected; the entities remain available for
 automations and existing custom room profiles stay Custom after upgrading.
+
+Room cards also show the exact robot/stage forecast, separate vacuum, mop and
+full-program completion times, missed-window causes, and occupancy-source
+quality. **Occupancy sensitivity** sets the future vacancy horizon (0 uses the
+safe stage duration plus 10 minutes). **Stable vacancy fallback** permits a
+continuously clear room after the greater of that horizon and **Vacancy fallback
+wait** (0 uses the horizon). This fallback defaults on and stays available even
+with extensive poor historical samples; it never bypasses occupancy or other
+dispatch gates. Each observed neighbour uses its own settings.
 
 ## Safety
 

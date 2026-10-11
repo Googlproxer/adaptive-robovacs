@@ -298,7 +298,7 @@ class AdaptiveRoboVacsStatusRow extends HTMLElement {
         : "";
       return `${name} (${diagnostic.reason || "vacancy window unresolved"}${elapsed})`;
     });
-    return `Adjacent room protection: ${descriptions.join("; ")}`;
+    return `${attrs.overdue ? "Overdue — " : ""}Adjacent room protection: ${descriptions.join("; ")}`;
   }
 
   setConfig(config) {
@@ -357,13 +357,93 @@ class AdaptiveRoboVacsStatusRow extends HTMLElement {
     }
     this._row.config = this._config;
     this._row.hass = this._hass;
-    this._value.textContent = AdaptiveRoboVacsStatusRow.display(
-      this._hass.states[this._config.entity]
+    this._value.textContent = this.constructor.display(
+      this._hass.states[this._config.entity], Date.now(), this._config.kind
     );
   }
 }
 
 customElements.define("adaptive-robovacs-status-row", AdaptiveRoboVacsStatusRow);
+
+class AdaptiveRoboVacsEvidenceRow extends AdaptiveRoboVacsStatusRow {
+  connectedCallback() {
+    // Give long evidence its own full-width line on narrow room cards.
+    if (!this._row) {
+      const root = this.attachShadow({ mode: "open" });
+      const style = document.createElement("style");
+      style.textContent = ":host{display:block;cursor:pointer;padding:8px 0;border-top:1px solid var(--divider-color,#ddd)}.label{font-weight:500;margin-bottom:5px}.evidence{display:block;line-height:1.5;white-space:normal;overflow-wrap:anywhere;color:var(--secondary-text-color,#555)}";
+      this._row = document.createElement("div");
+      this._label = document.createElement("div");
+      this._label.className = "label";
+      this._value = document.createElement("span");
+      this._value.className = "evidence";
+      this._row.append(this._label, this._value);
+      root.append(style, this._row);
+      this.setAttribute("role", "button");
+      this.tabIndex = 0;
+      this.addEventListener("click", () => this._showDetails());
+      this.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          this._showDetails();
+        }
+      });
+    }
+    super.connectedCallback();
+  }
+
+  _refreshStatus() {
+    if (this._label) this._label.textContent = this._config?.name || "Evidence";
+    super._refreshStatus();
+  }
+
+  static display(state, now = Date.now(), kind = "forecast") {
+    if (!state || state.state === "unavailable") return "Unavailable";
+    const attrs = state.attributes || {};
+    const stamp = (value) => {
+      const time = Date.parse(value);
+      return Number.isFinite(time) ? new Date(time).toLocaleString() : "No completion recorded";
+    };
+    if (kind === "program") {
+      const occurrence = attrs.occurrence;
+      const stage = occurrence?.stages?.[occurrence.current_stage];
+      const pending = stage ? `; ${attrs.active_phase ? "Current" : "Next"}: ${stage.operation}, ${stage.passes} pass(es)` : "";
+      const warning = occurrence?.follow_up_warning
+        || (stage?.reason === "mop_delay_expired" ? "Vacuum must repeat: mop follow-up expired" : "");
+      return `Vacuum: ${stamp(attrs.last_vacuum)}; Mop: ${stamp(attrs.last_mop)}; Full program: ${stamp(attrs.last_full_clean)}${pending}${warning ? `; ${warning}` : ""}`;
+    }
+    if (kind === "opportunity") {
+      const item = attrs.opportunity || {};
+      if (!attrs.enabled) return "Scheduling disabled";
+      if (!attrs.overdue) return "Within cadence";
+      const minutes = Object.entries(item.minutes_by_cause || {})
+        .filter(([, value]) => value > 0).map(([cause, value]) => `${cause.replaceAll("_", " ")}: ${Math.round(value)} min`);
+      return `${item.missed_cadences || 1} cadence deadline(s) missed; ${item.windows?.length || 0} window summaries. ${minutes.join("; ")}${minutes.length ? ". " : ""}${item.advice || "Collecting observed window evidence."}`;
+    }
+    if (kind === "occupancy") {
+      const quality = attrs.occupancy_quality || {};
+      const median = Number.isFinite(quality.median_vacancy_seconds) ? `${Math.round(quality.median_vacancy_seconds)} s` : "unavailable";
+      return `Last 24 h: ${quality.transitions_24h || 0}${quality.transition_limit_reached ? "+" : ""} observed changes; ${quality.subminute_vacancies_24h || 0} vacancies under 1 min; median ${median}. ${quality.retained_forecast_samples || 0} retained forecast samples (56 days).`;
+    }
+    const decisions = attrs.robot_eligibility || [];
+    const evidence = decisions.filter((item) => item.vacancy_diagnostic);
+    if (!evidence.length) return `Not evaluated: ${attrs.block_reason || state.state}`;
+    return evidence.map((item) => {
+      const forecast = item.vacancy_diagnostic;
+      const confidence = forecast.decision_source === "policy"
+        ? forecast.reason
+        : forecast.confidence_available
+        ? `${forecast.successful_sample_count}/${forecast.surviving_sample_count} surviving samples (${Math.round(forecast.forecast_confidence * 100)}%)`
+        : "Insufficient surviving history";
+      const basis = forecast.decision_source === "stable_vacancy_fallback" ? "; stable-vacancy fallback" : "";
+      const selected = attrs.selected_robot_id === item.robot_entity_id ? " (selected)" : "";
+      const reason = (item.reason || "blocked").replace(/^insufficient surviving (vacancy )?history; /i, "");
+      return `${item.robot_name}${selected}: ${item.operation}, ${item.passes} pass(es), ${item.duration_minutes} min; horizon ${forecast.required_clear_minutes} min; ${confidence}${basis}; ${item.eligible ? "eligible" : reason}`;
+    }).join("; ");
+  }
+}
+
+customElements.define("adaptive-robovacs-evidence-row", AdaptiveRoboVacsEvidenceRow);
 
 const COMMON_FORM_SCHEMA = [
   {
@@ -815,6 +895,14 @@ class AdaptiveRoboVacsRoomCard extends AdaptiveRoboVacsCardBase {
           name: "Required vacancy (min)",
         }
       );
+    }
+    if (status?.attrs?.opportunity) {
+      entityRows.push(...[
+        ["forecast", "Decision"], ["program", "Cleaning progress"],
+        ["opportunity", "Missed windows"], ["occupancy", "Occupancy evidence"],
+      ].map(([kind, name]) => ({
+        type: "custom:adaptive-robovacs-evidence-row", entity: status.entityId, kind, name,
+      })));
     }
     return entityRows.length
       ? this._entitiesConfiguration(this._title(), entityRows)

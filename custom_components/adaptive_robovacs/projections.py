@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from statistics import median
 from typing import Protocol
 
 from homeassistant.core import HomeAssistant
@@ -15,6 +16,7 @@ from .models import (
     AdjacencyDecision,
     CleaningOperation,
     DurationEstimate,
+    Forecast,
     OccurrenceSource,
     ResolvedDailyWindow,
     cleaning_profile_sources,
@@ -29,7 +31,13 @@ from .models import (
     resolve_cleaning_profile,
     stage_pass_count,
 )
-from .planner import CandidateRobotDecision, ScheduleCandidate, VacancyDiagnostic
+from .opportunities import missed_cadences, opportunity_advice
+from .planner import (
+    CandidateRobotDecision,
+    RoomEvaluation,
+    ScheduleCandidate,
+    VacancyDiagnostic,
+)
 from .presentation import adjacency_block_reason
 from .repairs_manager import fault_summary, room_recovery_summary
 from .room_status import room_robot_previews
@@ -50,6 +58,9 @@ from .snapshots import (
     IntegrationSnapshot,
     ManualAuditView,
     ObservedProfileView,
+    OccupancyQualityView,
+    OpportunityView,
+    OpportunityWindowView,
     RobotEligibilityView,
     RobotHoldView,
     RobotSettingsView,
@@ -84,6 +95,7 @@ class ProjectionSource(Protocol):
     hass: HomeAssistant
     discovery: DiscoverySnapshot
     state: SchedulerState
+    _room_evaluations: dict[str, RoomEvaluation]
 
     @property
     def observe_only(self) -> bool: ...
@@ -274,6 +286,7 @@ def _occurrence_view(
         bypass_desired_window=occurrence.bypass_desired_window,
         manual_context_id=occurrence.manual_context_id,
         manual_user_id=occurrence.manual_user_id,
+        mop_delay_expirations=occurrence.mop_delay_expirations,
     )
 
 
@@ -318,6 +331,7 @@ def _room_decision_view(record: RoomDecisionRecord | None) -> RoomDecisionView |
         forecast_confidence=record.forecast_confidence,
         comparable_sample_count=record.comparable_sample_count,
         forecast_reason=record.forecast_reason,
+        evidence=FrozenJsonObject.from_mapping(record.evidence.to_mapping()),
     )
 
 
@@ -372,6 +386,76 @@ def room_recovery_view(
     )
 
 
+def _occupancy_quality_view(
+    history: RoomHistory, now: datetime
+) -> OccupancyQualityView:
+    transitions = [
+        item
+        for item in history.occupancy_transitions
+        if item.at >= now - timedelta(hours=24)
+    ]
+    spells = [
+        item.vacancy_seconds for item in transitions if item.vacancy_seconds is not None
+    ]
+    return OccupancyQualityView(
+        len(transitions),
+        len(spells),
+        sum(value < 60 for value in spells),
+        median(spells) if spells else None,
+        len(history.occupancy_samples),
+        len(transitions) >= 4096,
+    )
+
+
+def _opportunity_view(
+    history: RoomHistory,
+    due: datetime | None,
+    settings: RoomSettings,
+    now: datetime,
+    occurrence: CleaningOccurrence | None,
+) -> OpportunityView:
+    record = history.opportunity
+    cause, advice = opportunity_advice(
+        record, repeated_mop=bool(occurrence and occurrence.mop_delay_expirations >= 2)
+    )
+    return OpportunityView(
+        missed_cadences(now, due, settings.cleaning_interval)
+        if due and settings.enabled
+        else 0,
+        record.observed_window,
+        record.totals,
+        tuple(
+            OpportunityWindowView(item.started_at, item.ended_at, item.minutes)
+            for item in record.windows
+        ),
+        cause,
+        advice,
+        record.alert_signature is not None,
+    )
+
+
+def _adjacency_blocker_views(
+    source: ProjectionSource, decision: AdjacencyDecision | None
+) -> tuple[RoomAdjacencyBlockerView, ...]:
+    if decision is None:
+        return ()
+    return tuple(
+        RoomAdjacencyBlockerView(
+            item.area_id,
+            source.discovery.rooms[item.area_id].name,
+            item.occupancy,
+            VacancyDiagnostic.from_forecast(
+                source._room_data(item.area_id).occupancy_source,
+                source._room_data(item.area_id).unoccupied_since,
+                item.vacancy,
+            )
+            if item.vacancy
+            else None,
+        )
+        for item in decision.blockers
+    )
+
+
 def room_view(source: ProjectionSource, area_id: str) -> RoomView:
     """Build typed, immutable state for one discovered area."""
 
@@ -387,14 +471,36 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         else next_window_start(local_now, desired_window.start)
     )
     next_due = source._room_due(room, "cleaning", now)
-    candidate, reason = source._room_candidate(room, now)
-    diagnostics = source._candidate_robot_diagnostics(candidate) if candidate else ()
+    evaluation = getattr(source, "_room_evaluations", {}).get(area_id)
+    if evaluation is None:
+        # Initial publication can precede the first settled transaction.
+        candidate, reason = source._room_candidate(room, now)
+        diagnostics = (
+            source._candidate_robot_diagnostics(candidate) if candidate else ()
+        )
+        evaluation = RoomEvaluation(now, candidate, reason, diagnostics)
+    candidate, reason, diagnostics = (
+        evaluation.candidate,
+        evaluation.reason,
+        evaluation.robots,
+    )
+    chosen = evaluation.display_decision
+    evidence = chosen.evidence if chosen else None
     eligibility = tuple(
         RobotEligibilityView(
             robot_entity_id=item.eligibility.robot_id,
             robot_name=item.eligibility.robot_name,
             eligible=item.eligibility.eligible,
             reason=item.eligibility.reason,
+            operation=item.evidence.operation if item.evidence else None,
+            program=item.evidence.program if item.evidence else None,
+            stage_index=item.evidence.stage_index if item.evidence else None,
+            passes=item.evidence.passes if item.evidence else None,
+            duration_minutes=item.evidence.duration_minutes if item.evidence else None,
+            vacancy_diagnostic=item.evidence.vacancy_diagnostic
+            if item.evidence
+            else None,
+            adjacency_blockers=_adjacency_blocker_views(source, item.adjacency),
         )
         for item in diagnostics
     )
@@ -427,22 +533,22 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         source.hass.states.get(active_robot_id) if active_robot_id else None
     )
     duration_operation = (
-        active.operation if active else candidate.operation if candidate else "vacuum"
+        active.operation if active else evidence.operation if evidence else "vacuum"
     )
-    duration_passes = active.passes if active else candidate.passes if candidate else 1
+    duration_passes = active.passes if active else evidence.passes if evidence else 1
+    diagnostic_robot = (
+        source.discovery.robots.get(chosen.eligibility.robot_id) if chosen else None
+    )
     duration_estimate = source._duration_estimate(
         room,
         duration_operation,
         duration_passes,
-        active_registry_id,
+        active_registry_id
+        or (diagnostic_robot.registry_id if diagnostic_robot else None),
     )
-    adjacency = source._adjacency_decision(room, now, duration_estimate.safe_minutes)
-    if (
-        adjacency.blockers
-        and all(item.occupancy == "unoccupied" for item in adjacency.blockers)
-        and any(item.eligibility.eligible for item in diagnostics)
-    ):
-        adjacency = replace(adjacency, blockers=())
+    adjacency = (chosen.adjacency if chosen else None) or source._adjacency_decision(
+        room, now
+    )
     adjacency_reason = adjacency_block_reason(
         adjacency, {key: item.name for key, item in source.discovery.rooms.items()}
     )
@@ -546,10 +652,12 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         )
 
     cleaning_deferral = detail.deferrals.get("cleaning")
-    vacancy = source._vacancy_diagnostic(
-        room,
-        now,
-        duration_estimate.safe_minutes,
+    vacancy = (
+        evidence.vacancy_diagnostic if evidence else None
+    ) or VacancyDiagnostic.from_forecast(
+        detail.occupancy_source,
+        detail.unoccupied_since,
+        Forecast(False, 0.0, "not evaluated", decision_source="not_evaluated"),
     )
     room_fault = source.state.room_faults.get(room.area_id)
     schedule_due = effective_scheduled_due(
@@ -583,6 +691,14 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         cleaning_period=source.room_cleaning_period(room.area_id),
         cleaning_profile=source.room_cleaning_profile(room.area_id),
         enabled=settings.enabled,
+        occupancy_sensitivity_minutes=settings.occupancy_sensitivity_minutes,
+        vacancy_fallback_enabled=settings.vacancy_fallback_enabled,
+        vacancy_fallback_minutes=settings.vacancy_fallback_minutes,
+        selected_robot_id=evaluation.selected_robot_id,
+        decision_evaluated_at=evaluation.evaluated_at,
+        overdue=settings.enabled and schedule_due is not None and schedule_due <= now,
+        opportunity=_opportunity_view(detail, schedule_due, settings, now, occurrence),
+        occupancy_quality=_occupancy_quality_view(detail, now),
         adjacency_mode=settings.adjacency_mode,
         adjacency_active=adjacency.active,
         adjacent_area_ids=adjacency.neighbor_area_ids,
@@ -655,7 +771,7 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         effective_duration_minutes=duration_estimate.safe_minutes,
         duration_sample_count=duration_estimate.sample_count,
         predicted_total_minutes=duration_estimate.typical_minutes,
-        required_vacancy_minutes=duration_estimate.safe_minutes,
+        required_vacancy_minutes=vacancy.required_clear_minutes,
         duration_model_version=2,
         duration_model_learned=duration_estimate.learned,
         duration_estimates_by_robot=tuple(duration_estimates),

@@ -20,6 +20,114 @@ sys.modules[SPEC.name] = models
 SPEC.loader.exec_module(models)
 
 
+class RemainingVacancyTests(unittest.TestCase):
+    def forecast(
+        self,
+        elapsed,
+        durations,
+        *,
+        horizon=30,
+        fallback=True,
+        minimum=6,
+        start=None,
+        wait=0,
+    ):
+        start = start or datetime(2026, 10, 5, 9, tzinfo=UTC)
+        samples = [
+            {"start": start - timedelta(days=7 * (index + 1)), "minutes": duration}
+            for index, duration in enumerate(durations)
+        ]
+        now = (start.astimezone(UTC) + timedelta(minutes=elapsed)).astimezone(
+            start.tzinfo
+        )
+        return models.forecast_vacancy(
+            samples,
+            now,
+            start,
+            horizon,
+            80,
+            minimum,
+            fallback_enabled=fallback,
+            fallback_minutes=wait,
+        )
+
+    def test_sixth_bad_sample_cannot_remove_a_stable_fallback(self):
+        for count in (0, 5, 6, 100):
+            result = self.forecast(180, [1] * count, horizon=55)
+            self.assertTrue(result.allowed)
+            self.assertEqual(result.decision_source, "stable_vacancy_fallback")
+            self.assertEqual(result.confidence, 0)
+            self.assertFalse(result.confidence_available)
+
+    def test_conditioning_uses_remaining_time_and_surviving_denominator(self):
+        initial = self.forecast(0, [10, 10, *([70] * 6)], fallback=False)
+        later = self.forecast(11, [10, 10, *([70] * 6)], fallback=False)
+        self.assertFalse(initial.allowed)
+        self.assertEqual(initial.confidence, 0.75)
+        self.assertTrue(later.allowed)
+        self.assertEqual(later.surviving_samples, 6)
+        self.assertEqual(later.successful_samples, 6)
+        self.assertEqual(later.decision_source, "historical")
+        # Surviving this long does not prove another full cleaning horizon fits.
+        self.assertFalse(self.forecast(50, [70] * 6, fallback=False).allowed)
+
+    def test_insufficient_survivors_and_disabled_or_longer_fallback(self):
+        result = self.forecast(20, [10] * 20 + [100] * 5, fallback=False)
+        self.assertFalse(result.allowed)
+        self.assertFalse(result.confidence_available)
+        self.assertEqual(result.surviving_samples, 5)
+        self.assertFalse(self.forecast(500, [1] * 6, fallback=False).allowed)
+        self.assertFalse(self.forecast(89.99, [], wait=90).allowed)
+        self.assertTrue(self.forecast(90, [], wait=90).allowed)
+        self.assertFalse(self.forecast(29.99, [], wait=1).allowed)
+        self.assertTrue(self.forecast(30, [], wait=1).allowed)
+
+    def test_comparable_cohort_stays_with_vacancy_start_across_boundaries(self):
+        for start in (
+            datetime(2026, 10, 5, 7, 50, tzinfo=UTC),
+            datetime(2026, 10, 9, 23, 50, tzinfo=UTC),
+        ):
+            self.assertTrue(
+                self.forecast(20, [100] * 6, start=start, fallback=False).allowed
+            )
+
+    def test_dst_uses_real_elapsed_time(self):
+        spring = datetime(2026, 10, 4, 1, 50, tzinfo=ZoneInfo("Australia/Sydney"))
+        result = self.forecast(20, [], start=spring)
+        self.assertEqual(result.clear_minutes, 20)
+        self.assertFalse(result.allowed)
+        self.assertTrue(self.forecast(30, [], start=spring).allowed)
+        autumn = datetime(2026, 4, 5, 2, 40, tzinfo=ZoneInfo("Australia/Sydney"))
+        self.assertEqual(self.forecast(60, [], start=autumn).clear_minutes, 60)
+
+    def test_invalid_or_open_samples_never_supply_confidence(self):
+        start = datetime(2026, 10, 5, 9, tzinfo=UTC)
+        samples = [
+            {"start": start - timedelta(days=7), "minutes": value}
+            for value in (
+                True,
+                "bad",
+                float("nan"),
+                float("inf"),
+                1e300,
+                10**1000,
+                -1,
+                {},
+                0,
+            )
+        ]
+        samples += [{"start": "bad", "minutes": 100}, {"start": start, "minutes": 100}]
+        result = models.forecast_vacancy(samples, start, start, 30, 80, 6)
+        self.assertEqual(result.comparable_samples, 0)
+        self.assertFalse(result.allowed)
+        self.assertFalse(models.forecast_vacancy([], start, None, 30, 80, 6).allowed)
+        self.assertFalse(
+            models.forecast_vacancy(
+                [], start, start + timedelta(seconds=1), 30, 80, 6
+            ).allowed
+        )
+
+
 class FaultRetryPolicyTests(unittest.TestCase):
     def test_only_prestart_preparation_faults_receive_bounded_retry(self) -> None:
         self.assertEqual(
@@ -675,7 +783,8 @@ class CadenceTests(unittest.TestCase):
             [], self.now, self.now - timedelta(minutes=20), 30, 80, 6
         )
         self.assertFalse(result.allowed)
-        self.assertEqual(result.reason, "waiting for 30 clear minutes")
+        self.assertIn("waiting for 30 clear minutes", result.reason)
+        self.assertEqual(result.decision_source, "insufficient_history")
         self.assertEqual(result.required_minutes, 30)
         self.assertEqual(result.comparable_samples, 0)
         result = models.forecast_vacancy(
@@ -1636,9 +1745,9 @@ class DomainBoundaryCoverageTests(unittest.TestCase):
         )
         samples = [
             {"start": "bad", "minutes": 100},
-            {"start": now, "minutes": "bad"},
-            {"start": now, "minutes": 40},
-            {"start": now, "minutes": "50"},
+            {"start": now - timedelta(days=7, minutes=45), "minutes": "bad"},
+            {"start": now - timedelta(days=7, minutes=45), "minutes": 40},
+            {"start": now - timedelta(days=7, minutes=45), "minutes": 50},
         ]
         forecast = models.forecast_vacancy(
             samples,
@@ -1649,7 +1758,7 @@ class DomainBoundaryCoverageTests(unittest.TestCase):
             minimum_samples=3,
         )
         self.assertTrue(forecast.allowed)
-        self.assertEqual(forecast.comparable_samples, 3)
+        self.assertEqual(forecast.comparable_samples, 2)
         self.assertFalse(models.in_daytime_window(now, "bad", "10:00"))
         with self.assertRaises(ValueError):
             models.next_window_start(now, "bad")

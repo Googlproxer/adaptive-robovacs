@@ -48,7 +48,7 @@ from .models import (
     room_cleaning_profile_is_custom,
 )
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 RETIRED_GLOBAL_SETTINGS = frozenset({"hall_start", "hall_end"})
 DAILY_WINDOW_VERSION = 1
 
@@ -133,6 +133,14 @@ def _daily_time(value: object, default: str, name: str) -> str:
     if not is_valid_daily_time(candidate):
         raise StateSchemaError(f"{name} must be a zero-padded HH:MM value")
     return str(candidate)
+
+
+def _bounded_integer(value: object, default: int, name: str, maximum: int) -> int:
+    """Decode new integer controls without silently rounding retained data."""
+    parsed = _bounded_number(value, default, name, 0, maximum)
+    if isinstance(value, bool) or not parsed.is_integer():
+        raise StateSchemaError(f"{name} must be an integer")
+    return int(parsed)
 
 
 def _timestamp(value: object) -> datetime | None:
@@ -340,6 +348,9 @@ class RoomSettings:
     cleaning_depth: str | None = None
     profile_custom: bool = False
     adjacency_mode: AdjacencyMode = AdjacencyMode.NIGHT_ONLY
+    occupancy_sensitivity_minutes: int = 0
+    vacancy_fallback_enabled: bool = True
+    vacancy_fallback_minutes: int = 0
 
     @property
     def vacuum_interval(self) -> float:
@@ -410,6 +421,21 @@ class RoomSettings:
         return cls(
             enabled=bool(value.get("enabled", default.enabled)),
             adjacency_mode=adjacency_mode,
+            occupancy_sensitivity_minutes=_bounded_integer(
+                value.get("occupancy_sensitivity_minutes"),
+                0,
+                "occupancy_sensitivity_minutes",
+                180,
+            ),
+            vacancy_fallback_enabled=_boolean(
+                value.get("vacancy_fallback_enabled"), True, "vacancy_fallback_enabled"
+            ),
+            vacancy_fallback_minutes=_bounded_integer(
+                value.get("vacancy_fallback_minutes"),
+                0,
+                "vacancy_fallback_minutes",
+                1440,
+            ),
             cleaning_interval=_bounded_number(
                 value.get("cleaning_interval", value.get("vacuum_interval")),
                 default.cleaning_interval,
@@ -454,6 +480,9 @@ class RoomSettings:
         return {
             "enabled": self.enabled,
             "adjacency_mode": self.adjacency_mode.value,
+            "occupancy_sensitivity_minutes": self.occupancy_sensitivity_minutes,
+            "vacancy_fallback_enabled": self.vacancy_fallback_enabled,
+            "vacancy_fallback_minutes": self.vacancy_fallback_minutes,
             "cleaning_interval": self.cleaning_interval,
             "expected_minutes": self.expected_minutes,
             "ignore_desired_window": self.ignore_desired_window,
@@ -668,6 +697,155 @@ class Deferral:
         }
 
 
+OPPORTUNITY_CAUSES = frozenset(
+    {
+        "forecast",
+        "occupancy",
+        "adjacency",
+        "robot",
+        "water",
+        "recovery",
+        "outside_hours",
+        "paused",
+        "eligible",
+        "in_progress",
+        "other",
+        "unknown",
+    }
+)
+
+
+def _opportunity_minutes(value: object) -> tuple[tuple[str, float], ...]:
+    data = _mapping(value, "opportunity minutes")
+    if set(data) - OPPORTUNITY_CAUSES:
+        raise StateSchemaError("unknown opportunity cause")
+    return tuple(
+        sorted(
+            (key, _bounded_number(minutes, 0, key, 0, 1e9))
+            for key, minutes in data.items()
+        )
+    )
+
+
+def _opportunity_time(value: object) -> datetime | None:
+    result = _timestamp(value)
+    if value is not None and result is None:
+        raise StateSchemaError("invalid opportunity timestamp")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunityWindow:
+    """A bounded summary of one observed overdue cleaning window."""
+
+    started_at: datetime
+    ended_at: datetime
+    minutes: tuple[tuple[str, float], ...] = ()
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> OpportunityWindow:
+        start = _opportunity_time(value.get("started_at"))
+        end = _opportunity_time(value.get("ended_at"))
+        if start is None or end is None or end < start:
+            raise StateSchemaError("invalid opportunity window")
+        return cls(start, end, _opportunity_minutes(value.get("minutes", {})))
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "started_at": _iso(self.started_at),
+            "ended_at": _iso(self.ended_at),
+            "minutes": dict(self.minutes),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RoomOpportunity:
+    """Restart-safe totals and notification deduplication for one overdue episode."""
+
+    due_at: datetime | None = None
+    accounted_at: datetime | None = None
+    reason: str = "unknown"
+    in_window: bool = False
+    window_started_at: datetime | None = None
+    window_end: datetime | None = None
+    totals: tuple[tuple[str, float], ...] = ()
+    window_totals: tuple[tuple[str, float], ...] = ()
+    windows: tuple[OpportunityWindow, ...] = ()
+    observed_window: bool = False
+    alert_signature: str | None = None
+    alert_at: datetime | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> RoomOpportunity:
+        reason = value.get("reason", "unknown")
+        if not isinstance(reason, str) or reason not in OPPORTUNITY_CAUSES:
+            raise StateSchemaError("invalid opportunity reason")
+        windows = value.get("windows", [])
+        if not isinstance(windows, list) or len(windows) > 14:
+            raise StateSchemaError("invalid opportunity windows")
+        return cls(
+            due_at=_opportunity_time(value.get("due_at")),
+            accounted_at=_opportunity_time(value.get("accounted_at")),
+            reason=reason,
+            in_window=_boolean(value.get("in_window"), False, "in_window"),
+            window_started_at=_opportunity_time(value.get("window_started_at")),
+            window_end=_opportunity_time(value.get("window_end")),
+            totals=_opportunity_minutes(value.get("totals", {})),
+            window_totals=_opportunity_minutes(value.get("window_totals", {})),
+            windows=tuple(
+                OpportunityWindow.from_mapping(_mapping(item, "window"))
+                for item in windows
+            ),
+            observed_window=_boolean(
+                value.get("observed_window"), False, "observed_window"
+            ),
+            alert_signature=_optional_string(
+                value.get("alert_signature"), "alert_signature"
+            ),
+            alert_at=_opportunity_time(value.get("alert_at")),
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {
+            "due_at": _iso(self.due_at),
+            "accounted_at": _iso(self.accounted_at),
+            "reason": self.reason,
+            "in_window": self.in_window,
+            "window_started_at": _iso(self.window_started_at),
+            "window_end": _iso(self.window_end),
+            "totals": dict(self.totals),
+            "window_totals": dict(self.window_totals),
+            "windows": [item.to_store() for item in self.windows],
+            "observed_window": self.observed_window,
+            "alert_signature": self.alert_signature,
+            "alert_at": _iso(self.alert_at),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class OccupancyTransition:
+    """Bounded signal-quality evidence, separate from forecast training samples."""
+
+    at: datetime
+    vacancy_seconds: float | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> OccupancyTransition:
+        at = _opportunity_time(value.get("at"))
+        if at is None:
+            raise StateSchemaError("missing occupancy transition timestamp")
+        seconds = value.get("vacancy_seconds")
+        return cls(
+            at,
+            None
+            if seconds is None
+            else _bounded_number(seconds, 0, "vacancy_seconds", 0, 1e9),
+        )
+
+    def to_store(self) -> dict[str, object]:
+        return {"at": _iso(self.at), "vacancy_seconds": self.vacancy_seconds}
+
+
 @dataclass(slots=True)
 class RoomHistory:
     cleaning_completed_at: datetime | None = None
@@ -687,9 +865,14 @@ class RoomHistory:
     last_stage_reason: str | None = None
     last_stage_at: datetime | None = None
     last_stage_summary: str | None = None
+    opportunity: RoomOpportunity = field(default_factory=RoomOpportunity)
+    occupancy_transitions: list[OccupancyTransition] = field(default_factory=list)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> RoomHistory:
+        transitions = value.get("occupancy_transitions", [])
+        if not isinstance(transitions, list) or len(transitions) > 4096:
+            raise StateSchemaError("invalid occupancy transitions")
         raw_deferrals = _mapping_or_empty(
             value.get("deferrals", value.get("defer", {}))
         )
@@ -761,6 +944,13 @@ class RoomHistory:
             last_stage_reason=_string(value.get("last_stage_reason")),
             last_stage_at=_timestamp(value.get("last_stage_at")),
             last_stage_summary=_string(value.get("last_stage_summary")),
+            opportunity=RoomOpportunity.from_mapping(
+                _mapping(value.get("opportunity", {}), "opportunity")
+            ),
+            occupancy_transitions=[
+                OccupancyTransition.from_mapping(_mapping(item, "transition"))
+                for item in transitions
+            ],
         )
 
     def to_store(self) -> dict[str, object]:
@@ -791,6 +981,10 @@ class RoomHistory:
             "last_stage_reason": self.last_stage_reason,
             "last_stage_at": _iso(self.last_stage_at),
             "last_stage_summary": self.last_stage_summary,
+            "opportunity": self.opportunity.to_store(),
+            "occupancy_transitions": [
+                item.to_store() for item in self.occupancy_transitions
+            ],
         }
 
     def to_runtime(self) -> dict[str, object]:
@@ -1082,6 +1276,7 @@ class CleaningOccurrence:
     bypass_desired_window: bool = False
     manual_context_id: str | None = None
     manual_user_id: str | None = None
+    mop_delay_expirations: int = 0
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> CleaningOccurrence | None:
@@ -1149,6 +1344,9 @@ class CleaningOccurrence:
                 "occurrence manual_context_id",
             ),
             _optional_string(value.get("manual_user_id"), "occurrence manual_user_id"),
+            _bounded_integer(
+                value.get("mop_delay_expirations"), 0, "mop_delay_expirations", 1000000
+            ),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -1157,6 +1355,7 @@ class CleaningOccurrence:
             "room_id": self.room_id,
             "robot_registry_id": self.robot_registry_id,
             "program": self.program,
+            "mop_delay_expirations": self.mop_delay_expirations,
             "stages": [stage.to_store() for stage in self.stages],
             "scheduled_at": _iso(self.scheduled_at),
             "created_at": _iso(self.created_at),
@@ -1684,6 +1883,7 @@ class RoomDecisionRecord:
     forecast_confidence: float = 0.0
     comparable_sample_count: int = 0
     forecast_reason: str | None = None
+    evidence: FrozenJsonObject = field(default_factory=FrozenJsonObject)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> RoomDecisionRecord:
@@ -1703,6 +1903,9 @@ class RoomDecisionRecord:
                 _integer(value.get("comparable_sample_count"), 0),
             ),
             forecast_reason=_string(value.get("forecast_reason")),
+            evidence=FrozenJsonObject.from_mapping(
+                _mapping(value.get("evidence", {}), "decision evidence")
+            ),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -1716,6 +1919,7 @@ class RoomDecisionRecord:
             "forecast_confidence": self.forecast_confidence,
             "comparable_sample_count": self.comparable_sample_count,
             "forecast_reason": self.forecast_reason,
+            "evidence": self.evidence.to_mapping(),
         }
 
 
@@ -1966,7 +2170,7 @@ class SchedulerState:
             isinstance(schema_version, bool) or not isinstance(schema_version, int)
         ):
             raise StateSchemaError("schema_version must be an integer")
-        if schema_version in {16, 17}:
+        if schema_version in {16, 17, 18}:
             # Validate the full former current schema before any permissive
             # legacy parsing. Retired settings remain ignored by that validator.
             upgraded = {**data, "schema_version": SCHEMA_VERSION}

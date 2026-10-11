@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -63,6 +63,7 @@ from ..observations import HomeAssistantObserver
 from ..planner import (
     CandidateRobotDecision,
     RobotEligibility,
+    RoomEvaluation,
     ScheduleCandidate,
     VacancyDiagnostic,
 )
@@ -71,7 +72,9 @@ from ..state import (
     ActiveJob,
     CleaningStage,
     Deferral,
+    FrozenJsonObject,
     OccupancySample,
+    OccupancyTransition,
     RobotSettings,
     RoomDecisionRecord,
     RoomHistory,
@@ -118,6 +121,7 @@ class ApplicationPolicyMixin:
     _startup_state_settle_until: datetime | None
     _ready_since: dict[str, datetime]
     _ready_confirmation_timers: dict[str, Callable[[], None]]
+    _room_evaluations: dict[str, RoomEvaluation]
 
     if TYPE_CHECKING:
 
@@ -184,17 +188,38 @@ class ApplicationPolicyMixin:
             source = observed.source
             unavailable = observed.unavailable_radars
             prior = detail.occupancy
+            vacancy_seconds = None
             if prior == "unoccupied" and state != "unoccupied":
                 started = detail.unoccupied_since
                 if started:
-                    duration = int((now - started).total_seconds() / 60)
-                    if duration > 0:
+                    vacancy_seconds = max(
+                        0.0,
+                        (now.astimezone(UTC) - started.astimezone(UTC)).total_seconds(),
+                    )
+                    duration = int(vacancy_seconds / 60)
+                    # Sensor loss censors the spell; it does not prove occupancy.
+                    if state == "occupied" and duration > 0:
                         detail.occupancy_samples.append(
                             OccupancySample(started_at=started, minutes=duration)
                         )
                 detail.unoccupied_since = None
-            elif prior != "unoccupied" and state == "unoccupied":
+            elif state == "unoccupied" and (
+                prior != "unoccupied"
+                or source != detail.occupancy_source
+                or detail.unoccupied_since is None
+            ):
                 detail.unoccupied_since = now
+            if prior != state:
+                detail.occupancy_transitions.append(
+                    OccupancyTransition(
+                        now, vacancy_seconds if state == "occupied" else None
+                    )
+                )
+                detail.occupancy_transitions = [
+                    item
+                    for item in detail.occupancy_transitions
+                    if item.at >= now - timedelta(hours=24)
+                ][-4096:]
             detail.occupancy = state
             detail.occupancy_source = source
             detail.unavailable_radars = unavailable
@@ -508,13 +533,17 @@ class ApplicationPolicyMixin:
             {"start": _local(sample.started_at), "minutes": sample.minutes}
             for sample in detail.occupancy_samples
         ]
+        settings = self._room_settings(room)
         return forecast_vacancy(
             samples,
             _local(now),
             _local(detail.unoccupied_since) if detail.unoccupied_since else None,
-            int(duration_minutes) + EXTRA_CLEAR_MINUTES,
+            settings.occupancy_sensitivity_minutes
+            or int(duration_minutes) + EXTRA_CLEAR_MINUTES,
             self.state.global_settings.forecast_confidence,
             FALLBACK_SAMPLE_COUNT,
+            fallback_enabled=settings.vacancy_fallback_enabled,
+            fallback_minutes=settings.vacancy_fallback_minutes,
         )
 
     def _vacancy_diagnostic(
@@ -540,7 +569,16 @@ class ApplicationPolicyMixin:
         """Keep a bounded, safe audit when an eligibility outcome changes."""
 
         decisions = self.state.audit.room_decisions
-        diagnostic = self._vacancy_diagnostic(room, now, duration_minutes)
+        evaluation = getattr(self, "_room_evaluations", {}).get(room.area_id)
+        chosen = evaluation.display_decision if evaluation else None
+        evidence = chosen.evidence if chosen else None
+        diagnostic = (
+            evidence.vacancy_diagnostic if evidence else None
+        ) or VacancyDiagnostic.from_forecast(
+            self._room_data(room.area_id).occupancy_source,
+            self._room_data(room.area_id).unoccupied_since,
+            Forecast(False, 0.0, "not evaluated", decision_source="not_evaluated"),
+        )
         event = RoomDecisionRecord(
             at=now,
             room_area_id=room.area_id,
@@ -551,6 +589,35 @@ class ApplicationPolicyMixin:
             forecast_confidence=diagnostic.forecast_confidence,
             comparable_sample_count=diagnostic.comparable_sample_count,
             forecast_reason=diagnostic.reason,
+            evidence=FrozenJsonObject.from_mapping(
+                {
+                    "robot_registry_id": self.discovery.robots[
+                        chosen.eligibility.robot_id
+                    ].registry_id
+                    if chosen
+                    else None,
+                    "operation": evidence.operation.value if evidence else None,
+                    "passes": evidence.passes if evidence else None,
+                    "duration_minutes": evidence.duration_minutes if evidence else None,
+                    "stage_index": evidence.stage_index if evidence else None,
+                    "program": evidence.program.value
+                    if evidence and evidence.program
+                    else None,
+                    "vacancy": diagnostic.as_attributes(),
+                    "adjacency_blockers": [
+                        {
+                            "area_id": blocker.area_id,
+                            "occupancy": blocker.occupancy,
+                            "forecast_reason": blocker.vacancy.reason
+                            if blocker.vacancy
+                            else None,
+                        }
+                        for blocker in chosen.adjacency.blockers
+                    ]
+                    if chosen and chosen.adjacency
+                    else [],
+                }
+            ),
         )
         previous = next(
             (item for item in reversed(decisions) if item.room_area_id == room.area_id),
@@ -561,11 +628,13 @@ class ApplicationPolicyMixin:
             previous.occupancy_source,
             previous.required_clear_minutes,
             previous.forecast_reason,
+            previous.evidence,
         ) == (
             event.reason,
             event.occupancy_source,
             event.required_clear_minutes,
             event.forecast_reason,
+            event.evidence,
         ):
             return
         decisions.append(event)
@@ -721,6 +790,22 @@ class ApplicationPolicyMixin:
         if room is None:
             return "room is no longer discovered"
         self._observe_occupancy(now)
+        detail = self._room_data(room.area_id)
+        if detail.occupancy == "occupied":
+            return "room became occupied before dispatch"
+        if not self._room_settings(room).enabled:
+            return "room disabled before dispatch"
+        if not candidate.bypass_desired_window and not self._desired_window_allows(
+            room, now
+        ):
+            return "waiting for desired cleaning window"
+        unresolved_allowed = self._unresolved_allowed(room, now)
+        if detail.occupancy != "unoccupied" and not unresolved_allowed:
+            return "unresolved occupancy before dispatch"
+        if not unresolved_allowed:
+            forecast = self._forecast(room, now, candidate.duration_minutes)
+            if not forecast.allowed:
+                return forecast.reason
         return self._duration_adjacency_block_reason(
             room, now, candidate.duration_minutes
         )
@@ -845,7 +930,47 @@ class ApplicationPolicyMixin:
         candidate: ScheduleCandidate,
         robot: DiscoveredRobot,
     ) -> tuple[ScheduleCandidate | None, str]:
-        """Resolve one robot candidate and retain a safe rejection reason."""
+        """Keep the dispatch API while retaining rejected evidence separately."""
+        decision = self._robot_candidate_decision(candidate, robot)
+        return decision.candidate, decision.eligibility.reason
+
+    def _robot_candidate_decision(
+        self, candidate: ScheduleCandidate, robot: DiscoveredRobot
+    ) -> CandidateRobotDecision:
+        """Resolve once, preserving exact forecast inputs on both outcomes."""
+        resolved, reason = self._prepare_robot_candidate(candidate, robot)
+        adjacency = None
+        allowed = resolved is not None
+        if resolved is not None:
+            room = self.discovery.rooms[resolved.room_id]
+            if not resolved.manual_override:
+                adjacency = self._adjacency_decision(
+                    room, resolved.evaluated_at, resolved.duration_minutes
+                )
+            diagnostic = resolved.vacancy_diagnostic
+            if diagnostic is not None and not diagnostic.allowed:
+                allowed = False
+                reason = diagnostic.reason
+            elif adjacency is not None and adjacency.blocked:
+                allowed = False
+                reason = (
+                    adjacency_block_reason(
+                        adjacency,
+                        {key: item.name for key, item in self.discovery.rooms.items()},
+                    )
+                    or "adjacency blocked"
+                )
+        return CandidateRobotDecision(
+            RobotEligibility(robot.entity_id, robot.name, allowed, reason),
+            resolved if allowed else None,
+            resolved,
+            adjacency,
+        )
+
+    def _prepare_robot_candidate(
+        self, candidate: ScheduleCandidate, robot: DiscoveredRobot
+    ) -> tuple[ScheduleCandidate | None, str]:
+        """Build the exact executable stage and its forecast without discarding it."""
 
         room = self.discovery.rooms.get(candidate.room_id)
         if room is None:
@@ -898,14 +1023,6 @@ class ApplicationPolicyMixin:
                     duration,
                 )
             )
-            if not forecast.allowed:
-                return None, forecast.reason
-            if not candidate.manual_override and (
-                adjacency_reason := self._duration_adjacency_block_reason(
-                    room, candidate.evaluated_at, duration
-                )
-            ):
-                return None, adjacency_reason
             return replace(
                 candidate,
                 operation=operation,
@@ -924,10 +1041,10 @@ class ApplicationPolicyMixin:
                 manual_mode=occurrence.manual_mode,
                 manual_context_id=occurrence.manual_context_id,
                 manual_user_id=occurrence.manual_user_id,
-                vacancy_diagnostic=self._vacancy_diagnostic(
-                    room,
-                    candidate.evaluated_at,
-                    duration,
+                vacancy_diagnostic=VacancyDiagnostic.from_forecast(
+                    self._room_data(room.area_id).occupancy_source,
+                    self._room_data(room.area_id).unoccupied_since,
+                    forecast,
                 ),
             ), "eligible"
 
@@ -998,14 +1115,6 @@ class ApplicationPolicyMixin:
                 duration,
             )
         )
-        if not forecast.allowed:
-            return None, forecast.reason
-        if not candidate.manual_override and (
-            adjacency_reason := self._duration_adjacency_block_reason(
-                room, candidate.evaluated_at, duration
-            )
-        ):
-            return None, adjacency_reason
         return replace(
             candidate,
             operation=operation,
@@ -1023,10 +1132,10 @@ class ApplicationPolicyMixin:
             source=candidate.source,
             manual_mode=manual_mode,
             manual_context_id=candidate.manual_context_id,
-            vacancy_diagnostic=self._vacancy_diagnostic(
-                room,
-                candidate.evaluated_at,
-                duration,
+            vacancy_diagnostic=VacancyDiagnostic.from_forecast(
+                self._room_data(room.area_id).occupancy_source,
+                self._room_data(room.area_id).unoccupied_since,
+                forecast,
             ),
         ), "eligible"
 
@@ -1073,16 +1182,5 @@ class ApplicationPolicyMixin:
                     )
                 )
                 continue
-            resolved, reason = self._resolve_candidate_for_robot(candidate, robot)
-            diagnostics.append(
-                CandidateRobotDecision(
-                    RobotEligibility(
-                        robot_id=robot.entity_id,
-                        robot_name=robot.name,
-                        eligible=resolved is not None,
-                        reason=reason,
-                    ),
-                    resolved,
-                )
-            )
+            diagnostics.append(self._robot_candidate_decision(candidate, robot))
         return tuple(diagnostics)

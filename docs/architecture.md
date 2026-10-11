@@ -49,9 +49,9 @@ existing dashboard module and do not create Home Assistant updates.
 
 ### Domain
 
-`models.py`, `planner.py`, `jobs.py`, and `state.py` contain identifiers,
+`models.py`, `planner.py`, `jobs.py`, `opportunities.py`, and `state.py` contain identifiers,
 enums, typed values, pure scheduling rules, whole-plan allocation, lifecycle
-reducers, and the schema-18 Store model. They do not import Home Assistant.
+reducers, and the schema-19 Store model. They do not import Home Assistant.
 The reducers return transitions and effects; they do not call services or
 mutate a coordinator.
 
@@ -151,13 +151,13 @@ action. A retained alias preserves existing Adaptive RoboVacs unique IDs after
 a vacuum entity rename.
 
 The scheduler Store keeps its existing key and envelope version. Internal
-schemas 1 through 17 migrate to schema 18 only after the entire payload parses
+schemas 1 through 18 migrate to schema 19 only after the entire payload parses
 and validates. An unresolved legacy identity is retained as a typed unresolved
 reference, cannot dispatch, and creates a Repair. Malformed retained data or a
 newer schema is never overwritten; the entry starts in storage-safe,
 observe-only mode and publishes its diagnostic state.
 
-The application fingerprints the schema-18 durable payload without its transient
+The application fingerprints the schema-19 durable payload without its transient
 evaluation projection. Routine evaluations skip a Store write when that
 fingerprint is unchanged; occupancy/durable transitions still persist immediately,
 and migration, repair, and dispatch checkpoints always await a forced write.
@@ -191,6 +191,40 @@ It does not dispatch. Error-interrupted work earns no completion or duration
 credit; only the retained unfinished stage becomes eligible after confirmation.
 
 ## Dispatch invariants
+
+Version 1.18.0 adds pure missed-opportunity accounting in `opportunities.py` and
+a focused application mixin for persistence, notifications and deadlines. Store
+schema 19 preserves existing jobs, occurrences, recovery, cadence and learning,
+and adds room forecast controls, bounded window summaries, occupancy-quality
+transitions and mop-expiry counts. The vacancy clock restarts on initialization;
+offline time cannot prove continuous vacancy.
+
+Forecasts estimate `P(D >= E + H | D >= E)`, using completed comparable vacancy
+durations D, currently observed elapsed vacancy E and future horizon H. The
+weekday/weekend and two-hour cohort follows the start of the current vacancy.
+At least six surviving samples are needed for usable confidence. The separate
+elapsed-vacancy fallback uses `E >= max(H, configured wait)` and never changes
+the historical confidence value. Observations ending in sensor loss are
+censored; sub-minute completed spells inform quality diagnostics but not the
+forecast's existing minute-resolution training set.
+
+One immutable `RoomEvaluation` retains each robot's exact stage, pass count,
+duration, forecast and adjacency result, including rejected candidates. The
+planner's selected robot identifies the primary display. Preview, audit and
+snapshot consume this evidence instead of forecasting a preliminary one-pass
+duration again. Immediately before a start, fresh observation revalidates
+occupancy, enablement, window, fallback and adjacency after awaited preparation
+and checkpoint writes.
+
+Opportunity accounting partitions observed intervals by cause, caps summaries
+at 14 windows and coalesces unchanged sub-minute evaluations. A gap over 20
+minutes or a restart is unknown, never evidence of a particular blocker. Alerts
+require an observed permitted interval and three missed cadence deadlines or
+two mop follow-up expiries. Identity and cause are saved before delivery; cause
+updates are throttled for 24 hours, except a new repeated-mop warning. Preview,
+global pauses, manual requests and active/assigned work suppress new alerts;
+a pending water confirmation remains a blocker. A shared cancellable lifecycle
+timer covers the next due/window/fallback boundary. No alert changes a schedule.
 
 - Room-local occupancy blocks new scheduled work.
 - Party Mode, observe-only mode, storage-safe mode, startup settling, and

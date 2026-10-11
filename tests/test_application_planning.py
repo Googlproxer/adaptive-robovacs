@@ -730,7 +730,7 @@ class CandidateResolutionTests(unittest.TestCase):
 
         scheduled = replace(candidate, manual_override=False)
         app._robot_ready = Mock(return_value=(True, "ready"))
-        app._resolve_candidate_for_robot = Mock(return_value=(scheduled, "eligible"))
+        app._prepare_robot_candidate = Mock(return_value=(scheduled, "eligible"))
         decisions = app._candidate_robot_diagnostics(
             scheduled, {"vacuum.alpha": (True, "ready")}
         )

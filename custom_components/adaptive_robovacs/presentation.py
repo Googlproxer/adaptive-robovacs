@@ -21,6 +21,8 @@ from .snapshots import (
     FaultView,
     FloorPlanView,
     ManualAuditView,
+    OccupancyQualityView,
+    OpportunityView,
     RobotEligibilityView,
     RobotHoldView,
     RobotSettingsView,
@@ -35,6 +37,36 @@ from .snapshots import (
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def opportunity_attributes(item: OpportunityView) -> dict[str, object]:
+    return {
+        "missed_cadences": item.missed_cadences,
+        "observed_window": item.observed_window,
+        "minutes_by_cause": dict(item.minutes),
+        "windows": [
+            {
+                "started_at": window.started_at.isoformat(),
+                "ended_at": window.ended_at.isoformat(),
+                "minutes_by_cause": dict(window.minutes),
+            }
+            for window in item.windows
+        ],
+        "dominant_cause": item.dominant_cause,
+        "advice": item.advice,
+        "alert_active": item.alert_active,
+    }
+
+
+def occupancy_quality_attributes(item: OccupancyQualityView) -> dict[str, object]:
+    return {
+        "transitions_24h": item.transitions_24h,
+        "completed_vacancies_24h": item.completed_vacancies_24h,
+        "subminute_vacancies_24h": item.subminute_vacancies_24h,
+        "median_vacancy_seconds": item.median_vacancy_seconds,
+        "retained_forecast_samples": item.retained_forecast_samples,
+        "transition_limit_reached": item.transition_limit_reached,
+    }
 
 
 def adjacency_block_reason(
@@ -202,6 +234,12 @@ def occurrence_attributes(
         "bypass_desired_window": occurrence.bypass_desired_window,
         "manual_context_id": occurrence.manual_context_id,
         "manual_user_id": occurrence.manual_user_id,
+        "mop_delay_expirations": occurrence.mop_delay_expirations,
+        "follow_up_warning": (
+            "Mop repeatedly missed its follow-up window"
+            if occurrence.mop_delay_expirations >= 2
+            else None
+        ),
     }
 
 
@@ -268,6 +306,7 @@ def room_decision_attributes(
         "forecast_confidence": decision.forecast_confidence,
         "comparable_sample_count": decision.comparable_sample_count,
         "forecast_reason": decision.forecast_reason,
+        "evidence": thaw_json(decision.evidence),
     }
 
 
@@ -293,6 +332,25 @@ def eligibility_attributes(item: RobotEligibilityView) -> dict[str, object]:
         "robot_name": item.robot_name,
         "eligible": item.eligible,
         "reason": item.reason,
+        "operation": item.operation.value if item.operation else None,
+        "program": item.program.value if item.program else None,
+        "stage_index": item.stage_index,
+        "passes": item.passes,
+        "duration_minutes": item.duration_minutes,
+        "vacancy_diagnostic": item.vacancy_diagnostic.as_attributes()
+        if item.vacancy_diagnostic
+        else None,
+        "adjacency_blockers": [
+            {
+                "area_id": blocker.area_id,
+                "name": blocker.name,
+                "occupancy": blocker.occupancy,
+                "vacancy_diagnostic": blocker.vacancy_diagnostic.as_attributes()
+                if blocker.vacancy_diagnostic
+                else None,
+            }
+            for blocker in item.adjacency_blockers
+        ],
     }
 
 

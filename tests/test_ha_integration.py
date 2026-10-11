@@ -187,6 +187,7 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.hass.states.async_set(f"binary_sensor.{area_id}_radar", "off")
             history = app.state.room_history[area_id]
             history.occupancy = "unoccupied"
+            history.occupancy_source = "radars"
             history.unoccupied_since = clock - timedelta(hours=3)
             history.cleaning_completed_at = clock - timedelta(days=5)
             app.state.room_settings[area_id].ignore_desired_window = True

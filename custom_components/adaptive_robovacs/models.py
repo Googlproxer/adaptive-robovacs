@@ -270,6 +270,7 @@ class EvaluationCause(StrEnum):
     USER_PREVIEW = "dashboard_preview"
     STAGE_TRANSITION = "stage_transition"
     ADJACENCY_BOUNDARY = "adjacency_boundary"
+    OPPORTUNITY_BOUNDARY = "opportunity_boundary"
 
 
 VALID_OCCUPANCY_STATES = {"on", "off"}
@@ -325,6 +326,10 @@ class Forecast:
     clear_minutes: float | None = None
     comparable_samples: int = 0
     successful_samples: int = 0
+    surviving_samples: int = 0
+    confidence_available: bool = False
+    decision_source: str = "policy"
+    fallback_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1853,8 +1858,16 @@ def forecast_vacancy(
     required_minutes: int,
     confidence_percent: float,
     minimum_samples: int,
+    *,
+    fallback_enabled: bool = True,
+    fallback_minutes: int = 0,
 ) -> Forecast:
-    """Return whether the current clear period is safe for a new clean."""
+    """Estimate remaining vacancy, with a separately identified elapsed fallback.
+
+    Condition completed historical spells on surviving the already-observed
+    vacancy. The open spell is evidence, never a completed training sample.
+    UTC subtraction preserves real elapsed time across local DST boundaries.
+    """
 
     if clear_since is None:
         return Forecast(
@@ -1864,44 +1877,77 @@ def forecast_vacancy(
             required_minutes=required_minutes,
         )
 
-    comparable: list[Mapping[str, object]] = []
-    weekend = now.weekday() >= 5
-    bucket = now.hour // 2
+    elapsed = (now.astimezone(UTC) - clear_since.astimezone(UTC)).total_seconds() / 60
+    if elapsed < 0:
+        return Forecast(
+            False,
+            0.0,
+            "clear period is in the future",
+            required_minutes=required_minutes,
+        )
+    comparable: list[float] = []
+    weekend = clear_since.weekday() >= 5
+    bucket = clear_since.hour // 2
     for sample in samples:
         started = sample.get("start")
-        if not isinstance(started, datetime):
+        minutes = sample.get("minutes")
+        if not isinstance(started, datetime) or isinstance(minutes, bool):
             continue
-        if (started.weekday() >= 5) == weekend and started.hour // 2 == bucket:
-            comparable.append(sample)
-
-    clear_minutes = (now - clear_since).total_seconds() / 60
-    if len(comparable) < minimum_samples:
-        return Forecast(
-            clear_minutes >= required_minutes,
-            0.0,
-            f"waiting for {required_minutes} clear minutes",
-            required_minutes=required_minutes,
-            clear_minutes=clear_minutes,
-            comparable_samples=len(comparable),
+        if not isinstance(minutes, (int, float, str)):
+            continue
+        try:
+            duration = float(minutes)
+        except ValueError, OverflowError:
+            continue
+        if not math.isfinite(duration) or duration <= 0:
+            continue
+        if (
+            duration
+            > (now.astimezone(UTC) - started.astimezone(UTC)).total_seconds() / 60
+        ):
+            continue
+        local_start = started.astimezone(clear_since.tzinfo)
+        if (local_start.weekday() >= 5) == weekend and local_start.hour // 2 == bucket:
+            comparable.append(duration)
+    survivors = sum(minutes >= elapsed for minutes in comparable)
+    successes = sum(minutes >= elapsed + required_minutes for minutes in comparable)
+    confidence = successes / survivors if survivors else 0.0
+    confidence_available = survivors >= minimum_samples
+    fallback_wait = max(required_minutes, fallback_minutes)
+    fallback_at = (
+        clear_since.astimezone(UTC) + timedelta(minutes=fallback_wait)
+        if fallback_enabled
+        else None
+    )
+    historical_allowed = confidence_available and confidence >= confidence_percent / 100
+    fallback_allowed = fallback_enabled and elapsed >= fallback_wait
+    if historical_allowed:
+        source = "historical"
+        reason = f"{successes}/{survivors} surviving comparable vacancies"
+    elif fallback_allowed:
+        source = "stable_vacancy_fallback"
+        reason = f"stable vacancy fallback after {fallback_wait} clear minutes"
+    else:
+        source = "low_confidence" if confidence_available else "insufficient_history"
+        reason = (
+            f"{successes}/{survivors} surviving comparable vacancies"
+            if confidence_available
+            else "insufficient surviving vacancy history"
         )
-
-    successes = 0
-    for sample in comparable:
-        minutes = sample.get("minutes", 0)
-        if isinstance(minutes, (int, float, str)):
-            try:
-                successes += float(minutes) >= required_minutes
-            except ValueError:
-                continue
-    confidence = successes / len(comparable)
+        if fallback_enabled:
+            reason += f"; waiting for {fallback_wait} clear minutes"
     return Forecast(
-        confidence >= confidence_percent / 100,
+        historical_allowed or fallback_allowed,
         confidence,
-        f"{successes}/{len(comparable)} comparable vacancies",
+        reason,
         required_minutes=required_minutes,
-        clear_minutes=clear_minutes,
+        clear_minutes=elapsed,
         comparable_samples=len(comparable),
         successful_samples=successes,
+        surviving_samples=survivors,
+        confidence_available=confidence_available,
+        decision_source=source,
+        fallback_at=fallback_at,
     )
 
 

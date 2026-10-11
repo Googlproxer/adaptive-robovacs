@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import voluptuous as vol
-from homeassistant import data_entry_flow
-from homeassistant.components.repairs import RepairsFlow
+import probatio as vol
+from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -62,7 +61,7 @@ class RobotDispatchFaultRepairFlow(RepairsFlow):
 
     async def async_step_init(
         self, user_input: dict[str, str] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         """Start the scheduler-halt repair flow."""
 
         # Opening a Repair must never be treated as submitting its confirmation.
@@ -70,7 +69,7 @@ class RobotDispatchFaultRepairFlow(RepairsFlow):
 
     async def async_step_confirm(
         self, user_input: dict[str, str] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         """Require an explicit confirmation after a non-dispatching recheck."""
 
         errors: dict[str, str] = {}
@@ -105,12 +104,12 @@ class ErrorRecoveryRepairFlow(RepairsFlow):
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         return await self.async_step_confirm()
 
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             result = await self._submit(self._command)
@@ -156,7 +155,7 @@ class RoomDispatchFaultRepairFlow(RepairsFlow):
 
     async def async_step_reset_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         """Require a second deliberate action before changing saved settings."""
 
         errors: dict[str, str] = {}
@@ -185,7 +184,7 @@ class RoomDispatchFaultRepairFlow(RepairsFlow):
 
     async def _reset_selected(
         self, user_input: dict[str, Any]
-    ) -> data_entry_flow.FlowResult | None:
+    ) -> RepairsFlowResult | None:
         action = user_input.get("action", "recheck")
         if action == "recheck":
             return None
@@ -206,12 +205,12 @@ class RoomDispatchFaultRepairFlow(RepairsFlow):
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         return await self.async_step_confirm()
 
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             if selected := await self._reset_selected(user_input):
@@ -234,14 +233,14 @@ class TwoPassCompatibilityRepairFlow(RoomDispatchFaultRepairFlow):
 
     async def async_step_init(
         self, user_input: dict[str, str] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         # Home Assistant may supply initial flow data when opening a Repair.
         # Deliberately discard it until the user submits the confirmation form.
         return await self.async_step_confirm()
 
     async def async_step_confirm(
         self, user_input: dict[str, str] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             if selected := await self._reset_selected(user_input):
@@ -269,13 +268,13 @@ class NotificationDeliveryRepairFlow(RepairsFlow):
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         # Do not let opening this issue recheck and resolve it automatically.
         return await self.async_step_confirm()
 
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             result = await self._submit(RecheckNotificationTargetsCommand())
@@ -296,7 +295,7 @@ class CleaningProgramCompatibilityRepairFlow(TwoPassCompatibilityRepairFlow):
 
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             if selected := await self._reset_selected(user_input):
@@ -322,12 +321,12 @@ class UnsafeStoreRepairFlow(RepairsFlow):
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         return await self.async_step_confirm()
 
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> RepairsFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             if user_input.get("confirm_reset") is True:

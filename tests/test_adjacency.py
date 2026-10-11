@@ -321,7 +321,7 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
         candidate, _ = app._room_candidate(target, NOW)
 
         app.state.room_history["bedroom"].unoccupied_since = NOW - timedelta(seconds=21)
-        for neighbor in ("bedroom", "living"):
+        for neighbor in ("study", "bedroom", "living"):
             app.hass.states.values[f"binary_sensor.{neighbor}_radar"] = SimpleNamespace(
                 state="off"
             )
@@ -461,8 +461,15 @@ class AdjacencyApplicationTests(unittest.IsolatedAsyncioTestCase):
                 "forecast_confidence": 0.0,
                 "comparable_sample_count": 0,
                 "successful_sample_count": 0,
-                "reason": "waiting for 30 clear minutes",
+                "reason": (
+                    "insufficient surviving vacancy history; "
+                    "waiting for 30 clear minutes"
+                ),
                 "allowed": False,
+                "surviving_sample_count": 0,
+                "confidence_available": False,
+                "decision_source": "insufficient_history",
+                "fallback_at": (NOW + timedelta(minutes=30, seconds=-21)).isoformat(),
             },
         )
 

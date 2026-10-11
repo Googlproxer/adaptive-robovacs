@@ -202,6 +202,7 @@ class CleaningOccurrenceView:
     bypass_desired_window: bool
     manual_context_id: str | None
     manual_user_id: str | None
+    mop_delay_expirations: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +257,7 @@ class RoomDecisionView:
     forecast_confidence: float
     comparable_sample_count: int
     forecast_reason: str | None
+    evidence: FrozenJsonObject = field(default_factory=FrozenJsonObject)
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +283,13 @@ class RobotEligibilityView:
     robot_name: str
     eligible: bool
     reason: str
+    operation: CleaningOperation | None = None
+    program: CleaningProgram | None = None
+    stage_index: int | None = None
+    passes: int | None = None
+    duration_minutes: float | None = None
+    vacancy_diagnostic: VacancyDiagnostic | None = None
+    adjacency_blockers: tuple[RoomAdjacencyBlockerView, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +343,34 @@ class RoomAdjacencyBlockerView:
     name: str
     occupancy: str
     vacancy_diagnostic: VacancyDiagnostic | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunityWindowView:
+    started_at: datetime
+    ended_at: datetime
+    minutes: tuple[tuple[str, float], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunityView:
+    missed_cadences: int = 0
+    observed_window: bool = False
+    minutes: tuple[tuple[str, float], ...] = ()
+    windows: tuple[OpportunityWindowView, ...] = ()
+    dominant_cause: str = "unknown"
+    advice: str = ""
+    alert_active: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class OccupancyQualityView:
+    transitions_24h: int = 0
+    completed_vacancies_24h: int = 0
+    subminute_vacancies_24h: int = 0
+    median_vacancy_seconds: float | None = None
+    retained_forecast_samples: int = 0
+    transition_limit_reached: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,6 +453,16 @@ class RoomView:
     adjacent_area_ids: tuple[str, ...] = ()
     adjacency_blockers: tuple[RoomAdjacencyBlockerView, ...] = ()
     adjacency_reason: str | None = None
+    occupancy_sensitivity_minutes: int = 0
+    vacancy_fallback_enabled: bool = True
+    vacancy_fallback_minutes: int = 0
+    selected_robot_id: str | None = None
+    decision_evaluated_at: datetime | None = field(default=None, compare=False)
+    overdue: bool = False
+    opportunity: OpportunityView = field(default_factory=OpportunityView)
+    occupancy_quality: OccupancyQualityView = field(
+        default_factory=OccupancyQualityView
+    )
 
 
 @dataclass(frozen=True, slots=True)

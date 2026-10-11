@@ -60,6 +60,8 @@ class SchedulerRuntime:
         self._night_window = night_window
         self._night_cancel: Callable[[], None] | None = None
         self._night_deadline: datetime | None = None
+        self._opportunity_cancel: Callable[[], None] | None = None
+        self._opportunity_deadline: datetime | None = None
         self._running = False
 
     async def async_start(self, settle_until: datetime) -> None:
@@ -218,9 +220,42 @@ class SchedulerRuntime:
             self._hass, boundary_reached, deadline
         )
 
+    @callback
+    def update_opportunity_deadline(self, deadline: datetime | None) -> None:
+        """Share one cancellable dispatch wakeup across room and forecast boundaries."""
+        if not self._running or deadline == self._opportunity_deadline:
+            return
+        if self._opportunity_cancel:
+            self._opportunity_cancel()
+            self._opportunity_cancel = None
+        self._opportunity_deadline = deadline
+        if deadline is None:
+            return
+
+        @callback
+        def reached(_timestamp: datetime) -> None:
+            if not self._running or self._opportunity_deadline != deadline:
+                return
+            self._opportunity_cancel = None
+            self._opportunity_deadline = None
+            self._create_task(
+                self._submit(
+                    EvaluateCommand(
+                        mode=EvaluationMode.DISPATCH,
+                        cause=EvaluationCause.OPPORTUNITY_BOUNDARY,
+                        coalesce=True,
+                    )
+                )
+            )
+
+        self._opportunity_cancel = async_track_point_in_utc_time(
+            self._hass, reached, deadline
+        )
+
     async def async_stop(self) -> None:
         """Unsubscribe every external callback exactly once."""
 
+        self.update_opportunity_deadline(None)
         self._running = False
         if self._state_cancel:
             self._state_cancel()

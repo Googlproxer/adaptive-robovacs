@@ -118,6 +118,15 @@ class JobReducerTests(unittest.TestCase):
         at_limit = completed_at + timedelta(hours=12)
         rewound = jobs.rewind_expired_mop_stage(occurrence, at_limit)
         self.assertIsNotNone(rewound)
+        self.assertEqual(rewound.mop_delay_expirations, 1)
+        restored = state.CleaningOccurrence.from_mapping(rewound.to_store())
+        self.assertEqual(restored.mop_delay_expirations, 1)
+        self.assertIsNone(jobs.rewind_expired_mop_stage(restored, at_limit))
+        restored.current_stage = 1
+        restored.stages[0].status = models.StageStatus.COMPLETED
+        restored.stages[0].completed_at = at_limit
+        second = jobs.rewind_expired_mop_stage(restored, at_limit + timedelta(hours=12))
+        self.assertEqual(second.mop_delay_expirations, 2)
 
     def test_expired_mop_rewinds_same_occurrence_without_losing_contract(self) -> None:
         occurrence = delayed_mop_occurrence(

@@ -37,6 +37,8 @@ from custom_components.adaptive_robovacs.snapshots import (
     FloorPlanView,
     FrozenJsonObject,
     ObservedProfileView,
+    OccupancyQualityView,
+    OpportunityView,
     RobotHoldView,
     RobotSettingsView,
     RoomRecoveryView,
@@ -228,6 +230,14 @@ def room_view(area_id: str = "study", name: str = "Study"):
         last_stage_at=WHEN,
         last_stage_summary="Vacuum completed",
         water_notification_episode=None,
+        overdue=False,
+        occupancy_sensitivity_minutes=0,
+        vacancy_fallback_enabled=True,
+        vacancy_fallback_minutes=0,
+        selected_robot_id=None,
+        decision_evaluated_at=None,
+        opportunity=OpportunityView(),
+        occupancy_quality=OccupancyQualityView(),
         failure=None,
         recovery=None,
     )
@@ -271,6 +281,32 @@ class _Coordinator:
 
 
 class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vacancy_controls_read_snapshot_and_submit_typed_commands(self):
+        for key, maximum in (
+            ("occupancy_sensitivity_minutes", 180),
+            ("vacancy_fallback_minutes", 1440),
+        ):
+            entity = number._RoomNumber(self.coordinator, "study", key, key)
+            self.assertEqual(entity.native_value, 0)
+            self.assertEqual(entity.native_min_value, 0)
+            self.assertEqual(entity.native_max_value, maximum)
+            await entity.async_set_native_value(60)
+            self.assertEqual(
+                self.coordinator.commands[-1], SetRoomSettingCommand("study", key, 60)
+            )
+        control = switch_platform._RoomSwitch(
+            self.coordinator,
+            "study",
+            "vacancy_fallback_enabled",
+            "Stable vacancy fallback",
+        )
+        self.assertTrue(control.is_on)
+        await control.async_turn_off()
+        self.assertEqual(
+            self.coordinator.commands[-1],
+            SetRoomSettingCommand("study", "vacancy_fallback_enabled", False),
+        )
+
     def setUp(self) -> None:
         self.coordinator = _Coordinator()
 

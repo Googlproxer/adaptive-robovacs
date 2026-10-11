@@ -51,7 +51,13 @@ def forbidden_imports(imports: set[str], forbidden: set[str]) -> set[str]:
 
 class ArchitectureBoundaryTests(unittest.TestCase):
     def test_domain_and_reducers_have_no_home_assistant_imports(self) -> None:
-        for name in ("models.py", "state.py", "planner.py", "jobs.py"):
+        for name in (
+            "models.py",
+            "state.py",
+            "planner.py",
+            "jobs.py",
+            "opportunities.py",
+        ):
             imports = imported_modules(PACKAGE / name)
             self.assertFalse(
                 any(module.startswith("homeassistant") for module in imports),
@@ -117,6 +123,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 "ApplicationLegacyMapMixin",
                 "ApplicationSettingsMixin",
                 "ApplicationEventsMixin",
+                "ApplicationOpportunityMixin",
                 "ApplicationEvaluationMixin",
                 "ApplicationDispatchMixin",
                 "ApplicationActionsMixin",

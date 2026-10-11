@@ -197,9 +197,33 @@ schedule enablement control.
 The room schedule entity reports the configured bounds, effective bounds,
 inheritance flags, validity, and next usable start as attributes. It also shows
 the read-only **Predicted total** and **Required vacancy** duration values. The
-first is the typical verified room-clean duration; the latter is the more
-conservative duration used to ensure a safe vacant window. **Expected duration**
+first is the typical verified room-clean duration; the latter is the future
+vacancy horizon used for the exact selected/previewed robot and stage (including
+its pass count). An unevaluated forecast has a zero horizon and an explicit
+"not evaluated" reason. **Expected duration**
 remains the editable fallback until enough verified room/robot samples exist.
+
+Version 1.18.0 adds room controls for **Occupancy sensitivity (0 adaptive)**
+(0–180 minutes), **Stable vacancy fallback** (on by default), and **Vacancy
+fallback wait (0 adaptive)** (0–1440 minutes). A nonzero sensitivity is the exact
+future horizon, even when shorter than the estimated clean. It is not a minimum
+elapsed wait: sufficiently strong history can allow an earlier start. A fallback
+wait cannot shorten the horizon. Turning fallback off requires usable historical
+confidence for sensor-equipped, resolved vacancy; existing no-sensor, unresolved
+window and explicit manual policies remain separate.
+
+The full-width **Decision**, **Cleaning progress**, **Missed windows**, and
+**Occupancy evidence** rows show robot-specific decisions, separate completion
+times, accumulated cause minutes, and aggregate 24-hour source quality. A room
+can be overdue outside its permitted hours. Source transitions and sub-minute
+vacancies are distinct from retained 56-day forecast samples. The latter are
+completed spells; an open spell does not train its own forecast. These rows use
+the shipped JavaScript and do not require another dashboard plugin.
+
+For an isolated review using synthetic data, run
+`python -m http.server 8766 --bind 127.0.0.1 --directory dashboard` from the
+repository root, then open [the overdue preview](http://localhost:8766/overdue-preview.html).
+It loads the actual evidence rows without contacting Home Assistant.
 
 Each room has **Vacuum passes** and **Mop passes** selectors:
 

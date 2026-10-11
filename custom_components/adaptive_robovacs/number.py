@@ -93,7 +93,14 @@ class _RoomNumber(_AdaptiveNumber):
         )
         self.area_id = area_id
         self.key = key
-        if key == "expected_minutes":
+        if key in {"occupancy_sensitivity_minutes", "vacancy_fallback_minutes"}:
+            self._attr_native_min_value = 0
+            self._attr_native_max_value = (
+                180 if key == "occupancy_sensitivity_minutes" else 1440
+            )
+            self._attr_native_step = 1
+            self._attr_native_unit_of_measurement = "min"
+        elif key == "expected_minutes":
             self._attr_native_min_value = 5
             self._attr_native_max_value = 180
             self._attr_native_step = 5
@@ -107,6 +114,10 @@ class _RoomNumber(_AdaptiveNumber):
     @property
     def native_value(self) -> float:
         room = self.room_view(self.area_id)
+        if self.key == "occupancy_sensitivity_minutes":
+            return room.occupancy_sensitivity_minutes
+        if self.key == "vacancy_fallback_minutes":
+            return room.vacancy_fallback_minutes
         return (
             room.cleaning_interval
             if self.key == "vacuum_interval"
@@ -124,6 +135,19 @@ def _entities(coordinator: AdaptiveRoboVacsCoordinator) -> list[AdaptiveEntity]:
     for robot in coordinator.data.robots:
         entities.append(_RobotNumber(coordinator, robot.entity_id))
     for room in coordinator.data.rooms:
+        entities.extend(
+            _RoomNumber(coordinator, room.area_id, key, f"{room.name} {label}")
+            for key, label in (
+                (
+                    "occupancy_sensitivity_minutes",
+                    "vacancy forecast horizon (0 adaptive)",
+                ),
+                (
+                    "vacancy_fallback_minutes",
+                    "fallback minimum clear time (0 adaptive)",
+                ),
+            )
+        )
         entities.extend(
             [
                 # Keep the established unique ID while the control becomes the

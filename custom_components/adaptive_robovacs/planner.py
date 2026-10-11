@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from .models import (
+    AdjacencyDecision,
     CleaningOperation,
     CleaningProgram,
     Forecast,
@@ -29,6 +30,10 @@ class VacancyDiagnostic:
     successful_sample_count: int
     reason: str
     allowed: bool
+    surviving_sample_count: int = 0
+    confidence_available: bool = False
+    decision_source: str = "policy"
+    fallback_at: datetime | None = None
 
     @classmethod
     def from_forecast(
@@ -53,6 +58,10 @@ class VacancyDiagnostic:
             successful_sample_count=forecast.successful_samples,
             reason=forecast.reason,
             allowed=forecast.allowed,
+            surviving_sample_count=forecast.surviving_samples,
+            confidence_available=forecast.confidence_available,
+            decision_source=forecast.decision_source,
+            fallback_at=forecast.fallback_at,
         )
 
     def as_attributes(self) -> dict[str, object]:
@@ -69,6 +78,10 @@ class VacancyDiagnostic:
             "successful_sample_count": self.successful_sample_count,
             "reason": self.reason,
             "allowed": self.allowed,
+            "surviving_sample_count": self.surviving_sample_count,
+            "confidence_available": self.confidence_available,
+            "decision_source": self.decision_source,
+            "fallback_at": self.fallback_at.isoformat() if self.fallback_at else None,
         }
 
 
@@ -124,6 +137,65 @@ class CandidateRobotDecision:
 
     eligibility: RobotEligibility
     candidate: ScheduleCandidate | None = None
+    evidence: ScheduleCandidate | None = None
+    adjacency: AdjacencyDecision | None = None
+
+    def as_attributes(self) -> dict[str, object]:
+        """Expose the settled evidence without running policy a second time."""
+        evidence = self.evidence
+        return {
+            "robot_entity_id": self.eligibility.robot_id,
+            "robot_name": self.eligibility.robot_name,
+            "eligible": self.eligibility.eligible,
+            "reason": self.eligibility.reason,
+            "operation": evidence.operation if evidence else None,
+            "program": evidence.program if evidence else None,
+            "stage_index": evidence.stage_index if evidence else None,
+            "passes": evidence.passes if evidence else None,
+            "duration_minutes": evidence.duration_minutes if evidence else None,
+            "vacancy_diagnostic": evidence.vacancy_diagnostic.as_attributes()
+            if evidence and evidence.vacancy_diagnostic
+            else None,
+            "adjacency_blockers": [
+                {
+                    "area_id": item.area_id,
+                    "occupancy": item.occupancy,
+                    "reason": item.vacancy.reason if item.vacancy else None,
+                    "required_clear_minutes": item.vacancy.required_minutes
+                    if item.vacancy
+                    else None,
+                    "decision_source": item.vacancy.decision_source
+                    if item.vacancy
+                    else None,
+                }
+                for item in self.adjacency.blockers
+            ]
+            if self.adjacency
+            else [],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RoomEvaluation:
+    """One settled decision shared by allocation, audit, and presentation."""
+
+    evaluated_at: datetime
+    candidate: ScheduleCandidate | None
+    reason: str
+    robots: tuple[CandidateRobotDecision, ...] = ()
+    selected_robot_id: str | None = None
+
+    @property
+    def display_decision(self) -> CandidateRobotDecision | None:
+        """Use the actual assignment, otherwise one explicitly identified preview."""
+        return next(
+            (
+                item
+                for item in self.robots
+                if item.eligibility.robot_id == self.selected_robot_id
+            ),
+            next((item for item in self.robots if item.evidence is not None), None),
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Adaptive RoboVacs overdue diagnostics preview</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color:#202124; background:#f4f5f6; --secondary-text-color:#535b65; --divider-color:#dce0e5; }
+    body { max-width:1000px; margin:auto; padding:24px; }
+    h1 { font-size:1.6rem; margin:0 0 8px; }
+    p { line-height:1.5; }
+    .intro { color:#535b65; max-width:700px; }
+    .controls { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin:24px 0; }
+    select,button { font:inherit; padding:9px 12px; background:white; border:1px solid #8c959f; border-radius:6px; }
+    article { box-sizing:border-box; background:white; border:1px solid #dce0e5; border-radius:12px; padding:20px; width:100%; max-width:700px; }
+    article.narrow { max-width:360px; }
+    h2 { margin:0 0 8px; font-size:1.25rem; }
+    #status { margin:0 0 20px; color:#8a5200; }
+    @media(max-width:500px) { body{padding:16px} article{padding:16px} }
+  </style>
+</head>
+<body>
+  <h1>Room cleaning evidence</h1>
+  <p class="intro">Synthetic examples using the shipped dashboard rows. Select a scenario to review the forecast, program progress and missed-window explanations. These controls only change this preview.</p>
+  <div class="controls">
+    <label for="scenario">Scenario</label>
+    <select id="scenario">
+      <option value="blocked">Forecast blocked</option>
+      <option value="fallback">Stable vacancy fallback</option>
+      <option value="historical">Historical early start</option>
+      <option value="mop">Repeated mop expiry</option>
+      <option value="hours">Outside cleaning hours</option>
+    </select>
+    <button id="width" type="button" aria-pressed="false">Narrow card</button>
+  </div>
+  <article id="room">
+    <h2>Example room</h2>
+    <p id="status"></p>
+    <div id="evidence"></div>
+  </article>
+  <script src="adaptive-robovacs-dashboard.js"></script>
+  <script>
+    const rows = [
+      ["forecast", "Decision"], ["program", "Cleaning progress"],
+      ["opportunity", "Missed windows"], ["occupancy", "Occupancy evidence"],
+    ].map(([kind, name]) => {
+      const row = document.createElement("adaptive-robovacs-evidence-row");
+      row.setConfig({ entity: "sensor.example_status", kind, name });
+      document.querySelector("#evidence").append(row);
+      return row;
+    });
+    function render() {
+      const scenario = document.querySelector("#scenario").value;
+      const allowed = ["fallback", "historical"].includes(scenario);
+      const attrs = {
+        enabled: true, overdue: true,
+        selected_robot_id: allowed ? "vacuum.example" : null,
+        last_vacuum: "2026-10-10T23:30:00Z", last_mop: "2026-10-04T22:00:00Z",
+        last_full_clean: "2026-10-04T22:00:00Z",
+        robot_eligibility: [{ robot_entity_id: "vacuum.example", robot_name: "Example vacuum",
+          eligible: allowed, reason: "Insufficient surviving history; waiting for 50 clear minutes",
+          operation: "vacuum", program: "vacuum_then_mop", passes: 2, duration_minutes: 40,
+          vacancy_diagnostic: { required_clear_minutes: 50, confidence_available: scenario === "historical",
+            forecast_confidence: scenario === "historical" ? 0.8 : 0,
+            successful_sample_count: 8, surviving_sample_count: 10,
+            decision_source: scenario === "fallback" ? "stable_vacancy_fallback" : scenario === "historical" ? "historical" : "insufficient_history" } }],
+        opportunity: { missed_cadences: 4, windows: [{}, {}, {}],
+          minutes_by_cause: { forecast: 160, adjacency: 40, outside_hours: 220 },
+          advice: "Review the vacancy evidence and stable-vacancy fallback settings." },
+        occupancy_quality: { transitions_24h: 420, subminute_vacancies_24h: 180,
+          median_vacancy_seconds: 24, retained_forecast_samples: 36 },
+      };
+      let status = allowed ? "Ready now" : "Overdue — forecast blocked";
+      if (scenario === "mop") {
+        attrs.occurrence = { current_stage: 0, stages: [{ operation: "vacuum", passes: 2, reason: "mop_delay_expired" }, { operation: "mop", passes: 1 }], follow_up_warning: "Mop follow-up expired repeatedly; vacuum must repeat" };
+        attrs.opportunity.advice = "Mop repeatedly missed its follow-up window. Review permitted hours and mop readiness.";
+      }
+      if (scenario === "hours") {
+        status = "Overdue — outside cleaning hours";
+        attrs.robot_eligibility = [];
+        attrs.block_reason = "waiting for desired cleaning window";
+      }
+      document.querySelector("#status").textContent = status;
+      const hass = { states: { "sensor.example_status": { state: status, attributes: attrs } } };
+      for (const row of rows) row.hass = hass;
+    }
+    document.querySelector("#scenario").addEventListener("change", render);
+    document.querySelector("#width").addEventListener("click", event => {
+      const narrow = document.querySelector("#room").classList.toggle("narrow");
+      event.target.setAttribute("aria-pressed", String(narrow));
+    });
+    document.addEventListener("hass-more-info", event => event.preventDefault());
+    render();
+  </script>
+</body>
+</html>

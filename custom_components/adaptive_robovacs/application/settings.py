@@ -404,6 +404,9 @@ class ApplicationSettingsMixin:
         if key not in {
             "enabled",
             "adjacency_mode",
+            "occupancy_sensitivity_minutes",
+            "vacancy_fallback_enabled",
+            "vacancy_fallback_minutes",
             "cleaning_interval",
             "vacuum_interval",
             "expected_minutes",
@@ -656,6 +659,9 @@ class ApplicationSettingsMixin:
         if key not in {
             "enabled",
             "adjacency_mode",
+            "occupancy_sensitivity_minutes",
+            "vacancy_fallback_enabled",
+            "vacancy_fallback_minutes",
             "cleaning_interval",
             "vacuum_interval",
             "expected_minutes",
@@ -675,6 +681,18 @@ class ApplicationSettingsMixin:
             raise ValueError(f"Unknown room setting: {key}")
         room = self.discovery.rooms[area_id]
         settings = self._room_settings(room)
+        if key in {"occupancy_sensitivity_minutes", "vacancy_fallback_minutes"}:
+            maximum = 180 if key == "occupancy_sensitivity_minutes" else 1440
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not 0 <= value <= maximum
+                or int(value) != value
+            ):
+                raise ValueError(f"{key} must be a whole number from 0 to {maximum}")
+            value = int(value)
+        if key == "vacancy_fallback_enabled" and not isinstance(value, bool):
+            raise ValueError("vacancy_fallback_enabled must be a boolean")
         if key == "adjacency_mode":
             value = AdjacencyMode(value)
         key = {

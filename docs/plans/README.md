@@ -12,7 +12,8 @@ replacement policy below. On 2026-09-13, v1.16.1 extended that policy so a clear
 neighbour must pass the same adaptive vacancy forecast as the target room. The
 same day, v1.16.2 bounded delayed vacuum-then-mop continuation to 12 hours. The
 v1.16.3 scheduler now prioritises due rooms by oldest completed full-room clean.
-The other remaining items are unchanged.
+On 2026-10-11, the overdue-room investigation recommendations were implemented
+for v1.18.0, as described below.
 
 The recent [application package refactor](application-package-refactor.md)
 remains a separate, unchanged implementation plan.
@@ -22,7 +23,6 @@ remains a separate, unchanged implementation plan.
 | Item | Current status | Remaining outcome |
 | --- | --- | --- |
 | [Bedroom confirmation](#bedroom-confirmation) | Water-notification infrastructure exists; bedroom authorization is absent. | One assigned user and phone approve each bedroom occurrence. |
-| [Occupancy investigation](#occupancy-investigation) | Typed vacancy diagnostics and a bounded decision audit exist. | Explain missed windows from evidence; complete audit/UI gaps before considering a correction. |
 
 ### Bedroom confirmation
 
@@ -70,40 +70,26 @@ Acceptance: recipient and fingerprint validation, timing, manual requests,
 ordered-stage continuation, water independence, persistence, redaction,
 translation/Repair cleanup, and unload are covered. Implement after adjacency.
 
-### Occupancy investigation
-
-The old diagnosis plan is partly implemented:
-[application policy](../../custom_components/adaptive_robovacs/application/policy.py)
-exposes typed vacancy evidence and records changes in eligibility reasons;
-[schedule sensors](../../custom_components/adaptive_robovacs/sensor.py) expose
-vacancy diagnostics, per-robot eligibility, and the latest decision. The typed
-Store retains a bounded audit, with existing planning/state coverage.
-
-Remaining work:
-
-- Collect evidence across several missed desired windows for the affected
-  bedroom. Compare occupancy-source transitions, contiguous clear time,
-  robot-specific required duration, forecast confidence/sample counts, and the
-  final allocation reason. Existing code is not evidence that the historical
-  incident has been explained.
-- Complete the original audit requirement for a full missed window even when
-  its rejection reason is unchanged: `_record_room_decision` currently
-  deduplicates unchanged reasons. Add concise room-card diagnostics beyond the
-  existing sensor attributes and duration rows if needed to expose the cause.
-- Correct a source or forecast only if that evidence proves a defect. Preserve
-  immediate occupied blocking; any justified debounce may delay a clear state,
-  never a person-present block. Otherwise record the legitimate cause.
-
-Acceptance: each reviewed window has either a safe assignment or an auditable
-rejection. Test audit bounds/restart and any demonstrated correction. Keep live
-room identifiers, raw sensor payloads, and personal presence history out of the
-repository.
-
 ## Implemented and closed work
 
 These items are implemented or explicitly closed by the user. Historical release
 records remain in [releases](../releases/) and Git history. Partial plans have
 their remaining work retained above.
+
+### Occupancy investigation
+
+The October investigation recommendations are implemented in
+[v1.18.0](../releases/v1.18.0.md): conditional remaining-vacancy
+forecasting, separate horizon/fallback controls, exact per-robot decision
+evidence, durable missed-window accounting, bounded overdue notices, separate
+program completion, and aggregate occupancy-source quality. Closed windows
+are retained even when the blocker is unchanged, and restart gaps stay unknown.
+
+See the [migration defaults](../migration-v1.18.0.md), validation results and
+[synthetic dashboard preview](../../dashboard/overdue-preview.html). Deployment
+requires a backup, passing CI, exact-tag HACS installation and live verification.
+Runtime presence data and household identifiers are not part of the repository.
+Automated checks do not establish long-term field performance of the forecast.
 
 ### Adjacent-room occupancy
 
@@ -147,7 +133,7 @@ for this backlog.
 | Hidden initial cadence baseline | `first_scheduler_online_at` is restored/set once and saved before evaluation; due-time policy uses it only without real completion, while the displayed last clean remains unknown. State serialization and model coverage remain. |
 | Vacuum despite unavailable water | [Occurrence preparation](../../custom_components/adaptive_robovacs/application/dispatch.py) gates only the mop stage, records separate outcomes and re-evaluates remaining work; dispatch removes mop-only controls from vacuum profile application. |
 | Cancellation cadence isolation | Robot-scoped cooldowns replace floor rebasing; typed room deferrals retain provenance, bounded due-time handling, and non-dispatching list/selective-clear services for legacy state. Recovery/planning/service tests remain. |
-| Occupancy diagnostic foundation | Typed vacancy results, bounded persisted decision audit, schedule attributes and planning/state tests; investigation and audit/UI completion remain open above. |
+| Occupancy diagnostic foundation | Typed vacancy results, bounded persisted decision audit, schedule attributes and planning/state tests; v1.18.0 completes the investigation recommendations above. |
 
 ## Deferred extensions
 

@@ -80,6 +80,7 @@ const VacuumCard = elements.get("adaptive-robovacs-vacuum");
 const RoomCard = elements.get("adaptive-robovacs-room");
 const TimestampRow = elements.get("adaptive-robovacs-timestamp-row");
 const StatusRow = elements.get("adaptive-robovacs-status-row");
+const EvidenceRow = elements.get("adaptive-robovacs-evidence-row");
 const FloorPlanCard = elements.get("adaptive-robovacs-floorplan");
 
 const entry = "entry-one";
@@ -269,6 +270,7 @@ test("registers target-scoped cards and keeps the editor private", () => {
   assert.deepEqual([...elements.keys()], [
     "adaptive-robovacs-timestamp-row",
     "adaptive-robovacs-status-row",
+    "adaptive-robovacs-evidence-row",
     "adaptive-robovacs-global",
     "adaptive-robovacs-vacuum",
     "adaptive-robovacs-room",
@@ -901,5 +903,59 @@ test("status row derives live clear time from stable timestamps and pauses while
   visibilityState = "visible";
   visibilityListeners.get("visibilitychange")();
   assert.match(row._value.textContent, /clear for 0\.7 minutes/);
+  row.disconnectedCallback();
+});
+test("room evidence distinguishes historical confidence, fallback and policy", () => {
+  const attributes = {
+    selected_robot_id: "vacuum.alpha",
+    robot_eligibility: [{ robot_entity_id: "vacuum.alpha", robot_name: "Alpha", operation: "vacuum", passes: 2, duration_minutes: 40, eligible: true,
+      vacancy_diagnostic: { required_clear_minutes: 50, confidence_available: false, decision_source: "stable_vacancy_fallback", forecast_confidence: 0 } }],
+  };
+  const state = { state: "ready now", attributes };
+  assert.match(EvidenceRow.display(state), /Alpha \(selected\): vacuum, 2 pass/);
+  assert.match(EvidenceRow.display(state), /horizon 50 min; Insufficient surviving history; stable-vacancy fallback/);
+  assert.doesNotMatch(EvidenceRow.display(state), /100%/);
+  Object.assign(attributes.robot_eligibility[0].vacancy_diagnostic, {
+    confidence_available: true, decision_source: "historical", forecast_confidence: 0.8,
+    successful_sample_count: 8, surviving_sample_count: 10,
+  });
+  assert.match(EvidenceRow.display(state), /8\/10 surviving samples \(80%\)/);
+  Object.assign(attributes.robot_eligibility[0].vacancy_diagnostic, {
+    decision_source: "policy", reason: "no-sensor policy",
+  });
+  assert.match(EvidenceRow.display(state), /no-sensor policy/);
+  assert.equal(EvidenceRow.display(null), "Unavailable");
+});
+
+test("room evidence keeps program completion, sensor noise and missed windows distinct", () => {
+  const state = { state: "Overdue", attributes: {
+    enabled: true, overdue: true, last_vacuum: "2026-10-01T10:00:00Z", last_mop: null, last_full_clean: null,
+    occurrence: { current_stage: 1, stages: [{ operation: "vacuum", passes: 2 }, { operation: "mop", passes: 1 }], follow_up_warning: "Mop follow-up expired repeatedly" },
+    opportunity: { missed_cadences: 3, windows: [{}], minutes_by_cause: { forecast: 60, outside_hours: 10 }, advice: "Review vacancy settings." },
+    occupancy_quality: { transitions_24h: 4096, transition_limit_reached: true, subminute_vacancies_24h: 12, median_vacancy_seconds: 21, retained_forecast_samples: 6 },
+  } };
+  assert.match(EvidenceRow.display(state, 0, "program"), /Mop: No completion recorded; Full program: No completion recorded; Next: mop/);
+  assert.match(EvidenceRow.display(state, 0, "program"), /expired repeatedly/);
+  assert.match(EvidenceRow.display(state, 0, "opportunity"), /3 cadence deadline\(s\) missed; 1 window summaries/);
+  assert.match(EvidenceRow.display(state, 0, "opportunity"), /forecast: 60 min/);
+  assert.match(EvidenceRow.display(state, 0, "occupancy"), /4096\+ observed changes; 12 vacancies under 1 min; median 21 s/);
+  state.attributes.overdue = false;
+  assert.equal(EvidenceRow.display(state, 0, "opportunity"), "Within cadence");
+  state.attributes.enabled = false;
+  assert.equal(EvidenceRow.display(state, 0, "opportunity"), "Scheduling disabled");
+});
+
+test("room card includes evidence rows and evidence updates without markup injection", () => {
+  const states = baseStates();
+  states["sensor.kitchen_status"] = adaptiveState("room_status", { area_id: "kitchen", room: "Kitchen", opportunity: {}, block_reason: "<script>synthetic</script>" }, "Overdue");
+  const { configuration } = configure(RoomCard, { area_id: "kitchen" }, states);
+  assert.deepEqual(configuration.entities.filter(row => row.type === "custom:adaptive-robovacs-evidence-row").map(row => row.kind), ["forecast", "program", "opportunity", "occupancy"]);
+  const row = new EvidenceRow();
+  row.setConfig({ entity: "sensor.kitchen_status", kind: "forecast", name: "Decision" });
+  row.hass = { states };
+  row.connectedCallback();
+  assert.equal(row._label.textContent, "Decision");
+  assert.equal(row._value.textContent, "Not evaluated: <script>synthetic</script>");
+  assert.equal(row._value.innerHTML, undefined);
   row.disconnectedCallback();
 });
