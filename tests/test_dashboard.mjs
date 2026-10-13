@@ -634,7 +634,7 @@ test("floor plan fits the viewport height without offsetting wide-screen edits",
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 1200, height: 600 }),
   };
   assert.match(
-    FloorPlanCard.prototype._render.toString(),
+    FloorPlanCard.prototype._ensureDom.toString(),
     /height:calc\(100dvh - 112px\)/,
   );
   assert.deepEqual(card._point({ clientX: 360, clientY: 0 }, svg, 60), { x: 0, y: 0 });
@@ -674,6 +674,141 @@ test("floor plan routes connections between nearest edges on the grid", () => {
     [{ x: 5, y: 6 }, { x: 5, y: 12 }],
   );
   assert.match(FloorPlanCard.prototype._render.toString(), /<polyline class="edge/);
+});
+
+const state = (value, attributes) => ({ state: value, attributes });
+const flushFrames = flushAnimationFrames;
+
+function floorPlanFixture() {
+  const plan = { revision: 3, edges: [], floors: [{ floor_id: "ground", rooms: [{
+    area_id: "room", name: "Room", rectangle: { floor_id: "ground", x: 2, y: 2, width: 12, height: 10 },
+    sensors: [{ registry_id: "radar", entity_id: "binary_sensor.radar", kind: "radar", state: "inactive", marker: { area_id: "room", x: 500, y: 500 } }],
+  }] }, { floor_id: "other", rooms: [] }] };
+  const card = new FloorPlanCard();
+  const renders = [];
+  card._render = (model) => renders.push(model);
+  card.setConfig({ floor_id: "ground" });
+  const hass = { user: { is_admin: true }, states: {
+    "sensor.scheduler": state("ready", { adaptive_robovacs_entry_id: "entry", adaptive_robovacs_role: "scheduler_status", floor_plan: plan }),
+    "binary_sensor.radar": state("off", { friendly_name: "Radar" }),
+  } };
+  card.hass = hass;
+  card.connectedCallback();
+  return { card, hass, plan, renders };
+}
+
+test("floor plan coalesces updates and ignores unrelated state, revision and other-floor changes", () => {
+  const { card, hass, plan, renders } = floorPlanFixture();
+  flushFrames();
+  assert.equal(renders.length, 1);
+  const nextPlan = structuredClone(plan);
+  nextPlan.revision += 1;
+  nextPlan.floors[1].rooms.push({ area_id: "elsewhere", name: "Other room", sensors: [] });
+  for (let i = 0; i < 20; i++) card.hass = { ...hass, states: { ...hass.states,
+    "sensor.unrelated": state(String(i), {}),
+    "sensor.scheduler": state("changed", { ...hass.states["sensor.scheduler"].attributes, floor_plan: nextPlan }),
+  } };
+  flushFrames();
+  assert.equal(renders.length, 1);
+  card.disconnectedCallback();
+});
+
+test("floor plan refreshes occupancy at the same revision and source friendly-name changes", () => {
+  const { card, hass, plan, renders } = floorPlanFixture();
+  flushFrames();
+  const nextPlan = structuredClone(plan);
+  nextPlan.floors[0].rooms[0].sensors[0].state = "active";
+  card.hass = { ...hass, states: { ...hass.states, "sensor.scheduler": state("ready", {
+    ...hass.states["sensor.scheduler"].attributes, floor_plan: nextPlan,
+  }) } };
+  flushFrames();
+  assert.equal(renders.length, 2);
+  card.hass = { ...card._hass, states: { ...card._hass.states, "binary_sensor.radar": state("off", { friendly_name: "Renamed radar" }) } };
+  flushFrames();
+  assert.equal(renders.length, 3);
+  card.disconnectedCallback();
+});
+
+test("floor plan defers hidden updates and drops queued work on disconnect", () => {
+  const { card, hass, renders } = floorPlanFixture();
+  setVisibility("hidden");
+  flushFrames();
+  assert.equal(renders.length, 0);
+  card.hass = { ...hass, user: { is_admin: false } };
+  setVisibility("visible");
+  flushFrames();
+  assert.equal(renders.length, 1);
+  card.hass = { ...hass };
+  card.disconnectedCallback();
+  flushFrames();
+  assert.equal(renders.length, 1);
+});
+
+test("floor plan freezes the draft revision, drops it on floor change and revokes editing with admin access", () => {
+  const { card, hass, plan } = floorPlanFixture();
+  flushFrames();
+  card._beginEditing(card._model());
+  plan.revision = 9;
+  card.hass = { ...hass };
+  assert.equal(card._draft.revision, 3);
+  card.setConfig({ floor_id: "other" });
+  assert.equal(card._draft, undefined);
+  flushFrames();
+  card._beginEditing(card._model());
+  card.hass = { ...hass, user: { is_admin: false } };
+  assert.equal(card._editing, false);
+  assert.equal(card._draft, undefined);
+  card.disconnectedCallback();
+});
+
+test("floor plan captures every drag, ignores a second pointer and rolls back canceled geometry", () => {
+  for (const kind of ["room", "resize", "sensor", "link"]) {
+    const { card } = floorPlanFixture();
+    flushFrames();
+    const model = card._model();
+    card._beginEditing(model);
+    let captured;
+    const svg = { setPointerCapture: (id) => { captured = id; }, hasPointerCapture: (id) => captured === id,
+      releasePointerCapture: () => { captured = undefined; }, querySelector: () => undefined };
+    card._setLinkPreview = () => {};
+    card._point = (event) => ({ x: event.clientX, y: event.clientY });
+    const dataset = kind === "sensor" ? { sensor: "radar" } : kind === "link" ? { linkSource: "room" } : { room: "room", resize: kind === "resize" ? "true" : undefined };
+    const down = { button: 0, pointerId: 1, clientX: 4, clientY: 4, currentTarget: svg, target: { closest: () => ({ dataset }) } };
+    const original = structuredClone(card._draft);
+    card._onPointerDown(down, model);
+    assert.equal(captured, 1, kind);
+    card._onPointerDown({ ...down, pointerId: 2 }, model);
+    card._onPointerMove({ ...down, pointerId: 2, clientX: 9 }, model);
+    assert.deepEqual(card._draft, original, kind);
+    card._onPointerMove({ ...down, clientX: 9, clientY: 9 }, model);
+    card._onPointerUp({ ...down, pointerId: 2 }, model);
+    assert.equal(card._drag.pointerId, 1, kind);
+    card._cancelDrag({ pointerId: 1 });
+    assert.deepEqual(card._draft, original, kind);
+    assert.equal(card._drag, undefined, kind);
+    assert.equal(captured, undefined, kind);
+    card.disconnectedCallback();
+  }
+});
+
+test("floor plan retains a failed save draft and sends its original revision exactly once", async () => {
+  const { card } = floorPlanFixture();
+  flushFrames();
+  const model = card._model();
+  card._beginEditing(model);
+  const calls = [];
+  let reject;
+  card._hass.callService = (...args) => { calls.push(args); return new Promise((_, fail) => { reject = fail; }); };
+  const saving = card._save(model);
+  await card._save(model);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][2].revision, 3);
+  reject(new Error("Revision changed; reload."));
+  await saving;
+  assert.equal(card._editing, true);
+  assert.equal(card._draft.revision, 3);
+  assert.equal(card._saving, false);
+  card.disconnectedCallback();
 });
 
 test("hidden-tab updates defer all card work and render only the newest state on return", async () => {

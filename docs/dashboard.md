@@ -106,6 +106,14 @@ floor's proportions. On a wide display the plan is centered rather than made
 tall enough to require scrolling. Edit-mode pointer coordinates account for
 the resulting side space, so moving or resizing a room remains accurate.
 
+From v1.18.1, live updates retain the card, diagram and existing sensor elements.
+Unrelated Home Assistant updates do not redraw the floor plan, and occupancy
+changes update markers in place without resetting page scrolling or focus.
+In view mode, swipe anywhere on the diagram to scroll the dashboard; normal
+browser pinch zoom remains available. In Edit mode, swipe blank canvas to scroll.
+Room bodies, resize handles, sensor markers and connection dots reserve touch
+gestures for dragging. A canceled gesture restores that drag's starting geometry.
+
 Everyone with dashboard access can view the diagram. Only Home Assistant
 administrators can enter **Edit plan** or call the topology services. In Edit
 mode, click an unplaced room to add a readable snap-grid rectangle with enough
@@ -114,6 +122,11 @@ resize it, and its connection dot to another room to create a direct two-way
 link. The dragged connection shows a live line: it follows the pointer until
 it snaps to a compatible room. Click a connector to remove it. Save applies
 the complete floor draft atomically; Cancel leaves the saved plan unchanged.
+
+The diagram keeps its coordinate scale fixed during a drag and captures that
+pointer until release. Additional fingers cannot take over the drag. A failed
+Save retains the draft and its original revision for review; it never silently
+overwrites a floor plan changed elsewhere.
 
 Saved links now govern room adjacency protection for future scheduled stages.
 Saving refreshes the preview without starting or stopping cleaning. Geometry and

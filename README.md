@@ -40,10 +40,11 @@ automatically on supported versions.
 
 ## Installation
 
-Requires Home Assistant 2026.10.0 or newer. Version 1.18.0
-adds conditional vacancy forecasts, a configurable stable-vacancy fallback,
-and missed-window diagnostics. See the [release notes](docs/releases/v1.18.0.md)
-and [migration guide](docs/migration-v1.18.0.md) before activation.
+Requires Home Assistant 2026.10.0 or newer. Version 1.18.1 fixes floor-plan
+scroll retention, touch scrolling and drag cancellation. The v1.18 vacancy
+forecasts and missed-window diagnostics remain available. See the
+[release notes](docs/releases/v1.18.1.md) and
+[migration guide](docs/migration-v1.18.1.md) before activation.
 
 1. Copy `custom_components/adaptive_robovacs` to your Home Assistant
    `custom_components` directory and restart Home Assistant.

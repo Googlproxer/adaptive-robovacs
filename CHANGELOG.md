@@ -5,6 +5,28 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.18.1] - 2026-10-13
+
+### Fixed
+
+- Floor-plan updates retain the card and SVG instead of replacing them, preserving
+  scrolling and sensor focus. Unrelated updates are filtered and batched.
+- Touch gestures scroll the whole diagram in view mode; only draggable editing
+  targets suppress scrolling. Drag capture, cancellation and multi-pointer
+  handling now preserve the draft and SVG throughout movement.
+
+Detailed notes: [`docs/releases/v1.18.1.md`](docs/releases/v1.18.1.md).
+
+## [1.18.0] - 2026-10-11
+
+### Changed
+
+- Added conditional remaining-vacancy forecasts, per-room horizon and stable
+  vacancy fallback controls, missed-window diagnostics and separate vacuum,
+  mop and full-program completion reporting.
+
+Detailed notes: [`docs/releases/v1.18.0.md`](docs/releases/v1.18.0.md).
+
 ## [1.17.1] - 2026-09-27
 
 ### Fixed

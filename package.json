@@ -1,0 +1,11 @@
+{
+  "name": "adaptive-robovacs-dashboard-tests",
+  "private": true,
+  "scripts": {
+    "test:dashboard": "node --test tests/test_dashboard.mjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0"
+  }
+}

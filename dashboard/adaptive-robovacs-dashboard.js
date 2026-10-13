@@ -969,22 +969,59 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
 
   setConfig(config) {
     assertCardConfig(config, "floor_id");
+    if (this._config?.floor_id !== config.floor_id || this._config?.entry_id !== config.entry_id) {
+      this._cancelEditing(false);
+    }
     this._config = { ...(config || {}) };
-    this._render();
+    queueCardRefresh(this);
   }
 
   set hass(hass) {
     this._hass = hass;
-    if (!this._editing) this._render();
+    if (this._editing && hass.user?.is_admin !== true) this._cancelEditing(false);
+    if (!this._editing) queueCardRefresh(this);
   }
 
   connectedCallback() {
     this._connected = true;
-    this._render();
+    if (this._editing) this._render();
+    else queueCardRefresh(this);
   }
 
   disconnectedCallback() {
     this._connected = false;
+    removeQueuedCard(this);
+    this._cancelDrag();
+  }
+
+  _renderInput(model) {
+    if (model.error) return { error: model.error, config: this._config };
+    return {
+      config: this._config,
+      entryId: model.entryId,
+      admin: this._hass.user?.is_admin === true,
+      rooms: model.floor.rooms.map((room) => ({
+        area_id: room.area_id, name: room.name, rectangle: room.rectangle,
+        sensors: (room.sensors || []).map((sensor) => ({
+          registry_id: sensor.registry_id, name: this._sensorName(sensor),
+          kind: sensor.kind, state: sensor.state, marker: sensor.marker,
+        })),
+      })),
+      edges: (model.plan.edges || []).filter((edge) =>
+        edge.every((areaId) => model.floor.rooms.some((room) => room.area_id === areaId))
+      ),
+      orphaned_rooms: model.plan.orphaned_rooms || [],
+      orphaned_sensors: model.plan.orphaned_sensors || [],
+    };
+  }
+
+  _flushRefresh() {
+    if (!this._connected || !this._hass || !this._config || this._editing || isDocumentHidden()) return;
+    const model = this._model();
+    const signature = JSON.stringify(this._renderInput(model));
+    if (signature === this._signature) return;
+    this._signature = signature;
+    this._render(model);
   }
 
   getCardSize() {
@@ -1024,6 +1061,7 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
   }
 
   _beginEditing(model) {
+    if (this._hass.user?.is_admin !== true || model.error) return;
     const rooms = {};
     const sensors = {};
     for (const room of model.floor.rooms) {
@@ -1044,6 +1082,7 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
       ).map((edge) => [...edge]),
     };
     this._editing = true;
+    this._editModel = model;
     this._message = undefined;
     this._render();
   }
@@ -1052,7 +1091,7 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
     const rectangles = this._editing ? this._draft.rooms : Object.fromEntries(
       model.floor.rooms.filter((room) => room.rectangle).map((room) => [room.area_id, room.rectangle])
     );
-    const height = Math.max(30, ...Object.values(rectangles).map((room) => room.y + room.height + 2));
+    const height = this._drag?.height ?? Math.max(30, ...Object.values(rectangles).map((room) => room.y + room.height + 2));
     return { rectangles, height };
   }
 
@@ -1185,37 +1224,29 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
   }
 
   _onPointerDown(event, model) {
-    if (!this._editing || event.button !== 0) return;
+    if (!this._editing || this._saving || this._drag || event.button !== 0 || event.isPrimary === false) return;
     const svg = event.currentTarget;
     const geometry = this._floorGeometry(model);
     const point = this._point(event, svg, geometry.height);
     const target = event.target.closest?.("[data-room],[data-sensor],[data-link-source],[data-edge]");
-    if (target?.dataset.edge) {
-      const [left, right] = target.dataset.edge.split("|");
-      this._draft.edges = this._draft.edges.filter((edge) => !(edge[0] === left && edge[1] === right));
-      this._render();
-      return;
-    }
     if (target?.dataset.linkSource) {
       this._drag = { kind: "link", areaId: target.dataset.linkSource };
-      svg.setPointerCapture?.(event.pointerId);
-      this._setLinkPreview(svg, geometry.rectangles, point);
-      return;
-    }
-    if (target?.dataset.sensor) {
+    } else if (target?.dataset.sensor) {
       const marker = this._draft.sensors[target.dataset.sensor];
       this._drag = { kind: "sensor", registryId: target.dataset.sensor, marker: { ...marker } };
-      return;
-    }
-    if (target?.dataset.room) {
+    } else if (target?.dataset.room) {
       const areaId = target.dataset.room;
       this._drag = { kind: target.dataset.resize ? "resize" : "room", areaId, origin: point, rectangle: { ...this._draft.rooms[areaId] } };
-      return;
     }
+    if (!this._drag) return;
+    Object.assign(this._drag, { pointerId: event.pointerId, height: geometry.height, svg });
+    svg.setPointerCapture?.(event.pointerId);
+    if (this._drag.kind === "link") this._setLinkPreview(svg, geometry.rectangles, point);
+    this._render();
   }
 
   _onPointerMove(event, model) {
-    if (!this._drag || !this._editing) return;
+    if (!this._drag || !this._editing || event.pointerId !== this._drag.pointerId) return;
     const svg = event.currentTarget;
     const geometry = this._floorGeometry(model);
     const point = this._point(event, svg, geometry.height);
@@ -1254,7 +1285,7 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
   }
 
   _onPointerUp(event, model) {
-    if (!this._drag) return;
+    if (!this._drag || event.pointerId !== this._drag.pointerId) return;
     const svg = event.currentTarget;
     if (this._drag.kind === "link") {
       const geometry = this._floorGeometry(model);
@@ -1263,14 +1294,43 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
         const edge = [this._drag.areaId, target].sort();
         if (!this._draft.edges.some((item) => item[0] === edge[0] && item[1] === edge[1])) this._draft.edges.push(edge);
       }
-      this._clearLinkPreview(svg);
-      svg.releasePointerCapture?.(event.pointerId);
     }
-    this._drag = undefined;
+    this._finishDrag();
     this._render();
   }
 
+  _finishDrag() {
+    const drag = this._drag;
+    this._drag = undefined;
+    if (!drag) return;
+    this._clearLinkPreview(drag.svg);
+    if (drag.svg.hasPointerCapture?.(drag.pointerId)) drag.svg.releasePointerCapture(drag.pointerId);
+  }
+
+  _cancelDrag(event) {
+    const drag = this._drag;
+    if (!drag || event && event.pointerId !== drag.pointerId) return;
+    if (drag.kind === "room" || drag.kind === "resize") this._draft.rooms[drag.areaId] = drag.rectangle;
+    if (drag.kind === "sensor") this._draft.sensors[drag.registryId] = drag.marker;
+    this._finishDrag();
+    if (event) this._render();
+  }
+
+  _cancelEditing(render = true) {
+    this._cancelDrag();
+    this._editing = false;
+    this._editModel = undefined;
+    this._draft = undefined;
+    this._message = undefined;
+    this._signature = undefined;
+    if (render) this._render();
+  }
+
   async _save(model) {
+    if (!this._editing || this._saving || this._drag || this._hass.user?.is_admin !== true) return;
+    const draft = this._draft;
+    this._saving = true;
+    this._render();
     try {
       await this._hass.callService("adaptive_robovacs", "save_floor_plan", {
         entry_id: model.entryId,
@@ -1282,21 +1342,146 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
         forget_area_ids: this._draft.forget_area_ids,
         forget_sensor_registry_ids: this._draft.forget_sensor_registry_ids,
       });
-      this._editing = false;
-      this._draft = undefined;
+      if (this._draft !== draft) return;
+      this._cancelEditing(false);
       this._message = "Floor plan saved.";
     } catch (error) {
+      if (this._draft !== draft) return;
       this._message = error?.message || "Could not save the floor plan. Reload and try again.";
+    } finally {
+      this._saving = false;
+      this._render();
+    }
+  }
+
+  _ensureDom() {
+    if (this._svg) return;
+    const root = this.shadowRoot || this.attachShadow({ mode: "open" });
+    root.innerHTML = `
+      <style>
+        :host { display:block; } [hidden] { display:none !important; }
+        ha-card { display:block; overflow:hidden; }
+        .header,.toolbar,.palette,.message { padding:12px 16px; }
+        .header { display:flex; justify-content:space-between; align-items:center; }
+        .toolbar button,.palette button { margin:2px; }
+        .message { color:var(--secondary-text-color); }
+        svg { display:block; width:100%; height:calc(100dvh - 112px); min-height:320px; background:var(--card-background-color); background-image:radial-gradient(var(--divider-color) .6px, transparent .7px); background-size:12px 12px; touch-action:auto; }
+        .edge { stroke:var(--primary-color); stroke-width:.35; }
+        .edge.editable { cursor:pointer; stroke-width:.55; }
+        .edge.preview { stroke-dasharray:1 1; pointer-events:none; }
+        .link-preview-dot { fill:var(--primary-color); pointer-events:none; }
+        .room rect { fill:var(--secondary-background-color); stroke:var(--primary-text-color); stroke-width:.28; }
+        .room.active rect { stroke:var(--success-color, #4caf50); stroke-width:.55; }
+        .room text { fill:var(--primary-text-color); font-size:1.35px; pointer-events:none; }
+        .link-source,.room .resize { fill:var(--primary-color); cursor:crosshair; }
+        .sensor { cursor:default; }
+        svg.editing .room > rect,svg.editing .sensor,svg.editing .sensor *,svg.editing .link-source { touch-action:none; }
+        svg.editing .room > rect,svg.editing .sensor { cursor:move; }
+        svg.editing .room > .resize { cursor:crosshair; }
+        .sensor circle { fill:var(--disabled-text-color); stroke:var(--primary-text-color); stroke-width:.2; }
+        .sensor.active circle { fill:var(--success-color, #4caf50); }
+        .sensor.unavailable circle { fill:var(--error-color); }
+        .sensor.fallback path { display:none; }
+        .sensor path { fill:none; stroke:var(--primary-text-color); stroke-width:.18; }
+        .palette { border-top:1px solid var(--divider-color); }
+        .warning { color:var(--warning-color); }
+      </style>
+      <ha-card>
+        <div class="header"><span></span><button data-action="edit">Edit plan</button><button data-action="cancel" hidden>Cancel</button></div>
+        <div class="message" role="status" hidden></div>
+        <div class="toolbar" hidden>Add unplaced rooms and sensors from the palette, then drag room bodies, corner handles, sensor markers, or room connection dots. Tap a connector to remove it. Swipe blank canvas to scroll. <button data-action="save">Save</button></div>
+        <svg><g data-layer="edges"></g><g data-layer="rooms"></g></svg>
+        <div class="palette" data-palette hidden></div>
+        <div class="palette warning" data-warning hidden></div>
+      </ha-card>
+    `;
+    this._svg = root.querySelector("svg");
+    for (const [type, method] of [["pointerdown", "_onPointerDown"], ["pointermove", "_onPointerMove"], ["pointerup", "_onPointerUp"], ["pointercancel", "_cancelDrag"], ["lostpointercapture", "_cancelDrag"]]) {
+      this._svg.addEventListener(type, (event) => this[method](event, this._editModel));
+    }
+    root.addEventListener("click", (event) => this._onClick(event));
+  }
+
+  _onClick(event) {
+    const target = event.target.closest?.("button,[data-edge]");
+    if (!target || this._saving) return;
+    const model = this._editModel || this._model();
+    if (target.dataset.action === "edit") { this._beginEditing(model); return; }
+    if (!this._editing || this._hass.user?.is_admin !== true) return;
+    if (target.dataset.action === "cancel") { this._cancelEditing(); return; }
+    if (target.dataset.action === "save") { void this._save(model); return; }
+    if (target.dataset.roomSelect) this._placeUnplacedRoom(target.dataset.roomSelect, model);
+    if (target.dataset.sensorSelect) this._placeUnplacedSensor(target.dataset.sensorSelect, target.dataset.sensorRoom);
+    if (target.dataset.forgetArea) this._draft.forget_area_ids.push(target.dataset.forgetArea);
+    if (target.dataset.forgetSensor) this._draft.forget_sensor_registry_ids.push(target.dataset.forgetSensor);
+    if (target.dataset.edge) {
+      const [left, right] = target.dataset.edge.split("|");
+      this._draft.edges = this._draft.edges.filter((edge) => !(edge[0] === left && edge[1] === right));
     }
     this._render();
   }
 
-  _render() {
+  _patchMarkup(parent, markup) {
+    const fragment = parent.namespaceURI === "http://www.w3.org/2000/svg"
+      ? parent.ownerDocument.createElementNS(parent.namespaceURI, "svg")
+      : parent.ownerDocument.createElement("div");
+    fragment.innerHTML = markup;
+    this._patchChildren(parent, fragment);
+  }
+
+  _patchChildren(parent, desired) {
+    const key = (node, index) => {
+      for (const name of ["data-sensor", "data-link-source", "data-edge", "data-action", "data-room-select", "data-sensor-select", "data-forget-area", "data-forget-sensor", "data-room"]) {
+        if (node.hasAttribute?.(name)) return `${node.nodeName}:${name}:${node.getAttribute(name)}`;
+      }
+      return `${node.nodeName}:${index}`;
+    };
+    const existing = new Map([...parent.childNodes].map((node, index) => [key(node, index), node]));
+    [...desired.childNodes].forEach((candidate, index) => {
+      const identity = key(candidate, index);
+      let node = existing.get(identity);
+      existing.delete(identity);
+      if (!node) {
+        node = candidate.cloneNode(true);
+      } else if (!node.isEqualNode(candidate)) {
+        if (node.nodeType === 3) {
+          node.data = candidate.data;
+        } else {
+          for (const attribute of [...node.attributes]) {
+            if (!candidate.hasAttribute(attribute.name)) node.removeAttribute(attribute.name);
+          }
+          for (const attribute of candidate.attributes) {
+            if (node.getAttribute(attribute.name) !== attribute.value) node.setAttribute(attribute.name, attribute.value);
+          }
+          this._patchChildren(node, candidate);
+        }
+      }
+      if (parent.childNodes[index] !== node) parent.insertBefore(node, parent.childNodes[index] || null);
+    });
+    for (const node of existing.values()) node.remove();
+  }
+
+  _render(model = this._editModel || this._model()) {
     if (!this._connected || !this._hass || !this._config) return;
-    const root = this.shadowRoot || this.attachShadow({ mode: "open" });
-    const model = this._model();
+    this._ensureDom();
+    const root = this.shadowRoot;
+    const admin = this._hass.user?.is_admin === true;
+    root.querySelector(".header span").textContent = this._config.title || `${this._config.floor_id} floor plan`;
+    root.querySelector("[data-action=edit]").hidden = !admin || Boolean(this._editing) || Boolean(model.error);
+    root.querySelector("[data-action=cancel]").hidden = !this._editing;
+    root.querySelector("[data-action=cancel]").disabled = Boolean(this._saving);
+    root.querySelector("[data-action=save]").disabled = Boolean(this._saving || this._drag);
+    root.querySelector(".toolbar").hidden = !this._editing;
+    const message = model.error || this._message || "";
+    root.querySelector(".message").textContent = message;
+    root.querySelector(".message").hidden = !message;
+    this._svg.setAttribute("class", this._editing ? "editing" : "");
+    this._svg.setAttribute("aria-label", `${this._config.floor_id} floor plan`);
     if (model.error) {
-      root.innerHTML = `<ha-card><div class="message">${escapeHtml(model.error)}</div></ha-card>`;
+      this._patchMarkup(this._svg.querySelector("[data-layer=edges]"), "");
+      this._patchMarkup(this._svg.querySelector("[data-layer=rooms]"), "");
+      root.querySelector("[data-palette]").hidden = true;
+      root.querySelector("[data-warning]").hidden = true;
       return;
     }
     const geometry = this._floorGeometry(model);
@@ -1331,37 +1516,15 @@ class AdaptiveRoboVacsFloorPlanCard extends HTMLElement {
         : `Place ${sensor.room_name} before adding ${sensorName}`;
       return `<button data-sensor-select="${escapeHtml(sensor.registry_id)}" data-sensor-room="${escapeHtml(sensor.area_id)}" title="${escapeHtml(title)}" ${roomIsPlaced ? "" : "disabled"}>${escapeHtml(sensorName)}</button>`;
     }).join("");
-    const admin = this._hass.user?.is_admin === true;
-    root.innerHTML = `
-      <style>
-        :host { display:block; } ha-card { display:block; overflow:hidden; } .header,.toolbar,.palette,.message { padding:12px 16px; } .header { display:flex; justify-content:space-between; align-items:center; } .toolbar button,.palette button { margin:2px; } .message { color:var(--secondary-text-color); } svg { display:block; width:100%; height:calc(100dvh - 112px); min-height:320px; background:var(--card-background-color); background-image:radial-gradient(var(--divider-color) .6px, transparent .7px); background-size:12px 12px; touch-action:none; } .edge { stroke:var(--primary-color); stroke-width:.35; } .edge.editable { cursor:pointer; stroke-width:.55; } .edge.preview { stroke-dasharray:1 1; pointer-events:none; } .link-preview-dot { fill:var(--primary-color); pointer-events:none; } .room rect { fill:var(--secondary-background-color); stroke:var(--primary-text-color); stroke-width:.28; } .room.active rect { stroke:var(--success-color, #4caf50); stroke-width:.55; } .room text { fill:var(--primary-text-color); font-size:1.35px; pointer-events:none; } .link-source,.resize { fill:var(--primary-color); cursor:crosshair; } .sensor { cursor:move; } .sensor circle { fill:var(--disabled-text-color); stroke:var(--primary-text-color); stroke-width:.2; } .sensor.active circle { fill:var(--success-color, #4caf50); } .sensor.unavailable circle { fill:var(--error-color); } .sensor.fallback path { display:none; } .sensor path { fill:none; stroke:var(--primary-text-color); stroke-width:.18; } .palette { border-top:1px solid var(--divider-color); } .warning { color:var(--warning-color); }
-      </style>
-      <ha-card>
-        <div class="header"><span>${escapeHtml(this._config.title || `${this._config.floor_id} floor plan`)}</span>${admin ? `<button data-action="${this._editing ? "cancel" : "edit"}">${this._editing ? "Cancel" : "Edit plan"}</button>` : ""}</div>
-        ${this._message ? `<div class="message">${escapeHtml(this._message)}</div>` : ""}
-        ${this._editing ? `<div class="toolbar">Add unplaced rooms and sensors from the palette, then drag room bodies, corner handles, sensor markers, or room connection dots. Click a connector to remove it. <button data-action="save">Save</button></div>` : ""}
-        <svg viewBox="0 0 48 ${geometry.height}" aria-label="${escapeHtml(`${this._config.floor_id} floor plan`)}">${renderedEdges}${renderedRooms}</svg>
-        ${this._editing ? `<div class="palette"><strong>Unplaced rooms</strong><br>${unplacedRooms.map((room) => `<button data-room-select="${escapeHtml(room.area_id)}">${escapeHtml(room.name)}</button>`).join("") || "All rooms are placed."}<br><strong>Unplaced occupancy sensors</strong><br>${renderedUnplacedSensors || "All discovered sensors are placed."}</div>` : ""}
-        ${(model.plan.orphaned_rooms?.length || model.plan.orphaned_sensors?.length) ? `<div class="palette warning">Saved unavailable rooms: ${escapeHtml((model.plan.orphaned_rooms || []).join(", ") || "none")}. Saved unavailable sensors: ${escapeHtml((model.plan.orphaned_sensors || []).join(", ") || "none")}.${this._editing ? `<br>${(model.plan.orphaned_rooms || []).map((areaId) => `<button data-forget-area="${escapeHtml(areaId)}">Forget ${escapeHtml(areaId)}</button>`).join("")}${(model.plan.orphaned_sensors || []).map((registryId) => `<button data-forget-sensor="${escapeHtml(registryId)}">Forget sensor</button>`).join("")}` : ""}</div>` : ""}
-      </ha-card>
-    `;
-    const svg = root.querySelector("svg");
-    svg.addEventListener("pointerdown", (event) => this._onPointerDown(event, model));
-    svg.addEventListener("pointermove", (event) => this._onPointerMove(event, model));
-    svg.addEventListener("pointerup", (event) => this._onPointerUp(event, model));
-    root.querySelector("[data-action=edit]")?.addEventListener("click", () => this._beginEditing(model));
-    root.querySelector("[data-action=cancel]")?.addEventListener("click", () => { this._editing = false; this._draft = undefined; this._message = undefined; this._render(); });
-    root.querySelector("[data-action=save]")?.addEventListener("click", () => this._save(model));
-    root.querySelectorAll("[data-room-select]").forEach((button) => button.addEventListener("click", () => this._placeUnplacedRoom(button.dataset.roomSelect, model)));
-    root.querySelectorAll("[data-sensor-select]").forEach((button) => button.addEventListener("click", () => this._placeUnplacedSensor(button.dataset.sensorSelect, button.dataset.sensorRoom)));
-    root.querySelectorAll("[data-forget-area]").forEach((button) => button.addEventListener("click", () => {
-      this._draft.forget_area_ids.push(button.dataset.forgetArea);
-      this._render();
-    }));
-    root.querySelectorAll("[data-forget-sensor]").forEach((button) => button.addEventListener("click", () => {
-      this._draft.forget_sensor_registry_ids.push(button.dataset.forgetSensor);
-      this._render();
-    }));
+    this._svg.setAttribute("viewBox", `0 0 48 ${geometry.height}`);
+    this._patchMarkup(this._svg.querySelector("[data-layer=edges]"), renderedEdges);
+    this._patchMarkup(this._svg.querySelector("[data-layer=rooms]"), renderedRooms);
+    const palette = root.querySelector("[data-palette]");
+    palette.hidden = !this._editing;
+    if (this._editing) this._patchMarkup(palette, `<strong>Unplaced rooms</strong><br>${unplacedRooms.map((room) => `<button data-room-select="${escapeHtml(room.area_id)}">${escapeHtml(room.name)}</button>`).join("") || "All rooms are placed."}<br><strong>Unplaced occupancy sensors</strong><br>${renderedUnplacedSensors || "All discovered sensors are placed."}`);
+    const warning = root.querySelector("[data-warning]");
+    warning.hidden = !(model.plan.orphaned_rooms?.length || model.plan.orphaned_sensors?.length);
+    if (!warning.hidden) this._patchMarkup(warning, `Saved unavailable rooms: ${escapeHtml((model.plan.orphaned_rooms || []).join(", ") || "none")}. Saved unavailable sensors: ${escapeHtml((model.plan.orphaned_sensors || []).join(", ") || "none")}.${this._editing ? `<br>${(model.plan.orphaned_rooms || []).map((areaId) => `<button data-forget-area="${escapeHtml(areaId)}">Forget ${escapeHtml(areaId)}</button>`).join("")}${(model.plan.orphaned_sensors || []).map((registryId) => `<button data-forget-sensor="${escapeHtml(registryId)}">Forget sensor</button>`).join("")}` : ""}`);
   }
 }
 

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Floorplan browser regressions</title>
+<style>
+  :root { font:16px system-ui; --primary-color:#673ab7; --success-color:#4caf50; --primary-text-color:#222; --secondary-background-color:#eee; --divider-color:#ccc; --card-background-color:#fff; }
+  body { margin:0; }
+  header { position:sticky; top:0; z-index:1; padding:8px; background:#fff; border-bottom:1px solid #ccc; }
+  button { padding:8px; }
+  output { display:block; white-space:pre-wrap; font:13px monospace; }
+  main { display:grid; gap:8px; }
+</style>
+<header><button id="run">Run browser regressions</button><button id="updates">Start live updates</button><output id="result">Loading synthetic floors…</output></header>
+<main id="panel"></main>
+<script>
+  // ha-card renders its slot asynchronously through Lit. Force layout immediately
+  // after hass writes to reproduce scroll clamping if the wrapper is replaced.
+  customElements.define('ha-card',class extends HTMLElement {
+    connectedCallback() {
+      if (this.shadowRoot) return;
+      const root=this.attachShadow({mode:'open'});
+      queueMicrotask(()=>{root.innerHTML='<slot></slot>';});
+    }
+  });
+</script>
+<script src="../../custom_components/adaptive_robovacs/frontend/adaptive-robovacs-dashboard.js"></script>
+<script>
+  const clone=value=>JSON.parse(JSON.stringify(value));
+  const frame=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  const initialPlan={revision:3,edges:[['lower-a','lower-b']],orphaned_rooms:[],orphaned_sensors:[],floors:['lower','upper'].map(floor_id=>({floor_id,rooms:[
+    {area_id:`${floor_id}-a`,name:'Synthetic room A',rectangle:{floor_id,x:3,y:3,width:15,height:11},sensors:[{registry_id:`${floor_id}-radar`,entity_id:`binary_sensor.synthetic_${floor_id}`,kind:'radar',state:'inactive',marker:{area_id:`${floor_id}-a`,x:500,y:500}}]},
+    {area_id:`${floor_id}-b`,name:'Synthetic room B',rectangle:{floor_id,x:25,y:3,width:15,height:11},sensors:[]},
+    {area_id:`${floor_id}-unplaced`,name:'Unplaced room',rectangle:null,sensors:[{registry_id:`${floor_id}-unplaced-sensor`,entity_id:`binary_sensor.synthetic_unplaced_${floor_id}`,kind:'fallback',state:'unavailable',marker:null}]},
+  ]}))};
+  let plan=clone(initialPlan), sequence=0, timer, failSave=false, lastSave;
+  const names={};
+  const hass={user:{is_admin:true},states:{},async callService(domain,service,data){
+    if(domain!=='adaptive_robovacs'||service!=='save_floor_plan')throw new Error('Unexpected service');
+    if(failSave||data.revision!==plan.revision)throw new Error('Revision changed; reload and try again.');
+    lastSave=clone(data);
+    const next=clone(plan),floor=next.floors.find(item=>item.floor_id===data.floor_id);
+    for(const room of floor.rooms){room.rectangle=data.rooms[room.area_id]||null;for(const sensor of room.sensors)sensor.marker=data.sensors[sensor.registry_id]||null;}
+    next.edges=data.edges;next.revision++;plan=next;publish();
+  }};
+  const cards=initialPlan.floors.map(floor=>{
+    const card=document.createElement('adaptive-robovacs-floorplan');
+    card.setConfig({floor_id:floor.floor_id});
+    const setter=Object.getOwnPropertyDescriptor(customElements.get('adaptive-robovacs-floorplan').prototype,'hass').set;
+    Object.defineProperty(card,'hass',{set(value){setter.call(this,value);void document.body.offsetHeight;}});
+    document.querySelector('#panel').append(card);return card;
+  });
+  function publish(kind='unrelated') {
+    const next=clone(plan);
+    if(kind==='occupancy')next.floors[0].rooms[0].sensors[0].state=sequence%2?'active':'inactive';
+    plan=next;
+    hass.states={'sensor.synthetic_scheduler':{state:String(++sequence),attributes:{adaptive_robovacs_entry_id:'synthetic',adaptive_robovacs_role:'scheduler_status',floor_plan:plan}},'sensor.synthetic_unrelated':{state:String(sequence),attributes:{}}};
+    for(const [entity_id,friendly_name] of Object.entries(names))hass.states[entity_id]={state:'off',attributes:{friendly_name}};
+    cards.forEach(card=>{card.hass={...hass};});
+  }
+  function startUpdates(){if(!timer)timer=setInterval(()=>publish('occupancy'),75);}
+  function stopUpdates(){clearInterval(timer);timer=undefined;}
+  function assert(condition,message){if(!condition)throw new Error(message);}
+  async function runChecks(){
+    stopUpdates();
+    const card=cards[0],root=card.shadowRoot,svg=root.querySelector('svg'),wrapper=root.querySelector('ha-card');
+    const room=root.querySelector('[data-layer=rooms] > [data-room="lower-a"]');
+    const sensor=root.querySelector('[data-sensor="lower-radar"]');
+    const output=document.querySelector('#result');
+    output.textContent='Running browser regressions…';output.dataset.status='running';
+    let checks=0;
+    const check=(condition,message)=>{assert(condition,message);checks++;};
+    try {
+      sensor.focus();
+      for(let i=0;i<24;i++){
+        document.scrollingElement.scrollTop=180+i*4;
+        const position=document.scrollingElement.scrollTop;
+        publish(i%2?'unrelated':'occupancy');await frame();
+        check(document.scrollingElement.scrollTop===position,'Scroll changed during updates');
+        check(root.querySelector('ha-card')===wrapper&&root.querySelector('svg')===svg,'Card or SVG replaced');
+        check(root.querySelector('[data-sensor="lower-radar"]')===sensor&&root.activeElement===sensor,'Sensor identity or focus lost');
+      }
+      const stopped=document.scrollingElement.scrollTop;
+      for(let i=0;i<8;i++){publish('occupancy');await frame();check(document.scrollingElement.scrollTop===stopped,'Scroll changed after scrolling stopped');}
+      check(sensor.getAttribute('aria-label').endsWith(plan.floors[0].rooms[0].sensors[0].state),'Same-revision occupancy stale');
+      names['binary_sensor.synthetic_lower']='Radar <img src=x onerror=alert(1)>';
+      publish();await frame();
+      check(sensor.getAttribute('aria-label').startsWith(names['binary_sensor.synthetic_lower']),'Friendly name stale');
+      check(!root.querySelector('img'),'Name injected markup');
+      plan.floors[0].rooms.reverse();publish();await frame();
+      check(root.querySelector('[data-sensor="lower-radar"]')===sensor&&root.querySelector('[data-layer=rooms] > [data-room="lower-a"]')===room,'Reordering lost stable IDs');
+      plan.floors[0].rooms.reverse();publish();await frame();
+      check(getComputedStyle(svg).touchAction==='auto'&&getComputedStyle(room.querySelector('rect')).touchAction==='auto','View-mode touch scrolling blocked');
+      root.querySelector('[data-action=edit]').click();
+      check(getComputedStyle(svg).touchAction==='auto','Blank edit canvas blocks scrolling');
+      check(getComputedStyle(room.querySelector('rect')).touchAction==='none'&&getComputedStyle(sensor.querySelector('circle')).touchAction==='none','Editable targets do not reserve dragging');
+      const savedCapture={set:svg.setPointerCapture,has:svg.hasPointerCapture,release:svg.releasePointerCapture};
+      const captures=new Set();
+      svg.setPointerCapture=id=>captures.add(id);svg.hasPointerCapture=id=>captures.has(id);svg.releasePointerCapture=id=>captures.delete(id);
+      const pointer=(target,x,y,id=1)=>{const point=new DOMPoint(x,y).matrixTransform(svg.getScreenCTM());return {target,currentTarget:svg,button:0,pointerId:id,isPrimary:true,clientX:point.x,clientY:point.y};};
+      const original=clone(card._draft);
+      for(const [selector,x,y] of [['[data-room="lower-a"] > rect',5,5],['[data-resize]',17,13],['[data-sensor="lower-radar"]',10,8],['[data-link-source="lower-a"]',18,8]]){
+        const target=root.querySelector(selector),down=pointer(target,x,y);
+        card._onPointerDown(down,card._editModel);
+        check(captures.has(1),'Drag missing pointer capture');
+        card._onPointerMove(pointer(target,x+2,y+2,2),card._editModel);
+        check(JSON.stringify(card._draft)===JSON.stringify(original),'Second pointer changed draft');
+        card._onPointerMove(pointer(target,x+2,y+2),card._editModel);
+        check(root.querySelector('svg')===svg,'Drag replaced SVG');
+        svg.dispatchEvent(new PointerEvent(selector.includes('sensor')?'lostpointercapture':'pointercancel',{pointerId:1}));
+        check(JSON.stringify(card._draft)===JSON.stringify(original)&&!card._drag&&!captures.size,'Cancellation failed to restore draft');
+      }
+      root.querySelector('[data-edge]').dispatchEvent(new MouseEvent('click',{bubbles:true}));
+      check(card._draft.edges.length===0,'Connector tap did not remove link');
+      const link=root.querySelector('[data-link-source="lower-a"]');
+      card._onPointerDown(pointer(link,18,8),card._editModel);
+      card._onPointerMove(pointer(link,30,8),card._editModel);
+      card._onPointerUp(pointer(link,30,8),card._editModel);
+      check(card._draft.edges.length===1&&!root.querySelector('[data-link-preview]')&&!captures.size,'Completed link drag failed');
+      card._onPointerDown(pointer(sensor,10,8),card._editModel);
+      card._onPointerMove(pointer(sensor,14,10),card._editModel);
+      card._onPointerUp(pointer(sensor,14,10),card._editModel);
+      check(card._draft.sensors['lower-radar'].x!==original.sensors['lower-radar'].x&&root.querySelector('[data-sensor="lower-radar"]')===sensor,'Completed sensor drag failed');
+      const resize=root.querySelector('[data-room="lower-a"][data-resize]');
+      card._onPointerDown(pointer(resize,18,14),card._editModel);
+      card._onPointerMove(pointer(resize,20,16),card._editModel);
+      card._onPointerUp(pointer(resize,20,16),card._editModel);
+      check(card._draft.rooms['lower-a'].width===17&&card._draft.rooms['lower-a'].height===13,'Completed resize failed');
+      card._onPointerDown(pointer(room.querySelector('rect'),5,5),card._editModel);
+      card._onPointerMove(pointer(room.querySelector('rect'),7,7),card._editModel);
+      const resized=clone(card._drag.rectangle);
+      card.remove();document.querySelector('#panel').prepend(card);
+      check(!card._drag&&!captures.size&&JSON.stringify(card._draft.rooms['lower-a'])===JSON.stringify(resized),'Disconnect did not cancel active drag');
+      check(root.querySelector('svg')===svg&&room.querySelector('rect').getAttribute('x')===String(resized.x),'Reconnect did not restore retained draft geometry');
+      svg.setPointerCapture=savedCapture.set;svg.hasPointerCapture=savedCapture.has;svg.releasePointerCapture=savedCapture.release;
+      root.querySelector('[data-room-select="lower-unplaced"]').click();
+      root.querySelector('[data-sensor-select="lower-unplaced-sensor"]').click();
+      check(Boolean(card._draft.rooms['lower-unplaced']&&card._draft.sensors['lower-unplaced-sensor']),'Palette placement failed');
+      failSave=true;await card._save(card._editModel);
+      check(card._editing&&Boolean(card._draft)&&root.querySelector('.message').textContent.includes('Revision changed'),'Failed save discarded draft');
+      failSave=false;await card._save(card._editModel);await frame();
+      check(!card._editing&&lastSave.revision===3&&lastSave.floor_id==='lower','Atomic save lost original revision or floor');
+      check(root.querySelector('ha-card')===wrapper&&root.querySelector('svg')===svg,'Save replaced shell');
+      root.querySelector('[data-action=edit]').click();
+      root.querySelector('[data-action=cancel]').click();
+      check(!card._editing&&!card._draft,'Cancel retained draft');
+      const previous=plan;plan={...clone(plan),floors:[]};publish();await frame();
+      check(root.querySelector('ha-card')===wrapper&&root.querySelector('svg')===svg,'Unavailable floor replaced shell');
+      plan=previous;publish();await frame();
+      check(root.querySelector('[data-sensor="lower-radar"]')&&root.querySelector('svg')===svg,'Floor recovery failed');
+      output.textContent=`PASS: ${checks} browser assertions. Card, SVG, focus and scrolling retained; touch policy, drag cancellation, palette, save and recovery verified.`;
+      output.dataset.status='passed';output.dataset.checks=String(checks);
+    }catch(error){output.textContent=`FAIL: ${error.message}`;output.dataset.status='failed';throw error;}
+  }
+  document.querySelector('#run').onclick=()=>{runChecks().catch(console.error);};
+  document.querySelector('#updates').onclick=startUpdates;
+  publish();frame().then(()=>{document.querySelector('#result').textContent='Ready — synthetic floors only';document.querySelector('#result').dataset.status='ready';});
+  window.floorplanFixture={cards,publish,frame,startUpdates,stopUpdates,get plan(){return plan;},get lastSave(){return lastSave;}};
+</script>
+</html>
