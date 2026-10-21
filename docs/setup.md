@@ -1,5 +1,24 @@
 # Setup
 
+## Multi-room runs and battery learning
+
+Multi-room runs become available after three valid battery measurements for each
+robot/operation/profile needed by the configured programs. Until then, existing
+single-room cleaning continues. The vacuum card shows learning progress and its
+current queue. Each room completes its saved program before the next room starts.
+
+The minimum battery setting gates the beginning of a managed run. Subsequent
+stages may start below it when measured charge covers remaining work, the learned
+25% consumption margin, and a 20% finishing reserve. Dock visits can occur between
+stages; future charging is not assumed when sizing the run. Excess pending rooms
+remain due until recharge and fresh eligibility checks permit another run.
+
+Pending rooms are removed when occupied or unresolved. Once the current room is
+observed cleaning, its own occupancy changes allow its complete program to finish.
+Water, adjacency, windows, faults, Party Mode, and observe-only gates still apply.
+Cancellation, interruption, recharge, or an expired mop prerequisite ends that
+continuation permission. Existing manual overrides remain separate.
+
 ## Labels and room discovery
 
 The integration treats every Home Assistant area on a discovered vacuum's dock

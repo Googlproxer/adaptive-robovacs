@@ -20,6 +20,36 @@ sys.modules[SPEC.name] = models
 SPEC.loader.exec_module(models)
 
 
+class RunEnergyTests(unittest.TestCase):
+    def test_learned_consumption_uses_recent_valid_samples_and_margin(self):
+        self.assertEqual(models.learned_battery_rate([1, 2]), (None, 2))
+        self.assertEqual(models.learned_battery_rate([1, 2, 3]), (3.75, 3))
+        self.assertEqual(
+            models.learned_battery_rate([0, -1, float("nan"), True]), (None, 0)
+        )
+        self.assertEqual(models.learned_battery_rate([100] * 10 + [1] * 50), (1.25, 50))
+
+    def test_observed_battery_must_cover_complete_work_and_inclusive_reserve(self):
+        for battery, cost, expected in [
+            (40, 20, True),
+            (39.99, 20, False),
+            (100, 81, False),
+            (20, 0, True),
+            (None, 0, False),
+            (float("nan"), 10, False),
+            (101, 10, False),
+            (100, float("inf"), False),
+            (100, -1, False),
+        ]:
+            with self.subTest(battery=battery, cost=cost):
+                self.assertEqual(models.run_battery_fits(battery, cost), expected)
+
+    def test_queue_delay_never_counts_as_observed_clear_time(self):
+        self.assertEqual(models.run_vacancy_horizon(20, 30, 5, 10), 60)
+        self.assertEqual(models.run_vacancy_horizon(20, 30, 90, 10), 120)
+        self.assertEqual(models.run_vacancy_horizon(20.1, 0, 0, 10), 31)
+
+
 class RemainingVacancyTests(unittest.TestCase):
     def forecast(
         self,

@@ -270,6 +270,7 @@ class WholeSchedulePlan:
     candidates: tuple[ScheduleCandidate, ...]
     assignments: tuple[PlannedCandidateAssignment, ...]
     blocks: tuple[tuple[str, str], ...]
+    robot_blocks: tuple[tuple[str, str, str], ...] = ()
 
 
 def _candidate_order_key(

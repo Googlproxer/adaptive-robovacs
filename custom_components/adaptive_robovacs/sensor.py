@@ -145,6 +145,45 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             **super().extra_state_attributes,
             "floor_id": robot.floor_id,
             "battery": robot.battery,
+            "battery_learning": [
+                {
+                    "profile": profile,
+                    "sample_count": count,
+                    "safe_percent_per_minute": rate,
+                }
+                for profile, count, rate in robot.battery_learning
+            ],
+            "battery_learning_summary": (
+                f"{sum(item[1] for item in robot.battery_learning)} measurements; "
+                "three per stage profile required"
+            ),
+            "cleaning_run": (
+                {
+                    "run_id": robot.cleaning_run.run_id,
+                    "room_ids": list(robot.cleaning_run.room_ids),
+                    "room_names": list(robot.cleaning_run.room_names),
+                    "current_room_id": robot.cleaning_run.current_room_id,
+                    "expected_minutes": robot.cleaning_run.expected_minutes,
+                    "expected_finish_at": (
+                        robot.cleaning_run.estimated_end_at.isoformat()
+                        if robot.cleaning_run.estimated_end_at
+                        else None
+                    ),
+                    "predicted_battery_use": robot.cleaning_run.battery_percent,
+                    "battery_reserve_percent": 20,
+                    "removed": dict(robot.cleaning_run.removed),
+                }
+                if robot.cleaning_run
+                else None
+            ),
+            "cleaning_run_summary": (
+                " → ".join(robot.cleaning_run.room_names)
+                + f"; {robot.cleaning_run.expected_minutes:.0f} min remaining; "
+                + f"{robot.cleaning_run.battery_percent:.0f}% estimated use "
+                + "+ 20% reserve"
+                if robot.cleaning_run
+                else None
+            ),
             "ready": robot.ready,
             "reason": robot.reason,
             "activity": active,
@@ -362,6 +401,9 @@ class _RoomStatusSensor(AdaptiveEntity, SensorEntity):
             "map_status": room.map_status,
             "map_error": room.map_error,
             "block_reason": room.block_reason,
+            "cleaning_run_id": room.cleaning_run_id,
+            "queue_position": room.queue_position,
+            "queue_current_room": room.queue_current_room,
             "legacy_deferral_review_needed": room.legacy_deferral_review_needed,
             "desired_window_start": room.desired_window_start.isoformat(),
             "desired_window_next_start": room.desired_window_start.isoformat(),

@@ -463,6 +463,9 @@ class RoomView:
     occupancy_quality: OccupancyQualityView = field(
         default_factory=OccupancyQualityView
     )
+    cleaning_run_id: str | None = None
+    queue_position: int | None = None
+    queue_current_room: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -499,6 +502,18 @@ class ObservedProfileView:
 
 
 @dataclass(frozen=True, slots=True)
+class CleaningRunView:
+    run_id: str
+    room_ids: tuple[str, ...]
+    room_names: tuple[str, ...]
+    current_room_id: str | None
+    expected_minutes: float
+    battery_percent: float
+    removed: tuple[tuple[str, str], ...]
+    estimated_end_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RobotView:
     """Typed entity-facing state for one registry-backed robot."""
 
@@ -524,6 +539,8 @@ class RobotView:
     settings: RobotSettingsView
     observed_profile: ObservedProfileView
     mop_profile_summary: str | None
+    cleaning_run: CleaningRunView | None = None
+    battery_learning: tuple[tuple[str, int, float | None], ...] = ()
 
     @property
     def supported_operations(self) -> tuple[str, ...]:

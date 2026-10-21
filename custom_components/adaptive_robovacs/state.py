@@ -47,8 +47,9 @@ from .models import (
     normalize_floor_plan_edge,
     room_cleaning_profile_is_custom,
 )
+from .run_state import BatteryUsageSample, CleaningRun
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 RETIRED_GLOBAL_SETTINGS = frozenset({"hall_start", "hall_end"})
 DAILY_WINDOW_VERSION = 1
 
@@ -1063,6 +1064,12 @@ class ActiveJob:
     profile_sources: tuple[tuple[str, str], ...] = ()
     manual_mode: str | None = None
     q10_max_plus_fallback: bool = False
+    run_id: str | None = None
+    battery_start: float | None = None
+    battery_low: float | None = None
+    battery_last: float | None = None
+    battery_sample_valid: bool = True
+    recharge_pending: bool = False
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> ActiveJob | None:
@@ -1144,6 +1151,16 @@ class ActiveJob:
             ),
             manual_mode=_string(value.get("manual_mode")),
             q10_max_plus_fallback=bool(value.get("q10_max_plus_fallback", False)),
+            run_id=_optional_string(value.get("run_id"), "active run_id"),
+            battery_start=_optional_number(value.get("battery_start")),
+            battery_low=_optional_number(value.get("battery_low")),
+            battery_last=_optional_number(value.get("battery_last")),
+            battery_sample_valid=_boolean(
+                value.get("battery_sample_valid"), True, "battery sample valid"
+            ),
+            recharge_pending=_boolean(
+                value.get("recharge_pending"), False, "recharge pending"
+            ),
         )
 
     def to_store(self) -> dict[str, object]:
@@ -1195,6 +1212,12 @@ class ActiveJob:
             "profile_sources": dict(self.profile_sources),
             "manual_mode": self.manual_mode,
             "q10_max_plus_fallback": self.q10_max_plus_fallback,
+            "run_id": self.run_id,
+            "battery_start": self.battery_start,
+            "battery_low": self.battery_low,
+            "battery_last": self.battery_last,
+            "battery_sample_valid": self.battery_sample_valid,
+            "recharge_pending": self.recharge_pending,
         }
 
 
@@ -2151,6 +2174,8 @@ class SchedulerState:
         default_factory=dict
     )
     first_scheduler_online_at: datetime | None = None
+    cleaning_runs: dict[str, CleaningRun] = field(default_factory=dict)
+    battery_samples: dict[str, list[BatteryUsageSample]] = field(default_factory=dict)
 
     @classmethod
     def create(cls, entry_data: Mapping[str, object]) -> SchedulerState:
@@ -2170,10 +2195,12 @@ class SchedulerState:
             isinstance(schema_version, bool) or not isinstance(schema_version, int)
         ):
             raise StateSchemaError("schema_version must be an integer")
-        if schema_version in {16, 17, 18}:
+        if schema_version in {16, 17, 18, 19}:
             # Validate the full former current schema before any permissive
             # legacy parsing. Retired settings remain ignored by that validator.
             upgraded = {**data, "schema_version": SCHEMA_VERSION}
+            upgraded["cleaning_runs"] = {}
+            upgraded["battery_samples"] = {}
             if schema_version == 16:
                 upgraded["room_recoveries"] = {}
             cls._validate_current_schema(upgraded)
@@ -2228,6 +2255,8 @@ class SchedulerState:
 
         if data.get("schema_version") != SCHEMA_VERSION:
             raise StateSchemaError(f"schema_version must be {SCHEMA_VERSION}")
+
+        cls._decode_runs(data)
 
         room_settings = _mapping(data.get("room_settings"), "room_settings")
         robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
@@ -2374,6 +2403,13 @@ class SchedulerState:
             if value is None:
                 continue
             record = _mapping(value, f"active_jobs.{key}")
+            for battery_field in ("battery_start", "battery_low", "battery_last"):
+                if record.get(battery_field) is not None:
+                    if isinstance(record[battery_field], bool):
+                        raise StateSchemaError(
+                            "active battery measurement must be numeric"
+                        )
+                    _bounded_number(record[battery_field], 0, battery_field, 0, 100)
             require_enum(
                 f"active_jobs.{key}.operation",
                 record.get("operation"),
@@ -2624,6 +2660,8 @@ class SchedulerState:
                 is not None
             },
             first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
+            cleaning_runs=cls._decode_runs(data)[0],
+            battery_samples=cls._decode_runs(data)[1],
         )
 
     @classmethod
@@ -2799,7 +2837,46 @@ class SchedulerState:
                 and reference.legacy_key == legacy_key
             },
             first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
+            cleaning_runs=cls._decode_runs(data)[0],
+            battery_samples=cls._decode_runs(data)[1],
         )
+
+    @classmethod
+    def _decode_runs(
+        cls, data: Mapping[str, object]
+    ) -> tuple[dict[str, CleaningRun], dict[str, list[BatteryUsageSample]]]:
+        """Validate run records strictly without dropping damaged current state."""
+
+        if data.get("schema_version") != SCHEMA_VERSION:
+            return {}, {}
+        runs = _mapping(data.get("cleaning_runs"), "cleaning_runs")
+        samples = _mapping(data.get("battery_samples"), "battery_samples")
+        try:
+            decoded_runs = {
+                key: CleaningRun.from_mapping(_mapping(value, "cleaning run"))
+                for key, value in runs.items()
+                if isinstance(key, str)
+            }
+            seen: set[str] = set()
+            for run in decoded_runs.values():
+                if seen.intersection(run.rooms):
+                    raise ValueError("room reserved by more than one run")
+                seen.update(run.rooms)
+            decoded_samples: dict[str, list[BatteryUsageSample]] = {}
+            for key, values in samples.items():
+                if not isinstance(key, str) or not isinstance(values, list):
+                    raise ValueError("battery samples must be arrays keyed by robot")
+                decoded_samples[key] = [
+                    BatteryUsageSample.from_mapping(_mapping(value, "battery sample"))
+                    for value in values
+                ]
+            if len(decoded_runs) != len(runs):
+                raise ValueError("cleaning runs must be keyed by robot identity")
+            return decoded_runs, decoded_samples
+        except (TypeError, ValueError, OverflowError) as err:
+            raise StateSchemaError(
+                "invalid cleaning run or battery learning state"
+            ) from err
 
     def ensure_room(
         self, area_id: str, is_bedroom: bool
@@ -2822,6 +2899,13 @@ class SchedulerState:
     def to_store(self) -> dict[str, object]:
         return {
             "schema_version": SCHEMA_VERSION,
+            "cleaning_runs": {
+                key: run.to_store() for key, run in self.cleaning_runs.items()
+            },
+            "battery_samples": {
+                key: [sample.to_store() for sample in samples]
+                for key, samples in self.battery_samples.items()
+            },
             "global": asdict(self.global_settings),
             "floor_plan": self.floor_plan.to_store(),
             "room_settings": {

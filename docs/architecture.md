@@ -226,7 +226,11 @@ global pauses, manual requests and active/assigned work suppress new alerts;
 a pending water confirmation remains a blocker. A shared cancellable lifecycle
 timer covers the next due/window/fallback boundary. No alert changes a schedule.
 
-- Room-local occupancy blocks new scheduled work.
+- Room-local occupancy blocks new scheduled room programs. Once a managed run's
+  current room is observed cleaning, its remaining configured stages may finish
+  despite that room's own occupancy/forecast changes. This narrow permission
+  ends on completion, cancellation, fault, recharge, or prerequisite expiry;
+  other physical and policy gates remain enforced.
 - Party Mode, observe-only mode, storage-safe mode, startup settling, and
   shutdown are non-dispatching.
 - Every physical stage uses a fresh observation and complete revalidation.
@@ -248,6 +252,31 @@ robot, valid mapping/profile/preflight, any required water approval, start
 confirmation, and every non-bypassable global mode.
 
 ## Boundary enforcement
+
+Managed runs use a separate durable reservation aggregate, keyed by robot
+registry identity. `run_planner.py` performs pure complete-program admission and
+insertion ordering; `application/runs.py` handles reservations and battery
+observations. `ActiveJob` still represents one physical room stage. Every stage
+keeps its own checkpoint, observed completion, pass count, and exact profile.
+Pending rooms cannot be assigned twice and never inherit the current room's
+occupancy exemption. Opportunity accounting treats reservations as assigned
+work, without presenting queued rooms as actively cleaning.
+
+Battery learning retains up to 50 valid samples per robot/profile. Three samples
+are required for every remaining stage profile before a managed run is admitted.
+The 80th-percentile discharge rate receives a 25% margin, then covers conservative
+stage durations plus five-minute turnarounds. Admission requires at least 20%
+predicted finishing charge and never assumes future charging. Missing readings,
+profile changes, recovery gaps, pauses, charging, and inferred completions cannot
+train the model. An explicit native `waiting_to_charge` observation persists a
+recharge/resume episode and cannot complete a room stage at the dock.
+
+Queue vacancy horizons include actual waiting, the complete room program, and
+the clearance margin; a longer configured horizon is retained. Forecasts use
+real-now vacancy evidence and UTC elapsed-time arithmetic across DST. Planning
+previews publish the same cumulative horizon and reason used for admission.
+Schema 20 adds runs, battery samples, and optional job measurements; schema 19
+migrates with empty learning and reservations, preserving existing work/history.
 
 `tests/test_architecture.py` parses imports and the application composition with
 the Python AST. It prevents HA dependencies in domain modules,

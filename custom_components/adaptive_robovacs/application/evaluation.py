@@ -22,8 +22,10 @@ from ..planner import (
     PlanningInput,
     RoomEvaluation,
     ScheduleCandidate,
+    WholeSchedulePlan,
     build_schedule_plan,
 )
+from ..run_planner import PlannedCleaningRun
 from ..state import FrozenJsonObject, RoomHistory, RoomSettings, SchedulerState
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,6 +54,17 @@ class ApplicationEvaluationMixin:
     _room_evaluations: dict[str, RoomEvaluation]
 
     if TYPE_CHECKING:
+
+        def _reconcile_cleaning_runs(self, now: datetime) -> None: ...
+        def _plan_cleaning_runs(
+            self,
+            plan: WholeSchedulePlan,
+            inputs: tuple[PlanningInput, ...],
+            now: datetime,
+        ) -> tuple[WholeSchedulePlan, tuple[PlannedCleaningRun, ...]]: ...
+        async def _async_start_cleaning_run(
+            self, planned: PlannedCleaningRun, now: datetime
+        ) -> ScheduleCandidate | None: ...
 
         def _shutdown_started(self) -> bool: ...
 
@@ -213,6 +226,10 @@ class ApplicationEvaluationMixin:
             if rewound is None:
                 continue
             self.state.occurrences[room_id] = rewound
+            # Repeating an expired prerequisite is a new room attempt.
+            for registry_id, run in tuple(self.state.cleaning_runs.items()):
+                if room_id in run.rooms:
+                    self.state.cleaning_runs.pop(registry_id)
             rewound_rooms.add(room_id)
             tag = self._discard_water_confirmation(occurrence.occurrence_id)
             if tag:
@@ -288,6 +305,7 @@ class ApplicationEvaluationMixin:
             await self._async_release_ready_room_recoveries(now)
             await self._async_queue_ready_hold_rechecks(now)
             await self._async_rewind_expired_mop_occurrences(now)
+            self._reconcile_cleaning_runs(now)
             self._refresh_robot_readiness(now)
             candidates: list[ScheduleCandidate] = []
             reasons: dict[str, str] = {}
@@ -329,6 +347,7 @@ class ApplicationEvaluationMixin:
                 )
 
             plan = build_schedule_plan(tuple(plan_inputs))
+            plan, planned_runs = self._plan_cleaning_runs(plan, tuple(plan_inputs), now)
             candidates = list(plan.candidates)
             assignments = [
                 (self.discovery.robots[item.robot_id], item.candidate)
@@ -337,11 +356,44 @@ class ApplicationEvaluationMixin:
             selected = {
                 item.candidate.room_id: item.robot_id for item in plan.assignments
             }
+            selected.update(
+                {
+                    item.candidate.room_id: run.robot_id
+                    for run in planned_runs
+                    for item in run.rooms
+                }
+            )
+            run_blocks = {
+                (area_id, robot_id): block
+                for area_id, robot_id, block in plan.robot_blocks
+            }
             for planned in plan.candidates:
                 decisions = next(
                     item.decisions
                     for item in plan_inputs
                     if item.candidate.room_id == planned.room_id
+                )
+                decisions = tuple(
+                    replace(
+                        decision,
+                        eligibility=replace(
+                            decision.eligibility, eligible=False, reason=block
+                        ),
+                        candidate=None,
+                    )
+                    if (
+                        block := run_blocks.get(
+                            (planned.room_id, decision.eligibility.robot_id)
+                        )
+                    )
+                    else decision
+                    for decision in decisions
+                )
+                planned = replace(
+                    planned,
+                    robot_eligibility=tuple(
+                        decision.eligibility for decision in decisions
+                    ),
                 )
                 self._room_evaluations[planned.room_id] = RoomEvaluation(
                     now,
@@ -383,7 +435,8 @@ class ApplicationEvaluationMixin:
                             item.room_id
                         ].selected_robot_id,
                         "eligible": any(
-                            decision.eligible for decision in item.robot_eligibility
+                            decision.eligibility.eligible
+                            for decision in self._room_evaluations[item.room_id].robots
                         ),
                         "robot_eligibility": [
                             decision.as_attributes()
@@ -410,6 +463,10 @@ class ApplicationEvaluationMixin:
                     }
                     for robot, item in assignments
                 ],
+                "runs": [run.as_attributes(now) for run in planned_runs],
+                "active_runs": {
+                    key: run.to_store() for key, run in self.state.cleaning_runs.items()
+                },
                 "blocks": reasons,
                 "legacy_deferral_review": self.legacy_deferral_report(),
                 "robots": {
@@ -431,6 +488,22 @@ class ApplicationEvaluationMixin:
                 for robot, candidate in assignments:
                     if self._shutdown_started():
                         break
+                    planned_run = next(
+                        (
+                            run
+                            for run in planned_runs
+                            if run.robot_id == robot.entity_id
+                        ),
+                        None,
+                    )
+                    if planned_run is not None:
+                        head = await self._async_start_cleaning_run(planned_run, _now())
+                        if head is None:
+                            dispatches.append(
+                                "waiting: cleaning run is no longer eligible"
+                            )
+                            continue
+                        candidate = head
                     # Earlier assignments may have awaited service calls. Recheck
                     # every room and robot gate before creating an occurrence or
                     # sending a water-confirmation notification.

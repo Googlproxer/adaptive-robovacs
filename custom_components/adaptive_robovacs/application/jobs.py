@@ -68,6 +68,21 @@ class ApplicationJobsMixin:
 
     if TYPE_CHECKING:
 
+        def _observe_run_battery(
+            self, robot: DiscoveredRobot, active: ActiveJob, state_text: str
+        ) -> None: ...
+
+        def _run_recharge_observed(
+            self, robot: DiscoveredRobot, active: ActiveJob, state_text: str
+        ) -> bool: ...
+        def _learn_run_battery(
+            self,
+            registry_id: str,
+            active: ActiveJob,
+            completion: datetime,
+            confidence: str,
+        ) -> None: ...
+
         async def _async_handle_room_error(
             self,
             registry_id: str,
@@ -206,6 +221,13 @@ class ApplicationJobsMixin:
             active = self.state.active_jobs.get(registry_id)
             state = self.hass.states.get(robot.entity_id) if robot else None
             state_text = state.state if state else "unavailable"
+            if active and robot:
+                self._observe_run_battery(robot, active, state_text)
+                if active.source == "scheduler" and self._run_recharge_observed(
+                    robot, active, state_text
+                ):
+                    changed = True
+                    continue
             if active and state_text not in {"unavailable", "unknown"}:
                 active.last_observed_at = now
                 changed = True
@@ -498,6 +520,7 @@ class ApplicationJobsMixin:
     def _cancel_job(
         self, robot_id: str, active: ActiveJob, cancelled_at: datetime, reason: str
     ) -> None:
+        self.state.cleaning_runs.pop(self.robot_registry_id(robot_id), None)
         transition = reduce_job_cancellation(
             robot_id,
             self.robot_registry_id(robot_id),
@@ -525,6 +548,9 @@ class ApplicationJobsMixin:
                     completion,
                 )
             )
+        self._learn_run_battery(
+            self.robot_registry_id(robot_id), active, completion, confidence
+        )
         transition = reduce_job_completion(
             robot_id,
             self.robot_registry_id(robot_id),

@@ -5,6 +5,18 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.19.0] - 2026-10-22
+
+### Added
+
+- Managed multi-room cleaning queues with complete-program vacancy forecasts,
+  deterministic room ordering, and cancellation of blocked pending rooms.
+- Learned battery budgeting with a 20% finishing reserve and 25% consumption
+  margin; the minimum-start setting applies once per managed run.
+- Queue progress, battery-learning diagnostics, and restart-safe reservations.
+
+Detailed notes: [`docs/releases/v1.19.0.md`](docs/releases/v1.19.0.md).
+
 ## [1.18.1] - 2026-10-13
 
 ### Fixed

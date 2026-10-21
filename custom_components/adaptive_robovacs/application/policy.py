@@ -68,6 +68,7 @@ from ..planner import (
     VacancyDiagnostic,
 )
 from ..presentation import adjacency_block_reason
+from ..run_state import CleaningRun
 from ..state import (
     ActiveJob,
     CleaningStage,
@@ -124,6 +125,13 @@ class ApplicationPolicyMixin:
     _room_evaluations: dict[str, RoomEvaluation]
 
     if TYPE_CHECKING:
+
+        def _run_occupancy_exempt(self, area_id: str) -> bool: ...
+        def _run_for_room(self, area_id: str) -> tuple[str, CleaningRun] | None: ...
+        def _run_continuation(self, robot: DiscoveredRobot) -> bool: ...
+        def _run_dispatch_block(
+            self, candidate: ScheduleCandidate, now: datetime
+        ) -> str | None: ...
 
         def _async_create_task(
             self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
@@ -271,7 +279,7 @@ class ApplicationPolicyMixin:
         battery = self._robot_battery(robot)
         if battery is None:
             return False, "battery unavailable"
-        if battery < settings.minimum_battery:
+        if battery < settings.minimum_battery and not self._run_continuation(robot):
             return False, "battery below minimum"
         return True, "dispatchable"
 
@@ -790,8 +798,11 @@ class ApplicationPolicyMixin:
         if room is None:
             return "room is no longer discovered"
         self._observe_occupancy(now)
+        if run_reason := self._run_dispatch_block(candidate, now):
+            return run_reason
         detail = self._room_data(room.area_id)
-        if detail.occupancy == "occupied":
+        occupancy_exempt = self._run_occupancy_exempt(room.area_id)
+        if detail.occupancy == "occupied" and not occupancy_exempt:
             return "room became occupied before dispatch"
         if not self._room_settings(room).enabled:
             return "room disabled before dispatch"
@@ -800,9 +811,13 @@ class ApplicationPolicyMixin:
         ):
             return "waiting for desired cleaning window"
         unresolved_allowed = self._unresolved_allowed(room, now)
-        if detail.occupancy != "unoccupied" and not unresolved_allowed:
+        if (
+            detail.occupancy != "unoccupied"
+            and not unresolved_allowed
+            and not occupancy_exempt
+        ):
             return "unresolved occupancy before dispatch"
-        if not unresolved_allowed:
+        if not unresolved_allowed and not occupancy_exempt:
             forecast = self._forecast(room, now, candidate.duration_minutes)
             if not forecast.allowed:
                 return forecast.reason
@@ -827,6 +842,8 @@ class ApplicationPolicyMixin:
         self,
         room: DiscoveredRoom,
         now: datetime,
+        *,
+        ignore_run_reservation: bool = False,
     ) -> tuple[ScheduleCandidate | None, str]:
         """Return a due room or a persisted occurrence awaiting its next stage."""
 
@@ -839,6 +856,16 @@ class ApplicationPolicyMixin:
             return None, "room recovery blocked pending Repair"
         occurrence = self.state.occurrences.get(room.area_id)
         manual_override = bool(occurrence and occurrence.manual_override)
+        occupancy_exempt = not manual_override and self._run_occupancy_exempt(
+            room.area_id
+        )
+        reservation = self._run_for_room(room.area_id)
+        if (
+            not ignore_run_reservation
+            and reservation
+            and reservation[1].rooms[0] != room.area_id
+        ):
+            return None, "queued in managed cleaning run"
         if not settings.enabled and not manual_override:
             self.state.water_notification_episodes.pop(room.area_id, None)
             return None, "room disabled"
@@ -857,7 +884,11 @@ class ApplicationPolicyMixin:
             confirmation = self.state.water_confirmations.get(occurrence.occurrence_id)
             if confirmation and confirmation.status == "pending":
                 return None, "waiting for water confirmation"
-        if not manual_override and detail.occupancy == "occupied":
+        if (
+            not manual_override
+            and not occupancy_exempt
+            and detail.occupancy == "occupied"
+        ):
             return None, (f"occupancy {detail.occupancy} ({detail.occupancy_source})")
         if not manual_override:
             adjacency_reason = adjacency_block_reason(
@@ -878,6 +909,7 @@ class ApplicationPolicyMixin:
             unresolved_window_allowed = True
         if (
             not manual_override
+            and not occupancy_exempt
             and detail.occupancy != "unoccupied"
             and not unresolved_window_allowed
         ):
@@ -916,7 +948,7 @@ class ApplicationPolicyMixin:
             occurrence=occurrence,
             evaluated_at=now,
             unresolved_window_allowed=unresolved_window_allowed,
-            bypass_forecast=manual_override,
+            bypass_forecast=manual_override or occupancy_exempt,
             manual_override=manual_override,
             source=(occurrence.source if occurrence else OccurrenceSource.SCHEDULER),
             manual_mode=occurrence.manual_mode if occurrence else None,
@@ -1013,7 +1045,13 @@ class ApplicationPolicyMixin:
                 room, operation, passes, robot.registry_id
             )
             forecast = (
-                Forecast(True, 1.0, "manual override")
+                Forecast(
+                    True,
+                    1.0,
+                    "manual override"
+                    if candidate.manual_override
+                    else "current room program continuation",
+                )
                 if candidate.bypass_forecast
                 else Forecast(True, 0.0, "unresolved occupancy desired-window policy")
                 if candidate.unresolved_window_allowed
@@ -1105,7 +1143,13 @@ class ApplicationPolicyMixin:
             room, operation, passes, robot.registry_id
         )
         forecast = (
-            Forecast(True, 1.0, "manual override")
+            Forecast(
+                True,
+                1.0,
+                "manual override"
+                if candidate.manual_override
+                else "current room program continuation",
+            )
             if candidate.bypass_forecast
             else Forecast(True, 0.0, "unresolved occupancy desired-window policy")
             if candidate.unresolved_window_allowed

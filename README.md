@@ -13,6 +13,10 @@ automatically on supported versions.
 
 - Schedules common rooms and opt-in bedrooms using adjustable per-area cadence
   and independently inherited daily cleaning windows.
+- Builds managed multi-room runs after learning battery consumption. It forecasts
+  complete room programs in queue order and retains a 20% battery reserve plus
+  an estimation margin. Pending rooms that become blocked stay due; the current
+  room can finish its configured program despite its own occupancy changes.
 - Protects rooms from scheduled cleaning beside occupied or only briefly clear
   neighbours using the saved floor-plan links. Each room offers Off, Night only,
   or Always; the shared adjacency night interval defaults to 23:00–09:00 and is
@@ -40,11 +44,11 @@ automatically on supported versions.
 
 ## Installation
 
-Requires Home Assistant 2026.10.0 or newer. Version 1.18.1 fixes floor-plan
-scroll retention, touch scrolling and drag cancellation. The v1.18 vacancy
-forecasts and missed-window diagnostics remain available. See the
-[release notes](docs/releases/v1.18.1.md) and
-[migration guide](docs/migration-v1.18.1.md) before activation.
+Requires Home Assistant 2026.10.0 or newer. Version 1.19.0 adds managed multi-room
+queues and learned battery budgeting. Each room completes its configured program
+before the next room starts; dock visits between stages/rooms remain possible.
+See the [release notes](docs/releases/v1.19.0.md) and
+[migration guide](docs/migration-v1.19.0.md) before activation.
 
 1. Copy `custom_components/adaptive_robovacs` to your Home Assistant
    `custom_components` directory and restart Home Assistant.

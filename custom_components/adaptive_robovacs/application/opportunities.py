@@ -97,7 +97,7 @@ class ApplicationOpportunityMixin:
             active = any(
                 job and room_id in self._active_rooms(job)
                 for job in self.state.active_jobs.values()
-            )
+            ) or any(room_id in run.rooms for run in self.state.cleaning_runs.values())
             if due is None or due > now or not settings.enabled:
                 if record.alert_signature and not dry_run:
                     clears.append(tag)

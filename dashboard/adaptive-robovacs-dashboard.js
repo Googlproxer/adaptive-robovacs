@@ -808,6 +808,14 @@ class AdaptiveRoboVacsVacuumCard extends AdaptiveRoboVacsCardBase {
       this._hass?.states?.[entityId]?.attributes?.friendly_name
     );
     const status = entities.find((item) => item.attrs[ROLE_ATTRIBUTE] === "robot_status");
+    for (const [attribute, name] of [
+      ["cleaning_run_summary", "Cleaning run"],
+      ["battery_learning_summary", "Battery forecast"],
+    ]) {
+      if (status?.attrs?.[attribute]) {
+        entityRows.splice(1, 0, { type: "attribute", entity: status.entityId, attribute, name });
+      }
+    }
     if (status?.attrs?.mop_profile_summary) {
       entityRows.splice(1, 0, {
         type: "attribute",

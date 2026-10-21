@@ -102,6 +102,7 @@ from .opportunities import ApplicationOpportunityMixin
 from .policy import ApplicationPolicyMixin
 from .recovery import ApplicationRecoveryMixin
 from .room_recovery import ApplicationRoomRecoveryMixin
+from .runs import ApplicationRunsMixin
 from .settings import ApplicationSettingsMixin
 from .water import ApplicationWaterMixin
 
@@ -147,6 +148,7 @@ def _track_point(
 
 
 class SchedulerApplication(
+    ApplicationRunsMixin,
     ApplicationLegacyMapMixin,
     ApplicationSettingsMixin,
     ApplicationEventsMixin,

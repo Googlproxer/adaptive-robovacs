@@ -129,6 +129,8 @@ def robot_view(
             "max", "vacuum", "standard", "medium", "2"
         ),
         mop_profile_summary="native mop-only profile",
+        cleaning_run=None,
+        battery_learning=(),
         failure=None,
         supported_operations=("mop", "vacuum"),
         fan_speed_options=capabilities.fan_speed_options,
@@ -238,6 +240,9 @@ def room_view(area_id: str = "study", name: str = "Study"):
         decision_evaluated_at=None,
         opportunity=OpportunityView(),
         occupancy_quality=OccupancyQualityView(),
+        cleaning_run_id=None,
+        queue_position=None,
+        queue_current_room=False,
         failure=None,
         recovery=None,
     )
@@ -281,6 +286,35 @@ class _Coordinator:
 
 
 class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
+    def test_run_and_learning_attributes_keep_queued_rooms_separate_from_activity(self):
+        from custom_components.adaptive_robovacs.snapshots import CleaningRunView
+
+        self.coordinator.data.scheduler = replace(
+            self.coordinator.data.scheduler, observe_only=False
+        )
+        robot = self.coordinator.data.robots[0]
+        robot.cleaning_run = CleaningRunView(
+            "run", ("study", "hall"), ("Study", "Hall"), "study", 30, 20, (), WHEN
+        )
+        robot.battery_learning = (("vacuum", 3, 1.25),)
+        attributes = sensor._RobotStatusSensor(
+            self.coordinator, "vacuum.alpha"
+        ).extra_state_attributes
+        self.assertEqual(attributes["cleaning_run"]["room_ids"], ["study", "hall"])
+        self.assertEqual(
+            attributes["cleaning_run"]["expected_finish_at"], WHEN.isoformat()
+        )
+        self.assertIn("20% reserve", attributes["cleaning_run_summary"])
+        self.assertEqual(attributes["rooms"], [])
+        self.assertEqual(attributes["battery_learning"][0]["sample_count"], 3)
+        room = self.coordinator.data.rooms[0]
+        room.cleaning_run_id = "run"
+        room.queue_position = 2
+        room.queue_current_room = False
+        entity = sensor._RoomStatusSensor(self.coordinator, "study", "Study status")
+        self.assertEqual(entity.native_value, "Queued (position 2)")
+        self.assertEqual(entity.extra_state_attributes["queue_position"], 2)
+
     async def test_vacancy_controls_read_snapshot_and_submit_typed_commands(self):
         for key, maximum in (
             ("occupancy_sensitivity_minutes", 180),

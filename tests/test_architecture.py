@@ -57,6 +57,8 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "planner.py",
             "jobs.py",
             "opportunities.py",
+            "run_state.py",
+            "run_planner.py",
         ):
             imports = imported_modules(PACKAGE / name)
             self.assertFalse(
@@ -120,6 +122,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertEqual(
             bases,
             [
+                "ApplicationRunsMixin",
                 "ApplicationLegacyMapMixin",
                 "ApplicationSettingsMixin",
                 "ApplicationEventsMixin",

@@ -24,6 +24,7 @@ from .models import (
     effective_scheduled_due,
     expand_cleaning_program,
     format_last_cleaned_age,
+    learned_battery_rate,
     next_clean_schedule,
     next_usable_window_start,
     next_window_start,
@@ -45,6 +46,7 @@ from .snapshots import (
     ActiveJobView,
     CandidateView,
     CleaningOccurrenceView,
+    CleaningRunView,
     CleaningStageView,
     DurationEstimateView,
     EffectiveRobotProfileView,
@@ -682,6 +684,26 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         bypass_window=bypass_window,
     )
     return RoomView(
+        cleaning_run_id=next(
+            (
+                run.run_id
+                for run in source.state.cleaning_runs.values()
+                if area_id in run.rooms
+            ),
+            None,
+        ),
+        queue_position=next(
+            (
+                run.rooms.index(area_id) + 1
+                for run in source.state.cleaning_runs.values()
+                if area_id in run.rooms
+            ),
+            None,
+        ),
+        queue_current_room=any(
+            run.started_room_id == area_id
+            for run in source.state.cleaning_runs.values()
+        ),
         area_id=room.area_id,
         name=room.name,
         floor_id=room.floor_id,
@@ -859,7 +881,39 @@ def robot_view(source: ProjectionSource, entity_id: str) -> RobotView:
         return observed_state.state if observed_state else None
 
     robot_fault = source.state.robot_faults.get(robot.registry_id)
+    run = source.state.cleaning_runs.get(robot.registry_id)
+    samples = source.state.battery_samples.get(robot.registry_id, [])
+    learning = tuple(
+        (
+            key,
+            len([sample for sample in samples if sample.profile == key]),
+            learned_battery_rate(
+                sample.percent_per_minute for sample in samples if sample.profile == key
+            )[0],
+        )
+        for key in sorted({sample.profile for sample in samples})
+    )
     return RobotView(
+        cleaning_run=(
+            CleaningRunView(
+                run.run_id,
+                tuple(run.rooms),
+                tuple(
+                    source.discovery.rooms[key].name
+                    if key in source.discovery.rooms
+                    else key
+                    for key in run.rooms
+                ),
+                run.started_room_id,
+                run.expected_minutes,
+                run.battery_percent,
+                tuple(run.removed.items()),
+                run.estimated_end_at,
+            )
+            if run
+            else None
+        ),
+        battery_learning=learning,
         registry_id=robot.registry_id,
         entity_id=robot.entity_id,
         unique_fragment=source.robot_unique_fragment(robot.entity_id),

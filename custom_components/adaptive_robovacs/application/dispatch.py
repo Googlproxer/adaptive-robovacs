@@ -590,6 +590,13 @@ class ApplicationDispatchMixin:
         """Persist and publish a job checkpoint before any outbound start."""
 
         self.state.active_jobs[robot.registry_id] = active
+        run = self.state.cleaning_runs.get(robot.registry_id)
+        if (
+            run
+            and run.rooms[0] == active.room_id
+            and run.occurrences.get(active.room_id) == active.occurrence_id
+        ):
+            active.run_id = run.run_id
         await self._async_save(force=True)
         self._notify_listeners()
 

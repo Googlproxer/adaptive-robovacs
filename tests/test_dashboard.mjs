@@ -325,6 +325,20 @@ test("vacuum card contains one selected vacuum and uses its friendly name", () =
   assert.ok(configuration.entities.every((row) => !row.entity.includes("robot_two")));
 });
 
+test("vacuum card presents the managed queue and battery learning", () => {
+  const states = baseStates();
+  Object.assign(states["sensor.robot_one_status"].attributes, {
+    cleaning_run_summary: "Study → Hall; 30 min remaining; 20% use + 20% reserve",
+    battery_learning_summary: "3 measurements; three per stage profile required",
+  });
+  const { configuration } = configure(VacuumCard, {
+    vacuum_entity_id: "vacuum.robot_one",
+  }, states);
+  assert.ok(configuration.entities.some((row) => row.attribute === "cleaning_run_summary"));
+  assert.ok(configuration.entities.some((row) => row.attribute === "battery_learning_summary"));
+  assert.ok(configuration.entities.every((row) => !row.entity.includes("robot_two")));
+});
+
 test("vacuum card ignores retired map controls and never offers map actions", () => {
   const states = baseStates();
   for (const role of [

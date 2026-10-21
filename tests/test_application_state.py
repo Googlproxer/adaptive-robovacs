@@ -31,6 +31,7 @@ from custom_components.adaptive_robovacs.models import (
     StageStatus,
     WaterReadiness,
 )
+from custom_components.adaptive_robovacs.observations import HomeAssistantObserver
 from custom_components.adaptive_robovacs.state import (
     ActiveJob,
     CleaningOccurrence,
@@ -157,6 +158,7 @@ def state_application() -> SchedulerApplication:
     app = SchedulerApplication.__new__(SchedulerApplication)
     app.entry = SimpleNamespace(entry_id="entry-1", data=ENTRY_DATA)
     app.hass = SimpleNamespace(states=States())
+    app.observer = HomeAssistantObserver(app.hass)
     app.state = SchedulerState.create(ENTRY_DATA)
     discovered_room = room()
     discovered_robot = robot()

@@ -120,6 +120,8 @@ class CleaningProgram(StrEnum):
 class JobPhase(StrEnum):
     """Durable physical lifecycle phase for a tracked job."""
 
+    RECHARGING = "recharging"
+
     MANUAL_REQUESTED = "manual_requested"
     DISPATCHING = "dispatching"
     ACCEPTED = "accepted"
@@ -2019,6 +2021,52 @@ def learned_duration_minutes(
 
     estimate = learned_duration_estimate(samples, fallback, minimum)
     return estimate.safe_minutes, estimate.sample_count
+
+
+RUN_BATTERY_RESERVE = 20.0
+RUN_BATTERY_MARGIN = 1.25
+RUN_TURNAROUND_MINUTES = 5.0
+
+
+def learned_battery_rate(samples: Iterable[float]) -> tuple[float | None, int]:
+    """Estimate percentage points per minute from bounded valid stage samples."""
+
+    values = [
+        float(value)
+        for value in samples
+        if not isinstance(value, bool) and math.isfinite(value) and value > 0
+    ][-50:]
+    if len(values) < 3:
+        return None, len(values)
+    values.sort()
+    index = min(len(values) - 1, math.ceil(len(values) * 0.8) - 1)
+    return values[index] * RUN_BATTERY_MARGIN, len(values)
+
+
+def run_battery_fits(battery: float | None, consumption: float) -> bool:
+    """Require observed charge to cover work and an inclusive 20% reserve."""
+
+    return (
+        battery is not None
+        and math.isfinite(battery)
+        and 0 <= battery <= 100
+        and math.isfinite(consumption)
+        and consumption >= 0
+        and battery >= consumption + RUN_BATTERY_RESERVE
+    )
+
+
+def run_vacancy_horizon(
+    duration_minutes: float,
+    delay_minutes: float,
+    configured_minutes: int,
+    clearance_minutes: int,
+) -> int:
+    """Cover the entire delayed program, retaining longer room horizons."""
+
+    return math.ceil(
+        delay_minutes + max(duration_minutes + clearance_minutes, configured_minutes)
+    )
 
 
 def managed_clean_duration_failed(

@@ -15,6 +15,7 @@ def room_status(room: RoomView) -> str:
         return "Room blocked"
     if room.active:
         phases = {
+            JobPhase.RECHARGING: "Recharging before continuing",
             JobPhase.RECOVERY_WAITING: "Completion pending",
             JobPhase.COMPLETION_HELD: "Completion pending",
             JobPhase.DOCK_COMPLETION_PENDING: "Dock servicing",
@@ -25,6 +26,12 @@ def room_status(room: RoomView) -> str:
         return phases.get(
             room.active.phase,
             "Returning" if room.active_robot_state == "returning" else "In Progress",
+        )
+    if room.queue_position is not None:
+        return (
+            "Finishing program"
+            if room.queue_current_room
+            else f"Queued (position {room.queue_position})"
         )
     if not room.enabled:
         return "disabled"
