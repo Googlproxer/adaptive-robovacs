@@ -5,6 +5,17 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.19.1] - 2026-10-23
+
+### Fixed
+
+- Remove stale robot and room dispatch-fault Repairs after their durable faults
+  clear, including automatic retries and subsequent Scheduler refreshes.
+- Allow a robot Repair to close when its fault and hold are already cleared.
+  Preserve other blockers, active work, and unreadable-storage safeguards.
+
+Detailed notes: [`docs/releases/v1.19.1.md`](docs/releases/v1.19.1.md).
+
 ## [1.19.0] - 2026-10-22
 
 ### Added

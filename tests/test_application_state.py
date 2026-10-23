@@ -670,6 +670,13 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
             SchedulerApplication._notify_listeners(app)
 
         self.assertIs(coordinator.data, published_snapshot)
+        app.repairs.sync_dispatch_faults.assert_called_once()
+        faults, room_faults, robots, rooms = (
+            app.repairs.sync_dispatch_faults.call_args.args
+        )
+        self.assertEqual((faults, room_faults), ({}, {}))
+        self.assertEqual(tuple(robots), tuple(app.discovery.robots.values()))
+        self.assertIs(rooms, app.discovery.rooms)
         self.assertEqual(discovery_views, [published_snapshot])
         self.assertFalse(app._discovery_signal_pending)
         dispatcher.assert_called_once_with(
@@ -1070,6 +1077,48 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(active.phase, JobPhase.MOP_WASHING)
         self.assertEqual(active.mop_washing_at, NOW - timedelta(seconds=5))
         self.assertFalse(app._mark_mop_washing_started(discovered_robot, active, NOW))
+
+    async def test_already_cleared_robot_recheck_succeeds_without_changing_other_work(
+        self,
+    ) -> None:
+        app = state_application()
+        other_fault = SchedulerFault(
+            "profile_apply_failed", "registry-beta", "study", NOW, "profile_apply"
+        )
+        other_hold = RobotHold("paused", "held", held_at=NOW)
+        app.state.robot_faults["registry-beta"] = other_fault
+        app.state.robot_holds["registry-beta"] = other_hold
+        job = active_job(occurrence_id="occurrence-1")
+        app.state.active_jobs["registry-alpha"] = job
+
+        for _ in range(2):
+            result = await app.async_recheck_and_resume("registry-alpha")
+            self.assertTrue(result.cleared)
+            self.assertEqual(result.reason, "all_holds_cleared")
+
+        app.repairs.sync_dispatch_faults.assert_called()
+        app.repairs.sync_robot_holds.assert_called()
+        self.assertEqual(app.state.robot_faults, {"registry-beta": other_fault})
+        self.assertEqual(app.state.robot_holds, {"registry-beta": other_hold})
+        self.assertIs(app.state.active_jobs["registry-alpha"], job)
+        app.storage.async_save.assert_not_awaited()
+        app.async_evaluate.assert_not_awaited()
+
+    async def test_unreadable_storage_cannot_clear_stale_fault_repairs(self) -> None:
+        app = state_application()
+        app._storage_safe_mode = True
+        app._snapshot = None
+        app._listeners = set()
+        with patch(
+            "custom_components.adaptive_robovacs.application.core.build_snapshot",
+            return_value=object(),
+        ):
+            SchedulerApplication._notify_listeners(app)
+        result = await app.async_recheck_and_resume("registry-alpha")
+        self.assertFalse(result.cleared)
+        app.repairs.sync_dispatch_faults.assert_not_called()
+        app.storage.async_save.assert_not_awaited()
+        app.async_evaluate.assert_not_awaited()
 
     async def test_robot_fault_recheck_is_observation_only_and_scope_safe(self) -> None:
         app = state_application()

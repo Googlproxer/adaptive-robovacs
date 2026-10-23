@@ -611,6 +611,7 @@ class SchedulerApplication(
 
         if self._closing:
             return
+        self._sync_dispatch_fault_issues()
         self._sync_robot_hold_issues()
         self._sync_retired_map_issues()
         try:

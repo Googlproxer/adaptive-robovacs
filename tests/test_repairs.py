@@ -160,6 +160,68 @@ class RepairServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.hass = object()
         self.service = RepairService(self.hass, "entry-1")
+        self.registry = SimpleNamespace(issues={})
+        self.enterContext(
+            patch(
+                "custom_components.adaptive_robovacs.repair_service.ir.async_get",
+                return_value=self.registry,
+            )
+        )
+
+    def test_dispatch_fault_sync_removes_only_resolved_owned_repairs(self) -> None:
+        robot_issue = "robot_dispatch_fault_entry-1_registry-alpha"
+        room_issue = "room_dispatch_fault_entry-1_study"
+        stale_robot_issue = "robot_dispatch_fault_entry-1_registry-stale"
+        stale_room_issue = "room_dispatch_fault_entry-1_stale"
+        self.registry.issues = dict.fromkeys(
+            (
+                (DOMAIN, robot_issue),
+                (DOMAIN, room_issue),
+                (DOMAIN, stale_robot_issue),
+                (DOMAIN, stale_room_issue),
+                (DOMAIN, "robot_dispatch_fault_other-entry_registry-stale"),
+                (DOMAIN, "room_dispatch_fault_other-entry_stale"),
+                (DOMAIN, "robot_error_recovery_entry-1_registry-alpha"),
+                ("other_domain", stale_robot_issue),
+            )
+        )
+        fault = SchedulerFault(
+            "profile_apply_failed", "registry-alpha", "study", WHEN, "profile_apply"
+        )
+        with (
+            patch(
+                "custom_components.adaptive_robovacs.repair_service.ir.async_create_issue"
+            ) as create,
+            patch(
+                "custom_components.adaptive_robovacs.repair_service.ir.async_delete_issue"
+            ) as delete,
+        ):
+            self.service.sync_dispatch_faults(
+                {"registry-alpha": fault}, {"study": fault}, (), {}
+            )
+            self.assertEqual(
+                {call.args[2] for call in delete.call_args_list},
+                {"scheduler_halted_entry-1", stale_robot_issue, stale_room_issue},
+            )
+            self.assertEqual(
+                {call.args[2] for call in create.call_args_list},
+                {robot_issue, room_issue},
+            )
+
+            delete.reset_mock()
+            create.reset_mock()
+            self.service.sync_dispatch_faults({}, {}, (), {})
+            self.assertEqual(
+                {call.args[2] for call in delete.call_args_list},
+                {
+                    "scheduler_halted_entry-1",
+                    robot_issue,
+                    room_issue,
+                    stale_robot_issue,
+                    stale_room_issue,
+                },
+            )
+            create.assert_not_called()
 
     def test_storage_repair_is_persistent_and_clears_by_stable_id(self) -> None:
         with (

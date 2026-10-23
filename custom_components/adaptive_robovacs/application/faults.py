@@ -81,6 +81,7 @@ class ApplicationFaultMixin:
     _start_confirmation_timers: dict[str, Callable[[], None]]
     _fault_retry_timers: dict[str, Callable[[], None]]
     _startup_state_settle_until: datetime | None
+    _storage_safe_mode: bool
 
     if TYPE_CHECKING:
 
@@ -153,6 +154,8 @@ class ApplicationFaultMixin:
     def _sync_dispatch_fault_issues(self) -> None:
         """Synchronize Repairs from immutable typed inputs."""
 
+        if self._storage_safe_mode:
+            return
         self.repairs.sync_dispatch_faults(
             self.state.robot_faults,
             self.state.room_faults,
@@ -442,7 +445,13 @@ class ApplicationFaultMixin:
                         await self._async_recheck_robot_hold(robot_registry_id)
                     )
             if not results:
-                return SchedulerHaltRecheckResult(False, "no_scheduler_halt")
+                if self._storage_safe_mode:
+                    return SchedulerHaltRecheckResult(
+                        False, "recovery_target_unavailable"
+                    )
+                self._sync_dispatch_fault_issues()
+                self._sync_robot_hold_issues()
+                return SchedulerHaltRecheckResult(True, "all_holds_cleared")
             await self.async_evaluate(dry_run=True, reason="recheck-resume")
             unresolved = [result for result in results if not result.cleared]
             if unresolved:

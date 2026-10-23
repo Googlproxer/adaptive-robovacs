@@ -44,10 +44,12 @@ automatically on supported versions.
 
 ## Installation
 
-Requires Home Assistant 2026.10.0 or newer. Version 1.19.0 adds managed multi-room
-queues and learned battery budgeting. Each room completes its configured program
-before the next room starts; dock visits between stages/rooms remain possible.
-See the [release notes](docs/releases/v1.19.0.md) and
+Requires Home Assistant 2026.10.0 or newer. Version 1.19.1 clears stale fault
+Repairs automatically and allows already-cleared robot Repairs to close.
+Managed multi-room queues use learned battery budgeting. Each room completes its
+configured program before the next room starts; dock visits between stages/rooms
+remain possible.
+See the [release notes](docs/releases/v1.19.1.md) and
 [migration guide](docs/migration-v1.19.0.md) before activation.
 
 1. Copy `custom_components/adaptive_robovacs` to your Home Assistant

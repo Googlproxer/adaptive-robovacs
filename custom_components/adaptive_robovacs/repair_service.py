@@ -127,9 +127,27 @@ class RepairService:
         robots: Iterable[DiscoveredRobot],
         rooms: Mapping[str, DiscoveredRoom],
     ) -> None:
-        """Create scoped Repairs from typed fault state."""
+        """Reconcile scoped Repairs with the authoritative typed fault state."""
 
         robot_by_registry_id = {robot.registry_id: robot for robot in robots}
+        expected = {
+            robot_dispatch_fault_issue_id(self._entry_id, registry_id)
+            for registry_id in robot_faults
+        } | {
+            room_dispatch_fault_issue_id(self._entry_id, area_id)
+            for area_id in room_faults
+        }
+        prefixes = (
+            robot_dispatch_fault_issue_id(self._entry_id, ""),
+            room_dispatch_fault_issue_id(self._entry_id, ""),
+        )
+        for domain, issue_id in tuple(ir.async_get(self._hass).issues):
+            if (
+                domain == DOMAIN
+                and issue_id.startswith(prefixes)
+                and issue_id not in expected
+            ):
+                ir.async_delete_issue(self._hass, DOMAIN, issue_id)
         ir.async_delete_issue(
             self._hass,
             DOMAIN,
