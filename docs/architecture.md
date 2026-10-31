@@ -277,6 +277,12 @@ real-now vacancy evidence and UTC elapsed-time arithmetic across DST. Planning
 previews publish the same cumulative horizon and reason used for admission.
 Schema 20 adds runs, battery samples, and optional job measurements; schema 19
 migrates with empty learning and reservations, preserving existing work/history.
+Battery observations compare exposed controls with adapter-specific native modes:
+Q10 custom vacuum commands report `customized` while retaining the logical vacuum
+profile key. A sample starts only when the requested profile is observed. Its
+optional persisted `battery_started_at` timestamps the confirmed baseline, so
+startup telemetry lag cannot dilute the learned rate. Any subsequent profile
+change invalidates the sample permanently; restart-crossed stages never train.
 
 `tests/test_architecture.py` parses imports and the application composition with
 the Python AST. It prevents HA dependencies in domain modules,

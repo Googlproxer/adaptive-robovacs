@@ -19,6 +19,7 @@ from ..models import (
     JobPhase,
     OccurrenceSource,
     ResolvedDailyWindow,
+    battery_profile_matches,
     learned_battery_rate,
     resolve_cleaning_profile,
     run_battery_fits,
@@ -472,7 +473,7 @@ class ApplicationRunsMixin:
         )
 
     def _observe_run_battery(
-        self, robot: DiscoveredRobot, active: ActiveJob, state_text: str
+        self, robot: DiscoveredRobot, active: ActiveJob, state_text: str, now: datetime
     ) -> None:
         if active.source not in {"scheduler", "manual_dashboard"}:
             return
@@ -495,23 +496,30 @@ class ApplicationRunsMixin:
         if state_text == "cleaning" and profile:
             vacuum_state = self.hass.states.get(robot.entity_id)
             attributes = getattr(vacuum_state, "attributes", {})
-            if profile.fan_speed and attributes.get("fan_speed") != profile.fan_speed:
-                active.battery_sample_valid = False
-            for entity_id, expected in (
-                (robot.profile.mode_select_entity_id, profile.mode),
-                (robot.profile.mop_mode_select_entity_id, profile.mop_mode),
-                (robot.profile.mop_intensity_select_entity_id, profile.mop_intensity),
+            observed_profile = {"fan_speed": attributes.get("fan_speed")}
+            for key, entity_id in (
+                ("mode", robot.profile.mode_select_entity_id),
+                ("mop_mode", robot.profile.mop_mode_select_entity_id),
+                ("mop_intensity", robot.profile.mop_intensity_select_entity_id),
             ):
-                if entity_id and expected:
+                if entity_id:
                     observed = self.hass.states.get(entity_id)
-                    if observed is None or observed.state != expected:
-                        active.battery_sample_valid = False
-        if state_text == "cleaning" and not active.seen_cleaning:
+                    observed_profile[key] = observed.state if observed else None
+            if not battery_profile_matches(
+                profile, observed_profile, robot.adapter_capabilities, active.passes
+            ):
+                # Startup telemetry can lag the accepted custom profile. Wait
+                # for confirmation, but never forgive a later profile change.
+                if active.battery_start is not None:
+                    active.battery_sample_valid = False
+                return
+        if state_text == "cleaning" and active.battery_start is None:
             active.battery_start = battery
             active.battery_low = battery
             active.battery_last = battery
+            active.battery_started_at = now
 
-        elif active.seen_cleaning:
+        elif active.battery_start is not None:
             if (
                 active.battery_last is not None
                 and battery > active.battery_last
@@ -562,7 +570,8 @@ class ApplicationRunsMixin:
             or active.observed_started_at is None
         ):
             return
-        minutes = (completion - active.observed_started_at).total_seconds() / 60
+        started = active.battery_started_at or active.observed_started_at
+        minutes = (completion - started).total_seconds() / 60
         used = active.battery_start - active.battery_low
         if minutes <= 0 or used <= 0:
             return

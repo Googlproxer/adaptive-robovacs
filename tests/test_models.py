@@ -21,6 +21,84 @@ SPEC.loader.exec_module(models)
 
 
 class RunEnergyTests(unittest.TestCase):
+    def test_q10_battery_profile_checks_the_native_customized_mode(self):
+        capabilities = models.AdapterCapabilities(
+            "roborock",
+            12,
+            True,
+            frozenset({1, 2}),
+            custom_vacuum_mode="customized",
+        )
+        profile = models.ResolvedCleaningProfile(
+            models.CleaningOperation.VACUUM,
+            fan_speed="max",
+            mode="vacuum",
+            cleaning_depth="daily",
+        )
+        for passes, depth, observed_mode, expected in (
+            (2, "daily", "customized", True),
+            (1, "daily", "customized", True),
+            (2, None, "customized", True),
+            (1, None, "vacuum", True),
+            (1, None, "customized", False),
+            (2, "daily", "vacuum", False),
+            (2, "daily", "mop", False),
+            (2, "daily", None, False),
+        ):
+            with self.subTest(passes=passes, depth=depth, mode=observed_mode):
+                self.assertEqual(
+                    models.battery_profile_matches(
+                        models.ResolvedCleaningProfile(
+                            profile.operation,
+                            fan_speed="max",
+                            mode="vacuum",
+                            cleaning_depth=depth,
+                        ),
+                        {"fan_speed": "max", "mode": observed_mode},
+                        capabilities,
+                        passes,
+                    ),
+                    expected,
+                )
+        self.assertFalse(
+            models.battery_profile_matches(
+                profile,
+                {"fan_speed": "quiet", "mode": "customized"},
+                capabilities,
+                2,
+            )
+        )
+        self.assertFalse(
+            models.battery_profile_matches(
+                profile,
+                {"fan_speed": "max", "mode": "customized"},
+                models.AdapterCapabilities("generic", 1, True, frozenset({1, 2})),
+                2,
+            )
+        )
+        mop = models.ResolvedCleaningProfile(
+            models.CleaningOperation.MOP,
+            fan_speed="off",
+            mode="mop",
+            mop_mode="standard",
+            mop_intensity="high",
+        )
+        observed = {
+            "fan_speed": "off",
+            "mode": "mop",
+            "mop_mode": "standard",
+            "mop_intensity": "high",
+        }
+        self.assertTrue(models.battery_profile_matches(mop, observed, capabilities, 1))
+        self.assertFalse(
+            models.battery_profile_matches(
+                mop,
+                {**observed, "mop_intensity": None},
+                capabilities,
+                1,
+            )
+        )
+
     def test_learned_consumption_uses_recent_valid_samples_and_margin(self):
         self.assertEqual(models.learned_battery_rate([1, 2]), (None, 2))
         self.assertEqual(models.learned_battery_rate([1, 2, 3]), (3.75, 3))

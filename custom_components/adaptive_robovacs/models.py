@@ -549,6 +549,7 @@ class AdapterCapabilities:
     completion_status_entity_id: str | None = None
     terminal_completion_states: frozenset[str] = frozenset()
     error_entity_ids: tuple[str, ...] = ()
+    custom_vacuum_mode: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize schema-one adapter snapshots during a rolling upgrade."""
@@ -1117,6 +1118,31 @@ def resolve_cleaning_profile(
         mop_mode=mop_mode,
         mop_intensity=(values["mop_intensity"] if operation == "mop" else None),
         cleaning_depth=(values["cleaning_depth"] if depth_applicable else None),
+    )
+
+
+def battery_profile_matches(
+    profile: ResolvedCleaningProfile,
+    observed: Mapping[str, str | None],
+    capabilities: AdapterCapabilities,
+    passes: int,
+) -> bool:
+    """Compare exposed controls with the mode actually used by the adapter.
+
+    Custom vacuum commands keep their logical forecast profile, but may use
+    a different native selector value. Unexposed controls are not observations.
+    """
+
+    expected = profile.to_mapping()
+    if (
+        capabilities.custom_vacuum_mode
+        and profile.operation == "vacuum"
+        and (passes == 2 or profile.cleaning_depth is not None)
+    ):
+        expected["mode"] = capabilities.custom_vacuum_mode
+    return all(
+        expected.get(key) is None or value == expected[key]
+        for key, value in observed.items()
     )
 
 

@@ -175,7 +175,7 @@ def observed_job(app, *, stage_index=0):
         run_id=run.run_id,
     )
     app.state.active_jobs[robot.registry_id] = active
-    app._observe_run_battery(robot, active, "cleaning")
+    app._observe_run_battery(robot, active, "cleaning", NOW)
     active.seen_cleaning = True
     active.observed_started_at = NOW
     active.phase = JobPhase.CLEANING
@@ -695,6 +695,122 @@ class RunLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BatteryLearningTests(unittest.TestCase):
+    def q10_job(self):
+        app, _ = queued_application()
+        robot = app.discovery.robots["vacuum.alpha"]
+        robot = replace(
+            robot,
+            profile=replace(robot.profile, mode_select_entity_id="select.test_mode"),
+            adapter_capabilities=replace(
+                robot.adapter_capabilities, custom_vacuum_mode="customized"
+            ),
+        )
+        app.state.battery_samples.clear()
+        app.hass.states.values["select.test_mode"] = SimpleNamespace(state="customized")
+        app.hass.states.values[robot.entity_id].attributes = {"fan_speed": "quiet"}
+        job = ActiveJob(
+            "study",
+            ["study"],
+            CleaningOperation.VACUUM,
+            JobPhase.ACCEPTED,
+            JobSource.SCHEDULER,
+            passes=2,
+            cleaning_profile=ResolvedCleaningProfile(
+                CleaningOperation.VACUUM,
+                fan_speed="max",
+                mode="vacuum",
+                cleaning_depth="daily",
+            ),
+        )
+        return app, robot, job
+
+    def test_q10_delayed_fan_starts_a_confirmed_timed_battery_sample(self):
+        app, robot, job = self.q10_job()
+        app._observe_run_battery(robot, job, "cleaning", NOW)
+        job.seen_cleaning = True
+        job.observed_started_at = NOW
+        self.assertTrue(job.battery_sample_valid)
+        self.assertIsNone(job.battery_start)
+        self.assertIsNone(job.battery_started_at)
+        baseline = NOW + timedelta(seconds=30)
+        app._robot_battery.return_value = 99
+        app.hass.states.values[robot.entity_id].attributes = {"fan_speed": "max"}
+        app._observe_run_battery(robot, job, "cleaning", baseline)
+        self.assertEqual(job.battery_start, 99)
+        self.assertEqual(job.battery_started_at, baseline)
+        # The first unconfirmed 30 seconds cannot dilute learned consumption.
+        completion = baseline + timedelta(minutes=10)
+        app._robot_battery.return_value = 89
+        app._observe_run_battery(robot, job, "returning", completion)
+        app._robot_battery.return_value = 90
+        app._observe_run_battery(robot, job, "docked", completion)
+        app._learn_run_battery(robot.registry_id, job, completion, "observed")
+        samples = app.state.battery_samples[robot.registry_id]
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0].percent_per_minute, 1)
+        self.assertEqual(samples[0].profile, profile_key(job.cleaning_profile))
+
+    def test_q10_profile_that_never_matches_cannot_train(self):
+        app, robot, job = self.q10_job()
+        app._observe_run_battery(robot, job, "cleaning", NOW)
+        job.seen_cleaning = True
+        job.observed_started_at = NOW
+        completion = NOW + timedelta(minutes=10)
+        app._robot_battery.return_value = 85
+        app._observe_run_battery(robot, job, "returning", completion)
+        app._learn_run_battery(robot.registry_id, job, completion, "observed")
+        self.assertIsNone(job.battery_start)
+        self.assertFalse(app.state.battery_samples)
+
+    def test_q10_mid_clean_profile_changes_remain_invalid_after_matching_again(self):
+        for changed in ("fan_speed", "mode"):
+            with self.subTest(changed=changed):
+                app, robot, job = self.q10_job()
+                app.hass.states.values[robot.entity_id].attributes = {
+                    "fan_speed": "max"
+                }
+                app._observe_run_battery(robot, job, "cleaning", NOW)
+                job.seen_cleaning = True
+                job.observed_started_at = NOW
+                if changed == "fan_speed":
+                    app.hass.states.values[robot.entity_id].attributes["fan_speed"] = (
+                        "quiet"
+                    )
+                else:
+                    app.hass.states.values["select.test_mode"].state = "vacuum"
+                app._observe_run_battery(
+                    robot, job, "cleaning", NOW + timedelta(minutes=1)
+                )
+                app.hass.states.values[robot.entity_id].attributes["fan_speed"] = "max"
+                app.hass.states.values["select.test_mode"].state = "customized"
+                app._observe_run_battery(
+                    robot, job, "cleaning", NOW + timedelta(minutes=2)
+                )
+                app._robot_battery.return_value = 85
+                completion = NOW + timedelta(minutes=10)
+                app._observe_run_battery(robot, job, "returning", completion)
+                app._learn_run_battery(robot.registry_id, job, completion, "observed")
+                self.assertFalse(job.battery_sample_valid)
+                self.assertFalse(app.state.battery_samples)
+
+    def test_confirmed_battery_baseline_round_trips_but_recovery_never_trains(self):
+        app, robot, job = self.q10_job()
+        app.hass.states.values[robot.entity_id].attributes = {"fan_speed": "max"}
+        app._observe_run_battery(robot, job, "cleaning", NOW)
+        job.seen_cleaning = True
+        job.observed_started_at = NOW
+        app.state.active_jobs[robot.registry_id] = job
+        restored, _ = SchedulerState.from_store(app.state.encode(), {})
+        saved = restored.active_jobs[robot.registry_id]
+        self.assertEqual(saved.battery_started_at, NOW)
+        self.assertEqual(saved.battery_start, 95)
+        saved.recovery_crossed = True
+        saved.battery_low = 85
+        app._learn_run_battery(
+            robot.registry_id, saved, NOW + timedelta(minutes=10), "observed"
+        )
+        self.assertFalse(app.state.battery_samples)
+
     def test_profile_changes_during_work_invalidate_the_measurement(self):
         app, _ = queued_application()
         robot = app.discovery.robots["vacuum.alpha"]
@@ -715,7 +831,7 @@ class BatteryLearningTests(unittest.TestCase):
         )
         app.hass.states.values[robot.entity_id].attributes = {"fan_speed": "quiet"}
         app.state.battery_samples.clear()
-        app._observe_run_battery(robot, job, "cleaning")
+        app._observe_run_battery(robot, job, "cleaning", NOW)
         app._learn_run_battery(
             robot.registry_id, job, NOW + timedelta(minutes=10), "observed"
         )
@@ -734,13 +850,13 @@ class BatteryLearningTests(unittest.TestCase):
             cleaning_profile=profile,
         )
         app.state.battery_samples.clear()
-        app._observe_run_battery(robot, job, "cleaning")
+        app._observe_run_battery(robot, job, "cleaning", NOW)
         job.seen_cleaning = True
         job.observed_started_at = NOW
         app._robot_battery.return_value = 85
-        app._observe_run_battery(robot, job, "returning")
+        app._observe_run_battery(robot, job, "returning", NOW + timedelta(minutes=10))
         app._robot_battery.return_value = 86
-        app._observe_run_battery(robot, job, "docked")
+        app._observe_run_battery(robot, job, "docked", NOW + timedelta(minutes=10))
         for _ in range(55):
             app._learn_run_battery(
                 robot.registry_id, job, NOW + timedelta(minutes=10), "observed"
@@ -791,6 +907,7 @@ class BatteryLearningTests(unittest.TestCase):
                     reason
                     if reason in {"paused", "error", "unknown", "unavailable"}
                     else "cleaning",
+                    NOW,
                 )
                 app._learn_run_battery(
                     robot.registry_id,

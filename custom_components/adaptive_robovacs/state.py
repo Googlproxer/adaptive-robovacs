@@ -1068,6 +1068,7 @@ class ActiveJob:
     battery_start: float | None = None
     battery_low: float | None = None
     battery_last: float | None = None
+    battery_started_at: datetime | None = None
     battery_sample_valid: bool = True
     recharge_pending: bool = False
 
@@ -1155,6 +1156,7 @@ class ActiveJob:
             battery_start=_optional_number(value.get("battery_start")),
             battery_low=_optional_number(value.get("battery_low")),
             battery_last=_optional_number(value.get("battery_last")),
+            battery_started_at=_timestamp(value.get("battery_started_at")),
             battery_sample_valid=_boolean(
                 value.get("battery_sample_valid"), True, "battery sample valid"
             ),
@@ -1216,6 +1218,7 @@ class ActiveJob:
             "battery_start": self.battery_start,
             "battery_low": self.battery_low,
             "battery_last": self.battery_last,
+            "battery_started_at": _iso(self.battery_started_at),
             "battery_sample_valid": self.battery_sample_valid,
             "recharge_pending": self.recharge_pending,
         }

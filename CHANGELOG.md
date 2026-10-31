@@ -5,6 +5,18 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.19.2] - 2026-10-31
+
+### Fixed
+
+- Learn battery consumption from Q10 custom vacuum stages by validating their
+  native `customized` mode against the adapter's actual dispatch behaviour.
+- Wait for the requested startup profile before sampling and time consumption
+  from the confirmed baseline. Continue rejecting mid-clean profile changes
+  and interrupted or restart-crossed measurements.
+
+Detailed notes: [`docs/releases/v1.19.2.md`](docs/releases/v1.19.2.md).
+
 ## [1.19.1] - 2026-10-23
 
 ### Fixed

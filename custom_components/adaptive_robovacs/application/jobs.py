@@ -69,7 +69,11 @@ class ApplicationJobsMixin:
     if TYPE_CHECKING:
 
         def _observe_run_battery(
-            self, robot: DiscoveredRobot, active: ActiveJob, state_text: str
+            self,
+            robot: DiscoveredRobot,
+            active: ActiveJob,
+            state_text: str,
+            now: datetime,
         ) -> None: ...
 
         def _run_recharge_observed(
@@ -222,7 +226,7 @@ class ApplicationJobsMixin:
             state = self.hass.states.get(robot.entity_id) if robot else None
             state_text = state.state if state else "unavailable"
             if active and robot:
-                self._observe_run_battery(robot, active, state_text)
+                self._observe_run_battery(robot, active, state_text, now)
                 if active.source == "scheduler" and self._run_recharge_observed(
                     robot, active, state_text
                 ):

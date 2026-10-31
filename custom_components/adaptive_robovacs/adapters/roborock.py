@@ -641,7 +641,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
     """Enhance compatible Roborock vacuums with native cross-hatching."""
 
     adapter_id = "roborock"
-    schema_version = 11
+    schema_version = 12
     priority = 100
     platforms = frozenset({"roborock"})
 
@@ -714,6 +714,9 @@ class RoborockVacuumAdapter(VacuumAdapter):
             mop_mode_options=generic.mop_mode_options,
             mop_intensity_options=generic.mop_intensity_options,
             cleaning_depth_options=cleaning_depth_options,
+            custom_vacuum_mode=(
+                Q10_CUSTOMIZED_OPTION if cleaning_depth_options else None
+            ),
             water_readiness=water,
             vacuum_pass_counts=frozenset(vacuum_pass_counts),
             mop_pass_counts=frozenset(mop_pass_counts),

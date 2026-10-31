@@ -1085,6 +1085,7 @@ class AdapterResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities.mop_pass_counts, frozenset({1}))
         self.assertEqual(capabilities.native_mop_pass_counts, frozenset())
         self.assertEqual(capabilities.cleaning_depth_options, ("fast", "daily", "fine"))
+        self.assertEqual(capabilities.custom_vacuum_mode, "customized")
         self.assertFalse(capabilities.native_mop_profile)
         self.assertIsNone(diagnostic)
 
