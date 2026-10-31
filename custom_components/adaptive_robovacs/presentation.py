@@ -8,6 +8,7 @@ from datetime import datetime
 from .models import (
     AdjacencyBlocker,
     AdjacencyDecision,
+    DockWaterStatus,
     RequestedCleaningProfile,
     ResolvedCleaningProfile,
 )
@@ -26,6 +27,7 @@ from .snapshots import (
     RobotEligibilityView,
     RobotHoldView,
     RobotSettingsView,
+    RobotWaterView,
     RoomDecisionView,
     RoomRecoveryView,
     SchedulerView,
@@ -37,6 +39,50 @@ from .snapshots import (
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def robot_water_attributes(item: RobotWaterView | None) -> dict[str, object]:
+    if item is None:
+        return {}
+    summaries = []
+    faults = DockWaterStatus(item.clean, item.dirty, item.error, item.onboard).faults
+    for key, label, value, attention in (
+        ("clean", "Clean tank", item.clean, "refill/refit"),
+        ("dirty", "Dirty tank", item.dirty, "empty/refit"),
+        ("onboard", "Onboard water", item.onboard, "shortage"),
+    ):
+        if value is not None or key in faults:
+            condition = (
+                attention if key in faults else "OK" if value == "off" else "unknown"
+            )
+            summaries.append(f"{label}: {condition}")
+    phases = {
+        "requested": "Starting verification wash",
+        "washing": "Verification wash running",
+        "settling": "Waiting for post-wash snapshot",
+        "succeeded": "Verification passed",
+        "failed": "Failed; retry at next scheduled mop",
+    }
+    return {
+        "dock_water": {
+            "clean": item.clean,
+            "dirty": item.dirty,
+            "onboard": item.onboard,
+            "dock_error": item.error,
+            "last_snapshot_at": _iso(item.last_snapshot_at),
+            "verification": item.verification,
+            "verification_reason": item.verification_reason,
+        },
+        "water_tank_summary": "; ".join(summaries),
+        "water_snapshot_summary": (
+            item.last_snapshot_at.isoformat(timespec="minutes")
+            if item.last_snapshot_at
+            else "Not sampled yet"
+        ),
+        "water_verification_summary": phases.get(
+            item.verification or "", "No verification requested"
+        ),
+    }
 
 
 def opportunity_attributes(item: OpportunityView) -> dict[str, object]:

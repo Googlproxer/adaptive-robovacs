@@ -18,6 +18,8 @@ from ..models import (
     AdapterDispatchRequest,
     AdapterDispatchResult,
     DispatchOutcome,
+    DockWaterEntities,
+    DockWaterStatus,
     WaterReadiness,
 )
 from .base import AdapterEntityEvidence, AdapterMatchContext, VacuumAdapter
@@ -152,6 +154,58 @@ class Q10CustomCleanError(ValueError):
         super().__init__(summary)
         self.code = code
         self.summary = summary
+
+
+def resolve_roborock_dock_water(context: AdapterMatchContext) -> DockWaterEntities:
+    """Resolve only unambiguous registry keys on the associated dock."""
+
+    def entity(key: str, domain: str, dock: bool = True) -> str | None:
+        matches = [
+            item.entity_id
+            for item in (context.dock_entities if dock else context.entities)
+            if item.platform == "roborock"
+            and item.domain == domain
+            and item.translation_key == key
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    return DockWaterEntities(
+        clean=entity("clean_box_empty", "binary_sensor"),
+        dirty=entity("dirty_box_full", "binary_sensor"),
+        error=entity("dock_error", "sensor"),
+        washing=entity("mop_washing", "switch"),
+        onboard=entity("water_shortage", "binary_sensor", False),
+        ambiguous=any(
+            sum(item.translation_key == key for item in context.dock_entities) > 1
+            for key in (
+                "clean_box_empty",
+                "dirty_box_full",
+                "dock_error",
+                "mop_washing",
+            )
+        ),
+    )
+
+
+def read_dock_water(hass: Any, sources: DockWaterEntities) -> DockWaterStatus:
+    """Read the HA state cache only; never request a vendor update."""
+
+    def value(entity_id: str | None, binary: bool = True) -> str | None:
+        if entity_id is None:
+            return None
+        state = hass.states.get(entity_id)
+        if state is None or state.state in {"unknown", "unavailable"}:
+            return "unknown"
+        if binary and state.state not in {"on", "off"}:
+            return "unknown"
+        return str(state.state)
+
+    return DockWaterStatus(
+        "unknown" if sources.ambiguous else value(sources.clean),
+        "unknown" if sources.ambiguous else value(sources.dirty),
+        "unknown" if sources.ambiguous else value(sources.error, False),
+        value(sources.onboard),
+    )
 
 
 def resolve_roborock_water_readiness(
@@ -718,6 +772,7 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 Q10_CUSTOMIZED_OPTION if cleaning_depth_options else None
             ),
             water_readiness=water,
+            dock_water=resolve_roborock_dock_water(context),
             vacuum_pass_counts=frozenset(vacuum_pass_counts),
             mop_pass_counts=frozenset(mop_pass_counts),
             native_vacuum_pass_counts=frozenset(native_vacuum_pass_counts),
@@ -1233,6 +1288,13 @@ class RoborockVacuumAdapter(VacuumAdapter):
                 "This vacuum no longer supports native two-pass room cleaning.",
             )
         if request.operation == "mop":
+            dock = read_dock_water(hass, capabilities.dock_water)
+            if capabilities.dock_water.supported and not dock.dock_ready:
+                return AdapterDispatchResult(
+                    DispatchOutcome.BLOCKED,
+                    "dock_water_unavailable",
+                    "The dock water tanks are not reported ready.",
+                )
             water = capabilities.water_readiness
             ignore_water = bool(request.cleaning_profile.get("ignore_water_readiness"))
             if water.status == "sensor_blocked" and not (

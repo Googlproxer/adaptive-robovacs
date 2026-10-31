@@ -24,6 +24,7 @@ from ..commands import (
     AcknowledgeRobotErrorCommand,
     AcknowledgeRoomRecoveryCommand,
     AutoReleaseRobotHoldCommand,
+    CheckDockWaterCommand,
     ClearLegacyDeferralsCommand,
     CommandResult,
     EvaluateCommand,
@@ -93,6 +94,7 @@ from ..storage import SchedulerStore
 from ..watch import WatchSpecification
 from .actions import ApplicationActionsMixin
 from .dispatch import ApplicationDispatchMixin
+from .dock_water import ApplicationDockWaterMixin
 from .evaluation import ApplicationEvaluationMixin
 from .events import ApplicationEventsMixin
 from .faults import ApplicationFaultMixin
@@ -148,6 +150,7 @@ def _track_point(
 
 
 class SchedulerApplication(
+    ApplicationDockWaterMixin,
     ApplicationRunsMixin,
     ApplicationLegacyMapMixin,
     ApplicationSettingsMixin,
@@ -316,6 +319,7 @@ class SchedulerApplication(
         """Stop callbacks, drain coordinator work, and persist once."""
 
         self._closing = True
+        self._stop_dock_water_timer()
         self._schedule_clock.stop()
         await self.lifecycle.async_stop()
         await self.commands.async_close()
@@ -348,6 +352,7 @@ class SchedulerApplication(
         """Gate callbacks before Home Assistant starts unloading platforms."""
 
         self._closing = True
+        self._stop_dock_water_timer()
         self._schedule_clock.stop()
         self.lifecycle.stop_adjacency_timer()
         self.commands.begin_shutdown()
@@ -357,6 +362,7 @@ class SchedulerApplication(
 
         self._closing = False
         self.commands.cancel_shutdown()
+        self._sync_dock_water_checks(_now())
         self.lifecycle.update_adjacency_window()
         if self._snapshot is not None:
             self._schedule_clock.update(self._snapshot)
@@ -377,6 +383,8 @@ class SchedulerApplication(
         """Dispatch a command after the queue has serialized it."""
 
         match command:
+            case CheckDockWaterCommand():
+                await self._async_check_dock_water()
             case EvaluateCommand():
                 started = perf_counter()
                 try:
@@ -414,6 +422,7 @@ class SchedulerApplication(
                                 active.native_timer_progress_seen = True
                                 await self._async_save()
                 if old_state != new_state:
+                    water_observation_changed = False
                     for robot in self.discovery.robots.values():
                         capabilities = robot.adapter_capabilities
                         if entity_id in {
@@ -423,6 +432,11 @@ class SchedulerApplication(
                             *capabilities.error_entity_ids,
                         }:
                             self._reset_room_recovery_dock(robot.registry_id)
+                            water_observation_changed = True
+                    if water_observation_changed and self._sync_dock_water_checks(
+                        _now()
+                    ):
+                        await self._async_save()
                 return None
             case RefreshDiscoveryCommand():
                 await self._async_refresh_discovery_after_device_label_change()
@@ -806,6 +820,7 @@ class SchedulerApplication(
             if specification.capability_attributes
         }
         self.lifecycle.update_state_watchers(self._watch_entity_ids)
+        self._sync_dock_water_checks(_now())
 
         for area_id in tuple(self.state.water_notification_episodes):
             episode_room = self.discovery.rooms.get(area_id)

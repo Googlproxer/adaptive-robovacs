@@ -169,6 +169,19 @@ class DispatchPipelineTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_dock_water_change_at_final_start_is_a_mop_skip_without_fault(self):
+        self.gateway.dispatched = AdapterDispatchResult(
+            DispatchOutcome.BLOCKED, "dock_water_unavailable", "Dock needs water"
+        )
+        accepted, reason = await self.pipeline.async_dispatch(
+            robot(), candidate("mop"), WHEN
+        )
+        self.assertTrue(accepted)
+        self.assertIn("dock water unavailable", reason)
+        self.assertEqual(self.events[-2:], ["abandon", "mop-blocked"])
+        self.assertNotIn("accepted", self.events)
+        self.assertFalse(self.faults)
+
     async def test_fresh_adjacency_block_abandons_unstarted_checkpoint_without_fault(
         self,
     ):

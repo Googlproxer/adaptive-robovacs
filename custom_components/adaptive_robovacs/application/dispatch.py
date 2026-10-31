@@ -54,6 +54,10 @@ class ApplicationDispatchMixin:
 
     if TYPE_CHECKING:
 
+        async def _async_prepare_dock_water(
+            self, robot: DiscoveredRobot, candidate: ScheduleCandidate, now: datetime
+        ) -> bool: ...
+
         def _async_create_task(
             self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
         ) -> asyncio.Task[Any] | None: ...
@@ -229,6 +233,9 @@ class ApplicationDispatchMixin:
         occurrence: CleaningOccurrence,
         now: datetime,
     ) -> None:
+        if reason.startswith("dock_water_"):
+            # The sparse robot-level episode owns dock tank alerts.
+            return
         episodes = self.state.water_notification_episodes
         episode = episodes.get(room.area_id)
         last_sent = episode.last_sent_at if episode else None
@@ -339,6 +346,11 @@ class ApplicationDispatchMixin:
 
         if candidate.operation != "mop":
             return candidate, None
+        if not await self._async_prepare_dock_water(robot, candidate, now):
+            return (
+                None,
+                "dock water is not ready; awaiting verification or next scheduled mop",
+            )
         water = robot.adapter_capabilities.water_readiness
         if water.status == "sensor_ready" and water.ready:
             self.state.water_notification_episodes.pop(room.area_id, None)

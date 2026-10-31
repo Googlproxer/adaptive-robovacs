@@ -495,6 +495,84 @@ class SchedulePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class DockWaterEntities:
+    """Registry-discovered sources sampled on deadlines, never subscribed to."""
+
+    clean: str | None = None
+    dirty: str | None = None
+    error: str | None = None
+    washing: str | None = None
+    onboard: str | None = None
+    ambiguous: bool = False
+
+    @property
+    def supported(self) -> bool:
+        return bool(self.clean or self.dirty or self.ambiguous)
+
+
+@dataclass(frozen=True, slots=True)
+class DockWaterStatus:
+    """Last reported conditions, without claiming a physical level check."""
+
+    clean: str | None = None
+    dirty: str | None = None
+    error: str | None = None
+    onboard: str | None = None
+
+    @property
+    def faults(self) -> tuple[str, ...]:
+        return tuple(
+            key
+            for key, problem in (
+                ("clean", self.clean == "on" or self.error == "water_empty"),
+                (
+                    "dirty",
+                    self.dirty == "on"
+                    or self.error in {"waste_water_tank_full", "dirty_tank_latch_open"},
+                ),
+                ("onboard", self.onboard == "on"),
+            )
+            if problem
+        )
+
+    @property
+    def dock_ready(self) -> bool:
+        return all(
+            value in {None, "off"} for value in (self.clean, self.dirty)
+        ) and self.error in {None, "ok"}
+
+    @property
+    def revalidation_eligible(self) -> bool:
+        return (
+            bool({"clean", "dirty"}.intersection(self.faults))
+            and all(value in {None, "on", "off"} for value in (self.clean, self.dirty))
+            and self.error
+            in {
+                None,
+                "ok",
+                "water_empty",
+                "waste_water_tank_full",
+                "dirty_tank_latch_open",
+            }
+        )
+
+
+def water_notification_faults(
+    observed: DockWaterStatus, previous: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Preserve individual notification faults while their evidence is unknown."""
+
+    faults = set(observed.faults)
+    for key in previous:
+        value = getattr(observed, key)
+        if value not in {"on", "off"} or (
+            key in {"clean", "dirty"} and observed.error == "unknown"
+        ):
+            faults.add(key)
+    return tuple(key for key in ("clean", "dirty", "onboard") if key in faults)
+
+
+@dataclass(frozen=True, slots=True)
 class WaterReadiness:
     """Vendor-neutral decision for starting one mop stage."""
 
@@ -537,6 +615,7 @@ class AdapterCapabilities:
     mop_intensity_options: tuple[str, ...] = ()
     cleaning_depth_options: tuple[str, ...] = ()
     water_readiness: WaterReadiness = field(default_factory=WaterReadiness.unsupported)
+    dock_water: DockWaterEntities = field(default_factory=DockWaterEntities)
     vacuum_pass_counts: frozenset[int] = frozenset()
     mop_pass_counts: frozenset[int] = frozenset()
     native_vacuum_pass_counts: frozenset[int] = frozenset()

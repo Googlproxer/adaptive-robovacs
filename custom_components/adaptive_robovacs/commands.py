@@ -33,6 +33,11 @@ class EvaluateCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckDockWaterCommand:
+    """Sample due cached water reports without evaluating the house."""
+
+
+@dataclass(frozen=True, slots=True)
 class StateChangedCommand:
     """Preserve one watched Home Assistant state transition in FIFO order."""
 
@@ -246,6 +251,7 @@ class SaveFloorPlanCommand:
 
 type SchedulerCommand = (
     EvaluateCommand
+    | CheckDockWaterCommand
     | StateChangedCommand
     | RefreshDiscoveryCommand
     | SetGlobalCommand

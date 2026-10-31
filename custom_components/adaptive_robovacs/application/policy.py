@@ -126,6 +126,8 @@ class ApplicationPolicyMixin:
 
     if TYPE_CHECKING:
 
+        def _water_verification_pending(self, registry_id: str) -> bool: ...
+
         def _run_occupancy_exempt(self, area_id: str) -> bool: ...
         def _run_for_room(self, area_id: str) -> tuple[str, CleaningRun] | None: ...
         def _run_continuation(self, robot: DiscoveredRobot) -> bool: ...
@@ -288,6 +290,8 @@ class ApplicationPolicyMixin:
     ) -> tuple[bool, str]:
         """Return whether a robot has remained physically ready for three minutes."""
 
+        if self._water_verification_pending(robot.registry_id):
+            return False, "checking dock water"
         technical_ready, reason = self._robot_technically_ready(
             robot, ignore_scheduler_fault=ignore_scheduler_fault
         )
@@ -419,6 +423,8 @@ class ApplicationPolicyMixin:
     def _manual_robot_ready(self, robot: DiscoveredRobot) -> tuple[bool, str]:
         """Apply non-negotiable physical gates to fresh explicit manual work."""
 
+        if self._water_verification_pending(robot.registry_id):
+            return False, "checking dock water"
         ready, reason = self._robot_physically_ready(robot)
         if not ready and reason.startswith("robot is "):
             return False, "robot is not docked"

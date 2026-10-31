@@ -90,6 +90,13 @@ without rebuilding a second god file:
   blockers remain independent of cadence and durable fault/recovery state.
 - `application/settings.py` owns typed configuration and floor-plan changes.
 - `application/faults.py` and `application/water.py` own their scoped workflows.
+- `application/dock_water.py` owns sparse cached tank snapshots and checkpointed
+  verification washes. One shared deadline timer submits `CheckDockWaterCommand`;
+  routine snapshots sample only due robots, without discovery, vendor refresh,
+  tank state subscriptions, or whole-house scheduling evaluation. Existing robot
+  status observations suspend/rearm snapshots and advance verification phases.
+  `dock_water_state.py` provides the strict robot-keyed Store records; ordinary
+  check deadlines are transient, so restart never replays missed snapshots.
 - `application/actions.py` handles explicit user cleaning and return requests.
 
 Clock and timer helpers remain in `application/core.py`. Component wrappers

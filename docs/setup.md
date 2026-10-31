@@ -233,6 +233,28 @@ The interrupted work is not credited as a completed room clean.
 
 ## Water-aware mopping
 
+### Dock tank reports
+
+On supported Roborock docks, Adaptive RoboVacs samples cached tank reports five
+minutes after settled docking and hourly while docked between washes. The clean
+tank flag means empty or missing; the dirty tank flag means full or missing.
+They can stay cached until washing or mopping starts. The robot card labels
+them **Last reported water** and shows the snapshot time.
+
+One consolidated mobile alert identifies which tanks need attention. Brief
+reports receive a delayed confirmation; unchanged problems do not produce
+hourly reminders. Unknown readings preserve existing notifications. A healthy
+snapshot clears the episode.
+
+A reported dock problem blocks new mopping. At the next otherwise eligible
+scheduled mop, one native verification wash checks whether the report is stale.
+The wash must be observed, followed by a healthy snapshot five minutes after
+settled docking. An unresolved problem skips that mop stage and may retry at
+the next scheduled occurrence. Normal safety gates still apply, and routine
+hourly checks never start a wash. See the [v1.20.0 migration guide](migration-v1.20.0.md).
+
+### Onboard water and confirmation
+
 The Roborock adapter uses same-device registry metadata for Mop attached, Water
 box attached, and Water shortage. It never depends on local entity IDs. The
 three signals must be attached, attached, and no-shortage when the mop stage is

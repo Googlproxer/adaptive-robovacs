@@ -811,6 +811,9 @@ class AdaptiveRoboVacsVacuumCard extends AdaptiveRoboVacsCardBase {
     for (const [attribute, name] of [
       ["cleaning_run_summary", "Cleaning run"],
       ["battery_learning_summary", "Battery forecast"],
+      ["water_tank_summary", "Last reported water"],
+      ["water_snapshot_summary", "Water snapshot"],
+      ["water_verification_summary", "Water verification"],
     ]) {
       if (status?.attrs?.[attribute]) {
         entityRows.splice(1, 0, { type: "attribute", entity: status.entityId, attribute, name });

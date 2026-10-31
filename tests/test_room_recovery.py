@@ -30,6 +30,7 @@ from custom_components.adaptive_robovacs.models import (
 )
 from custom_components.adaptive_robovacs.observations import HomeAssistantObserver
 from custom_components.adaptive_robovacs.state import (
+    SCHEMA_VERSION,
     ActiveJob,
     CleaningOccurrence,
     CleaningStage,
@@ -811,7 +812,7 @@ class RecoveryCodecTests(unittest.TestCase):
         migrated, changed = SchedulerState.from_store(original, ENTRY_DATA)
         self.assertTrue(changed)
         self.assertEqual(original, before)
-        self.assertEqual(migrated.encode()["schema_version"], 20)
+        self.assertEqual(migrated.encode()["schema_version"], SCHEMA_VERSION)
         self.assertEqual(
             migrated.occurrences["study"].to_store(),
             app.state.occurrences["study"].to_store(),

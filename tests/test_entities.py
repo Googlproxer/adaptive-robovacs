@@ -129,6 +129,7 @@ def robot_view(
             "max", "vacuum", "standard", "medium", "2"
         ),
         mop_profile_summary="native mop-only profile",
+        dock_water=None,
         cleaning_run=None,
         battery_learning=(),
         failure=None,

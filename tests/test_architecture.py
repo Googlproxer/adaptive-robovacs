@@ -58,6 +58,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "jobs.py",
             "opportunities.py",
             "run_state.py",
+            "dock_water_state.py",
             "run_planner.py",
         ):
             imports = imported_modules(PACKAGE / name)
@@ -122,6 +123,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertEqual(
             bases,
             [
+                "ApplicationDockWaterMixin",
                 "ApplicationRunsMixin",
                 "ApplicationLegacyMapMixin",
                 "ApplicationSettingsMixin",

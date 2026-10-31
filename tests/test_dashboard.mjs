@@ -339,6 +339,27 @@ test("vacuum card presents the managed queue and battery learning", () => {
   assert.ok(configuration.entities.every((row) => !row.entity.includes("robot_two")));
 });
 
+test("vacuum card labels cached water snapshots and verification separately", () => {
+  const states = baseStates();
+  Object.assign(states["sensor.robot_one_status"].attributes, {
+    water_tank_summary: "Clean tank: refill/refit; Dirty tank: OK",
+    water_snapshot_summary: "2026-09-05T10:05+00:00",
+    water_verification_summary: "Waiting for post-wash snapshot",
+  });
+  const { configuration } = configure(VacuumCard, {
+    vacuum_entity_id: "vacuum.robot_one",
+  }, states);
+  for (const [attribute, name] of [
+    ["water_tank_summary", "Last reported water"],
+    ["water_snapshot_summary", "Water snapshot"],
+    ["water_verification_summary", "Water verification"],
+  ]) {
+    assert.ok(configuration.entities.some((row) =>
+      row.type === "attribute" && row.attribute === attribute && row.name === name
+    ));
+  }
+});
+
 test("vacuum card ignores retired map controls and never offers map actions", () => {
   const states = baseStates();
   for (const role of [

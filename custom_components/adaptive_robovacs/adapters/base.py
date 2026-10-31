@@ -52,6 +52,7 @@ class AdapterMatchContext:
     device_id: str | None = None
     entities: tuple[AdapterEntityEvidence, ...] = ()
     can_mutate: Callable[[], bool] | None = None
+    dock_entities: tuple[AdapterEntityEvidence, ...] = ()
 
 
 class VacuumAdapter(ABC):

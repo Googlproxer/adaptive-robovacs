@@ -24,6 +24,7 @@ from .presentation import (
     opportunity_attributes,
     robot_hold_attributes,
     robot_settings_attributes,
+    robot_water_attributes,
     room_decision_attributes,
     room_recovery_attributes,
     scheduler_attributes,
@@ -230,6 +231,7 @@ class _RobotStatusSensor(AdaptiveEntity, SensorEntity):
             "mop_profile_summary": robot.mop_profile_summary,
             "water_readiness": water_attributes,
             "adapter_diagnostic": robot.adapter_diagnostic,
+            **robot_water_attributes(robot.dock_water),
             **failure_fields,
         }
 

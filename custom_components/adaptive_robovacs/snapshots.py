@@ -514,6 +514,19 @@ class CleaningRunView:
 
 
 @dataclass(frozen=True, slots=True)
+class RobotWaterView:
+    """An immutable scheduled snapshot, not live tank-level telemetry."""
+
+    clean: str | None
+    dirty: str | None
+    onboard: str | None
+    error: str | None
+    last_snapshot_at: datetime | None
+    verification: str | None
+    verification_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class RobotView:
     """Typed entity-facing state for one registry-backed robot."""
 
@@ -541,6 +554,7 @@ class RobotView:
     mop_profile_summary: str | None
     cleaning_run: CleaningRunView | None = None
     battery_learning: tuple[tuple[str, int, float | None], ...] = ()
+    dock_water: RobotWaterView | None = None
 
     @property
     def supported_operations(self) -> tuple[str, ...]:

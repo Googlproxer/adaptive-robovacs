@@ -391,6 +391,16 @@ class DispatchPipeline:
             )
             return False, fault_summary(code)
         if not result.accepted:
+            if (
+                candidate.operation == "mop"
+                and result.blocked
+                and result.code == "dock_water_unavailable"
+            ):
+                await dependencies.async_abandon_checkpoint(robot)
+                await dependencies.async_handle_mop_preflight(
+                    robot, candidate, result.code, dt_util.utcnow()
+                )
+                return True, f"skipped mopping {room.name}: dock water unavailable"
             if result.code in {
                 "q10_max_plus_profile_write_failed",
                 "q10_max_plus_start_failed",

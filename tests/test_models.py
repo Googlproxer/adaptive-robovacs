@@ -20,6 +20,71 @@ sys.modules[SPEC.name] = models
 SPEC.loader.exec_module(models)
 
 
+class DockWaterDecisionTests(unittest.TestCase):
+    def test_reported_conditions_are_flags_and_onboard_does_not_prove_dock_water(self):
+        for status, ready, eligible, faults in (
+            (models.DockWaterStatus("off", "off", "ok", "off"), True, False, ()),
+            (
+                models.DockWaterStatus("on", "off", "water_empty", "off"),
+                False,
+                True,
+                ("clean",),
+            ),
+            (
+                models.DockWaterStatus("off", "on", "waste_water_tank_full"),
+                False,
+                True,
+                ("dirty",),
+            ),
+            (
+                models.DockWaterStatus("off", "off", "ok", "on"),
+                True,
+                False,
+                ("onboard",),
+            ),
+            (
+                models.DockWaterStatus("off", "off", "water_empty"),
+                False,
+                True,
+                ("clean",),
+            ),
+            (models.DockWaterStatus("unknown", "off", "ok"), False, False, ()),
+            (
+                models.DockWaterStatus("on", "off", "duct_blockage"),
+                False,
+                False,
+                ("clean",),
+            ),
+        ):
+            with self.subTest(status=status):
+                self.assertEqual(status.dock_ready, ready)
+                self.assertEqual(status.revalidation_eligible, eligible)
+                self.assertEqual(status.faults, faults)
+
+    def test_unknown_reports_preserve_only_the_affected_notification_faults(self):
+        self.assertEqual(
+            models.water_notification_faults(
+                models.DockWaterStatus("unknown", "off", "unknown", "off"),
+                ("clean", "dirty", "onboard"),
+            ),
+            ("clean", "dirty"),
+        )
+        self.assertEqual(
+            models.water_notification_faults(
+                models.DockWaterStatus("off", "off", "ok", "unknown"),
+                ("clean", "onboard"),
+            ),
+            ("onboard",),
+        )
+        self.assertEqual(
+            models.water_notification_faults(
+                models.DockWaterStatus("off", "on", "ok", "off"),
+                (),
+            ),
+            ("dirty",),
+        )
+
+
 class RunEnergyTests(unittest.TestCase):
     def test_q10_battery_profile_checks_the_native_customized_mode(self):
         capabilities = models.AdapterCapabilities(

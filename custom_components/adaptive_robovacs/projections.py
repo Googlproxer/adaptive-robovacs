@@ -67,6 +67,7 @@ from .snapshots import (
     RobotHoldView,
     RobotSettingsView,
     RobotView,
+    RobotWaterView,
     RoomAdjacencyBlockerView,
     RoomDecisionView,
     RoomRecoveryView,
@@ -959,6 +960,30 @@ def robot_view(source: ProjectionSource, entity_id: str) -> RobotView:
             passes=observed(robot.profile.passes_select_entity_id),
         ),
         mop_profile_summary=mop_profile_summary,
+        dock_water=robot_water_view(source, robot),
+    )
+
+
+def robot_water_view(
+    source: ProjectionSource, robot: DiscoveredRobot
+) -> RobotWaterView | None:
+    sources = robot.adapter_capabilities.dock_water
+    if not sources.supported and not sources.onboard:
+        return None
+    record = source.state.robot_water.get(robot.registry_id)
+    verification = record.verification if record else None
+    return RobotWaterView(
+        clean=record.status.clean if record else "unknown" if sources.clean else None,
+        dirty=record.status.dirty if record else "unknown" if sources.dirty else None,
+        onboard=record.status.onboard
+        if record
+        else "unknown"
+        if sources.onboard
+        else None,
+        error=record.status.error if record else None,
+        last_snapshot_at=record.last_snapshot_at if record else None,
+        verification=verification.phase if verification else None,
+        verification_reason=verification.reason if verification else None,
     )
 
 

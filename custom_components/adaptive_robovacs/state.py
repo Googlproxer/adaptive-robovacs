@@ -27,6 +27,7 @@ from .const import (
     DEFAULT_UNRESOLVED_END,
     DEFAULT_UNRESOLVED_START,
 )
+from .dock_water_state import RobotWaterRecord, decode_robot_water
 from .models import (
     FLOOR_PLAN_MAX_GRID_COORDINATE,
     FLOOR_PLAN_MIN_ROOM_SPAN,
@@ -49,7 +50,7 @@ from .models import (
 )
 from .run_state import BatteryUsageSample, CleaningRun
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 RETIRED_GLOBAL_SETTINGS = frozenset({"hall_start", "hall_end"})
 DAILY_WINDOW_VERSION = 1
 
@@ -2179,6 +2180,7 @@ class SchedulerState:
     first_scheduler_online_at: datetime | None = None
     cleaning_runs: dict[str, CleaningRun] = field(default_factory=dict)
     battery_samples: dict[str, list[BatteryUsageSample]] = field(default_factory=dict)
+    robot_water: dict[str, RobotWaterRecord] = field(default_factory=dict)
 
     @classmethod
     def create(cls, entry_data: Mapping[str, object]) -> SchedulerState:
@@ -2198,12 +2200,14 @@ class SchedulerState:
             isinstance(schema_version, bool) or not isinstance(schema_version, int)
         ):
             raise StateSchemaError("schema_version must be an integer")
-        if schema_version in {16, 17, 18, 19}:
+        if schema_version in {16, 17, 18, 19, 20}:
             # Validate the full former current schema before any permissive
             # legacy parsing. Retired settings remain ignored by that validator.
             upgraded = {**data, "schema_version": SCHEMA_VERSION}
-            upgraded["cleaning_runs"] = {}
-            upgraded["battery_samples"] = {}
+            if schema_version != 20:
+                upgraded["cleaning_runs"] = {}
+                upgraded["battery_samples"] = {}
+            upgraded["robot_water"] = {}
             if schema_version == 16:
                 upgraded["room_recoveries"] = {}
             cls._validate_current_schema(upgraded)
@@ -2260,6 +2264,7 @@ class SchedulerState:
             raise StateSchemaError(f"schema_version must be {SCHEMA_VERSION}")
 
         cls._decode_runs(data)
+        cls._decode_water(data)
 
         room_settings = _mapping(data.get("room_settings"), "room_settings")
         robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
@@ -2663,6 +2668,7 @@ class SchedulerState:
                 is not None
             },
             first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
+            robot_water=cls._decode_water(data),
             cleaning_runs=cls._decode_runs(data)[0],
             battery_samples=cls._decode_runs(data)[1],
         )
@@ -2839,10 +2845,18 @@ class SchedulerState:
                 is not None
                 and reference.legacy_key == legacy_key
             },
+            robot_water=cls._decode_water(data),
             first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
             cleaning_runs=cls._decode_runs(data)[0],
             battery_samples=cls._decode_runs(data)[1],
         )
+
+    @classmethod
+    def _decode_water(cls, data: Mapping[str, object]) -> dict[str, RobotWaterRecord]:
+        try:
+            return decode_robot_water(data.get("robot_water", {}))
+        except (ValueError, TypeError) as err:
+            raise StateSchemaError(f"invalid robot_water: {err}") from err
 
     @classmethod
     def _decode_runs(
@@ -2902,6 +2916,9 @@ class SchedulerState:
     def to_store(self) -> dict[str, object]:
         return {
             "schema_version": SCHEMA_VERSION,
+            "robot_water": {
+                key: record.to_store() for key, record in self.robot_water.items()
+            },
             "cleaning_runs": {
                 key: run.to_store() for key, run in self.cleaning_runs.items()
             },

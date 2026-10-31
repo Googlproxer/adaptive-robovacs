@@ -73,6 +73,7 @@ class DiscoveredRobot:
     adapter_capabilities: AdapterCapabilities
     adapter_diagnostic: str | None = None
     adapter_entities: tuple[AdapterEntityEvidence, ...] = ()
+    dock_entities: tuple[AdapterEntityEvidence, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +230,24 @@ def _adapter_evidence(
                     getattr(entry, "translation_key", None)
                     or attributes.get("translation_key")
                     or attributes.get("entity_description_key")
+                    or (
+                        next(
+                            (
+                                key
+                                for key in (
+                                    "clean_box_empty",
+                                    "dirty_box_full",
+                                    "dock_error",
+                                    "mop_washing",
+                                    "water_shortage",
+                                )
+                                if entry.unique_id.startswith(f"{key}_")
+                            ),
+                            None,
+                        )
+                        if entry.platform == "roborock"
+                        else None
+                    )
                 ),
                 device_class=(
                     attributes.get("device_class")
@@ -340,6 +359,40 @@ def _find_profile(
     return profile
 
 
+def _dock_entries(
+    entry: er.RegistryEntry,
+    devices: dr.DeviceRegistry,
+    entries_by_device: dict[str, list[er.RegistryEntry]],
+) -> list[er.RegistryEntry]:
+    """Pair Roborock's distinct dock by its vendor identifier, never its area."""
+
+    if entry.platform != "roborock" or not entry.device_id:
+        return []
+    device = devices.async_get(entry.device_id)
+    if device is None:
+        return []
+    identifiers = {
+        (domain, f"{identifier}_dock")
+        for domain, identifier in getattr(device, "identifiers", ())
+        if domain == "roborock"
+    }
+    if not identifiers:
+        return []
+    matches = {
+        candidate.id: candidate
+        for identifier in identifiers
+        if (candidate := devices.async_get_device(identifiers={identifier})) is not None
+    }
+    if len(matches) != 1:
+        return []
+    return [
+        candidate
+        for candidate in entries_by_device.get(next(iter(matches)), [])
+        if candidate.platform == "roborock"
+        and candidate.config_entry_id == entry.config_entry_id
+    ]
+
+
 async def async_discover(hass: HomeAssistant) -> DiscoverySnapshot:
     """Discover scheduler candidates without any deployment-specific mapping."""
 
@@ -374,6 +427,9 @@ async def async_discover(hass: HomeAssistant) -> DiscoverySnapshot:
         )
         platform = str(entry.platform)
         adapter_entities = _adapter_evidence(hass, device_entries)
+        dock_entities = _adapter_evidence(
+            hass, _dock_entries(entry, devices, entries_by_device)
+        )
         if operation_mode := _verified_operation_mode(adapter_entities):
             profile = replace(
                 profile,
@@ -394,6 +450,7 @@ async def async_discover(hass: HomeAssistant) -> DiscoverySnapshot:
             ),
             device_id=entry.device_id,
             entities=adapter_entities,
+            dock_entities=dock_entities,
         )
         adapter, capabilities, adapter_diagnostic = await async_resolve_adapter(
             hass, context
@@ -416,6 +473,7 @@ async def async_discover(hass: HomeAssistant) -> DiscoverySnapshot:
             adapter_capabilities=capabilities,
             adapter_diagnostic=adapter_diagnostic,
             adapter_entities=adapter_entities,
+            dock_entities=dock_entities,
         )
 
     occupancy_by_area: dict[

@@ -50,6 +50,8 @@ class VacuumGateway(Protocol):
         self, robot_entity_id: str, context: Context | None
     ) -> None: ...
 
+    async def async_start_dock_wash(self, robot: DiscoveredRobot) -> None: ...
+
 
 class HomeAssistantVacuumGateway:
     """Adapter-backed vacuum gateway using Home Assistant services and state."""
@@ -84,6 +86,7 @@ class HomeAssistantVacuumGateway:
             device_id=robot.device_id,
             entities=entities,
             can_mutate=self._can_mutate,
+            dock_entities=robot.dock_entities,
         )
 
     async def async_preflight(
@@ -169,6 +172,19 @@ class HomeAssistantVacuumGateway:
         fan_speed = cleaning_profile.get("fan_speed")
         return bool(
             not fan_speed or fan_speed in robot.adapter_capabilities.fan_speed_options
+        )
+
+    async def async_start_dock_wash(self, robot: DiscoveredRobot) -> None:
+        """Start a native dock action; acceptance is never proof of water."""
+
+        entity_id = robot.adapter_capabilities.dock_water.washing
+        if not self._can_mutate() or not entity_id:
+            raise RuntimeError("dock wash is not available")
+        await self._hass.services.async_call(
+            "switch",
+            "turn_on",
+            {"entity_id": entity_id},
+            blocking=True,
         )
 
     async def async_return_to_dock(
