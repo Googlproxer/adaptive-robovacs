@@ -1,0 +1,2 @@
+# Optional real-browser benchmark; matches package.json's Playwright runtime.
+playwright==1.64.0

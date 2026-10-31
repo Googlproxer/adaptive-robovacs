@@ -253,6 +253,16 @@ retaining schema 16 and ordinary room scheduling. Existing installations clean
 up obsolete settings and selectors on setup. See the
 [v1.14 migration guide](docs/migration-v1.14.0.md) before upgrading.
 
+## Performance benchmarks
+
+Run the offline backend and Chromium benchmarks to measure evaluation,
+discovery, snapshots, persistence CPU cost, event filtering/coalescing, and
+floorplan updates at three synthetic scales. Reports include tail latency,
+allocation peaks, event-loop delay, and optional CPU profiles. See the
+[benchmark guide](docs/performance.md) for commands, scope, budgets, and baseline
+comparisons. The **Performance benchmark** GitHub workflow publishes reports
+for integration changes and can also be run manually.
+
 ## Releases and upgrades
 
 Production updates are published as full GitHub Releases with semantic tags
