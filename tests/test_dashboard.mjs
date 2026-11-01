@@ -360,6 +360,54 @@ test("vacuum card labels cached water snapshots and verification separately", ()
   }
 });
 
+test("vacuum water warning appears near the top, remains robot-scoped, and clears", () => {
+  const states = baseStates();
+  const status = states["sensor.robot_one_status"].attributes;
+  status.water_issue_summary = "Refill and refit the clean-water tank";
+  // Overall readiness can disagree: the warning comes from the stored tank report.
+  status.water_readiness = { ready: true };
+  const { card, configuration } = configure(VacuumCard, {
+    vacuum_entity_id: "vacuum.robot_one",
+  }, states);
+  assert.deepEqual(configuration.entities[1], {
+    type: "custom:adaptive-robovacs-evidence-row",
+    entity: "sensor.robot_one_status",
+    kind: "water",
+    name: "⚠ Water needs attention",
+  });
+  const other = configure(VacuumCard, { vacuum_entity_id: "vacuum.robot_two" }, states);
+  assert.ok(other.configuration.entities.every((row) => row.kind !== "water"));
+  const faultSignature = card._entitySignature();
+  status.water_issue_summary = null;
+  assert.ok(card._configuration().entities.every((row) => row.kind !== "water"));
+  assert.notEqual(card._entitySignature(), faultSignature);
+  status.water_issue_summary = "Refill and refit the clean-water tank";
+  states["sensor.robot_one_status"].state = "unavailable";
+  assert.ok(card._configuration().entities.every((row) => row.kind !== "water"));
+});
+
+test("water evidence wraps, identifies the stored report, and opens status details", () => {
+  const status = adaptiveState("robot_status", {
+    water_issue_summary: "Refill and refit the clean-water tank; Empty and refit the dirty-water tank",
+    dock_water: { last_snapshot_at: "2026-09-05T10:05:00+00:00" },
+  });
+  const text = EvidenceRow.display(status, Date.now(), "water");
+  assert.match(text, /Refill and refit.*Empty and refit/);
+  assert.match(text, /Last stored report:/);
+  assert.match(text, /Tank status may stay cached until washing/);
+  assert.match(EvidenceRow.display(adaptiveState("robot_status"), Date.now(), "water"), /No snapshot recorded/);
+  assert.equal(EvidenceRow.display({ state: "unavailable" }, Date.now(), "water"), "Unavailable");
+  const row = new EvidenceRow();
+  row.setConfig({ entity: "sensor.robot_one_status", kind: "water", name: "⚠ Water needs attention" });
+  row.hass = { states: { "sensor.robot_one_status": status } };
+  row.connectedCallback();
+  assert.equal(row._value.textContent, text);
+  assert.match(row._row.style.cssText, /warning-color/);
+  row.listeners.get("keydown")({ key: "Enter", preventDefault() {} });
+  assert.equal(row.events.at(-1).detail.entityId, "sensor.robot_one_status");
+  row.disconnectedCallback();
+});
+
 test("vacuum card ignores retired map controls and never offers map actions", () => {
   const states = baseStates();
   for (const role of [

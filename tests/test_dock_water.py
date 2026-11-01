@@ -660,6 +660,21 @@ class DockWaterApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.app._async_check_dock_water.assert_awaited_once()
         self.app.async_evaluate.assert_not_awaited()
 
+    async def test_dashboard_retains_notified_fault_until_healthy_report(self):
+        record = RobotWaterRecord(
+            last_snapshot_at=NOW,
+            status=DockWaterStatus(clean="unknown", dirty="off", error="unknown"),
+            notified_faults=("clean",),
+        )
+        self.app.state.robot_water[self.robot.registry_id] = record
+        attributes = robot_water_attributes(robot_water_view(self.app, self.robot))
+        self.assertEqual(
+            attributes["water_issue_summary"], "Refill and refit the clean-water tank"
+        )
+        record.status = DockWaterStatus(clean="off", dirty="off", error="ok")
+        attributes = robot_water_attributes(robot_water_view(self.app, self.robot))
+        self.assertIsNone(attributes["water_issue_summary"])
+
     async def test_late_start_or_completion_cannot_bypass_verification_deadlines(self):
         for phase, minutes in (("requested", 3), ("washing", 11)):
             with self.subTest(phase=phase):

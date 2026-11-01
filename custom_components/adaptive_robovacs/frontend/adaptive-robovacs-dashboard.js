@@ -394,12 +394,22 @@ class AdaptiveRoboVacsEvidenceRow extends AdaptiveRoboVacsStatusRow {
 
   _refreshStatus() {
     if (this._label) this._label.textContent = this._config?.name || "Evidence";
+    if (this._row) {
+      const water = this._config?.kind === "water";
+      this._row.style.cssText = water ? "border-left:4px solid var(--warning-color,#ffa600);padding:8px 12px" : "";
+      this._label.style.color = water ? "var(--warning-color,#ffa600)" : "";
+    }
     super._refreshStatus();
   }
 
   static display(state, now = Date.now(), kind = "forecast") {
     if (!state || state.state === "unavailable") return "Unavailable";
     const attrs = state.attributes || {};
+    if (kind === "water") {
+      const time = Date.parse(attrs.dock_water?.last_snapshot_at);
+      const reported = Number.isFinite(time) ? new Date(time).toLocaleString() : "No snapshot recorded";
+      return `${attrs.water_issue_summary || "No water issue reported"}. Last stored report: ${reported}. Tank status may stay cached until washing.`;
+    }
     const stamp = (value) => {
       const time = Date.parse(value);
       return Number.isFinite(time) ? new Date(time).toLocaleString() : "No completion recorded";
@@ -825,6 +835,14 @@ class AdaptiveRoboVacsVacuumCard extends AdaptiveRoboVacsCardBase {
         entity: status.entityId,
         attribute: "mop_profile_summary",
         name: "Mopping",
+      });
+    }
+    if (status?.state?.state !== "unavailable" && status?.attrs?.water_issue_summary) {
+      entityRows.splice(1, 0, {
+        type: "custom:adaptive-robovacs-evidence-row",
+        entity: status.entityId,
+        kind: "water",
+        name: "⚠ Water needs attention",
       });
     }
     return entityRows.length

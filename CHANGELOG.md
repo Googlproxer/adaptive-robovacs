@@ -5,6 +5,17 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.20.1] - 2026-11-01
+
+### Fixed
+
+- Highlight reported water faults immediately below robot Status with an amber
+  warning, the refill/refit or supply-check action, and the stored report time.
+  Clear the warning after a healthy snapshot without changing water checks or
+  scheduling behaviour.
+
+Detailed notes: [`docs/releases/v1.20.1.md`](docs/releases/v1.20.1.md).
+
 ## [1.19.2] - 2026-10-31
 
 ### Fixed

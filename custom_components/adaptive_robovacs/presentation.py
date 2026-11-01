@@ -45,7 +45,10 @@ def robot_water_attributes(item: RobotWaterView | None) -> dict[str, object]:
     if item is None:
         return {}
     summaries = []
-    faults = DockWaterStatus(item.clean, item.dirty, item.error, item.onboard).faults
+    faults = (
+        item.active_faults
+        or DockWaterStatus(item.clean, item.dirty, item.error, item.onboard).faults
+    )
     for key, label, value, attention in (
         ("clean", "Clean tank", item.clean, "refill/refit"),
         ("dirty", "Dirty tank", item.dirty, "empty/refit"),
@@ -63,7 +66,13 @@ def robot_water_attributes(item: RobotWaterView | None) -> dict[str, object]:
         "succeeded": "Verification passed",
         "failed": "Failed; retry at next scheduled mop",
     }
+    actions = {
+        "clean": "Refill and refit the clean-water tank",
+        "dirty": "Empty and refit the dirty-water tank",
+        "onboard": "Onboard water shortage reported; check the water supply",
+    }
     return {
+        "water_issue_summary": "; ".join(actions[key] for key in faults) or None,
         "dock_water": {
             "clean": item.clean,
             "dirty": item.dirty,

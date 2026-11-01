@@ -524,6 +524,7 @@ class RobotWaterView:
     last_snapshot_at: datetime | None
     verification: str | None
     verification_reason: str | None
+    active_faults: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

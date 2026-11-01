@@ -31,6 +31,7 @@ from .models import (
     requested_cleaning_profile,
     resolve_cleaning_profile,
     stage_pass_count,
+    water_notification_faults,
 )
 from .opportunities import missed_cadences, opportunity_advice
 from .planner import (
@@ -984,6 +985,9 @@ def robot_water_view(
         last_snapshot_at=record.last_snapshot_at if record else None,
         verification=verification.phase if verification else None,
         verification_reason=verification.reason if verification else None,
+        active_faults=water_notification_faults(record.status, record.notified_faults)
+        if record
+        else (),
     )
 
 

@@ -44,11 +44,11 @@ automatically on supported versions.
 
 ## Installation
 
-Requires Home Assistant 2026.10.0 or newer. Version 1.20.0 adds sparse dock-water
-snapshots, consolidated water notifications, and automatic wash verification
-before a scheduled mop with a reported tank problem. Managed multi-room queues
-and learned battery budgeting remain available.
-See the [release notes](docs/releases/v1.20.0.md) and
+Requires Home Assistant 2026.10.0 or newer. Version 1.20.1 adds a prominent water
+warning to each affected robot's dashboard card. Sparse dock-water snapshots,
+consolidated water notifications, automatic wash verification, managed multi-room
+queues, and learned battery budgeting remain available.
+See the [release notes](docs/releases/v1.20.1.md) and
 [migration guide](docs/migration-v1.20.0.md) before activation.
 
 1. Copy `custom_components/adaptive_robovacs` to your Home Assistant

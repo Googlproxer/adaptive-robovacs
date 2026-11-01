@@ -29,6 +29,16 @@ entity IDs. A newly supported control therefore appears automatically on its
 existing vacuum or room card. A newly discovered vacuum or room still needs a
 new card to be added and positioned manually.
 
+From v1.20.1, a robot whose stored water report contains a fault shows an amber
+**⚠ Water needs attention** row immediately below Status. It names the required
+clean-tank refill/refit, dirty-tank empty/refit, or onboard supply check, and
+shows when the report was sampled. Tap it to open the robot's Status details.
+The warning clears when a later scheduled snapshot reports healthy conditions;
+refilling a tank does not force an immediate device check, and the device may
+cache tank reports until washing. Previously notified faults remain visible
+while their telemetry is unknown. Missing telemetry alone does not create a
+tank-fault warning.
+
 ## Room timestamps and Status (1.15)
 
 Room cards lead with **Status → Next clean → Last clean**, then duration,

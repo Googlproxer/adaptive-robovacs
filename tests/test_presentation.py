@@ -28,6 +28,7 @@ from custom_components.adaptive_robovacs.presentation import (
     occurrence_attributes,
     robot_hold_attributes,
     robot_settings_attributes,
+    robot_water_attributes,
     room_decision_attributes,
     scheduler_attributes,
     water_confirmation_attributes,
@@ -51,6 +52,7 @@ from custom_components.adaptive_robovacs.snapshots import (
     RobotEligibilityView,
     RobotHoldView,
     RobotSettingsView,
+    RobotWaterView,
     RoomDecisionView,
     SchedulerView,
     WaterConfirmationView,
@@ -173,6 +175,42 @@ def floor_plan() -> FloorPlanView:
 
 
 class PresentationTests(unittest.TestCase):
+    def test_water_issue_actions_follow_reported_faults(self) -> None:
+        cases = (
+            (("on", "off", "off", "ok"), "Refill and refit the clean-water tank"),
+            (
+                ("off", "off", "off", "water_empty"),
+                "Refill and refit the clean-water tank",
+            ),
+            (("off", "on", "off", "ok"), "Empty and refit the dirty-water tank"),
+            (
+                ("off", "off", "off", "waste_water_tank_full"),
+                "Empty and refit the dirty-water tank",
+            ),
+            (
+                ("off", "off", "off", "dirty_tank_latch_open"),
+                "Empty and refit the dirty-water tank",
+            ),
+            (
+                ("off", "off", "on", "ok"),
+                "Onboard water shortage reported; check the water supply",
+            ),
+            (
+                ("on", "on", "on", "ok"),
+                "Refill and refit the clean-water tank; "
+                "Empty and refit the dirty-water tank; "
+                "Onboard water shortage reported; check the water supply",
+            ),
+            (("off", "off", "off", "ok"), None),
+            (("unknown", "unknown", None, None), None),
+        )
+        for (clean, dirty, onboard, error), expected in cases:
+            with self.subTest(clean=clean, dirty=dirty, onboard=onboard, error=error):
+                item = RobotWaterView(clean, dirty, onboard, error, WHEN, None, None)
+                self.assertEqual(
+                    robot_water_attributes(item)["water_issue_summary"], expected
+                )
+
     def test_optional_serializers_return_none_for_absent_values(self) -> None:
         serializers = (
             fault_attributes,
