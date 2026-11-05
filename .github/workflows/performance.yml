@@ -66,6 +66,10 @@ jobs:
         run: >-
           python -u -m benchmarks.dashboard --samples 50 --warmup 5
           --output test-results/performance/dashboard.json
+      - name: Active cleaning and sustained native timer traffic
+        run: >-
+          python -u -m benchmarks.cleaning --samples 30 --warmup 5
+          --output test-results/performance/cleaning.json
       - name: Retain benchmark evidence
         if: always()
         uses: actions/upload-artifact@v7

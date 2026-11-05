@@ -57,6 +57,7 @@ class AdaptiveEntity(CoordinatorEntity[AdaptiveRoboVacsCoordinator]):
         self._robot_registry_id = robot.registry_id if robot else None
         self._robot_name_suffix = robot_name_suffix
         self._global_dependency = global_dependency
+        self._last_written_state: tuple[object, ...] | None = None
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -70,8 +71,28 @@ class AdaptiveEntity(CoordinatorEntity[AdaptiveRoboVacsCoordinator]):
             robot_registry_id=self._robot_registry_id,
             global_dependency=self._global_dependency,
         ):
+            # A room/robot scope contains many controls. Only write this entity
+            # when its own public values changed; keep all existing attributes.
+            available = self.available
+            state = (
+                (
+                    available,
+                    self.name,
+                    self.state,
+                    self.icon,
+                    self.device_class,
+                    self.capability_attributes,
+                    self.extra_state_attributes,
+                )
+                if available
+                else (False,)
+            )
+            if state == self._last_written_state:
+                self.coordinator.metrics.entity_skips[scope] += 1
+                return
             self.coordinator.metrics.entity_writes[scope] += 1
             super()._handle_coordinator_update()
+            self._last_written_state = state
             return
         self.coordinator.metrics.entity_skips[scope] += 1
 

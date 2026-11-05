@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Coroutine, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -54,6 +55,8 @@ class ApplicationEvaluationMixin:
     _room_evaluations: dict[str, RoomEvaluation]
 
     if TYPE_CHECKING:
+
+        def _forecast_scope(self) -> AbstractContextManager[None]: ...
 
         def _reconcile_cleaning_runs(self, now: datetime) -> None: ...
         def _plan_cleaning_runs(
@@ -307,175 +310,191 @@ class ApplicationEvaluationMixin:
             await self._async_rewind_expired_mop_occurrences(now)
             self._reconcile_cleaning_runs(now)
             self._refresh_robot_readiness(now)
-            candidates: list[ScheduleCandidate] = []
-            reasons: dict[str, str] = {}
-            self._room_evaluations = {}
-            for room in self.discovery.rooms.values():
-                candidate, block_reason = self._room_candidate(room, now)
-                if candidate:
-                    candidates.append(candidate)
-                else:
-                    reasons[room.area_id] = block_reason
-                    self._room_evaluations[room.area_id] = RoomEvaluation(
-                        now, None, block_reason
-                    )
-            robot_ready = {
-                robot.entity_id: self._robot_ready(robot)
-                for robot in self.discovery.robots.values()
-            }
-            plan_inputs: list[PlanningInput] = []
-            for ordinal, candidate in enumerate(candidates):
-                diagnostics = self._candidate_robot_diagnostics(candidate, robot_ready)
-                plan_inputs.append(
-                    PlanningInput(
-                        candidate=candidate,
-                        decisions=diagnostics,
-                        ordinal=ordinal,
-                        battery_by_robot=tuple(
-                            (
-                                decision.eligibility.robot_id,
-                                self._robot_battery(
-                                    self.discovery.robots[decision.eligibility.robot_id]
-                                ),
-                            )
-                            for decision in diagnostics
-                        ),
-                        last_cleaned_at=self._room_data(
-                            candidate.room_id
-                        ).cleaning_completed_at,
-                    )
-                )
-
-            plan = build_schedule_plan(tuple(plan_inputs))
-            plan, planned_runs = self._plan_cleaning_runs(plan, tuple(plan_inputs), now)
-            candidates = list(plan.candidates)
-            assignments = [
-                (self.discovery.robots[item.robot_id], item.candidate)
-                for item in plan.assignments
-            ]
-            selected = {
-                item.candidate.room_id: item.robot_id for item in plan.assignments
-            }
-            selected.update(
-                {
-                    item.candidate.room_id: run.robot_id
-                    for run in planned_runs
-                    for item in run.rooms
+            with self._forecast_scope():
+                candidates: list[ScheduleCandidate] = []
+                reasons: dict[str, str] = {}
+                self._room_evaluations = {}
+                for room in self.discovery.rooms.values():
+                    candidate, block_reason = self._room_candidate(room, now)
+                    if candidate:
+                        candidates.append(candidate)
+                    else:
+                        reasons[room.area_id] = block_reason
+                        self._room_evaluations[room.area_id] = RoomEvaluation(
+                            now, None, block_reason
+                        )
+                robot_ready = {
+                    robot.entity_id: self._robot_ready(robot)
+                    for robot in self.discovery.robots.values()
                 }
-            )
-            run_blocks = {
-                (area_id, robot_id): block
-                for area_id, robot_id, block in plan.robot_blocks
-            }
-            for planned in plan.candidates:
-                decisions = next(
-                    item.decisions
-                    for item in plan_inputs
-                    if item.candidate.room_id == planned.room_id
-                )
-                decisions = tuple(
-                    replace(
-                        decision,
-                        eligibility=replace(
-                            decision.eligibility, eligible=False, reason=block
-                        ),
-                        candidate=None,
+                plan_inputs: list[PlanningInput] = []
+                for ordinal, candidate in enumerate(candidates):
+                    diagnostics = self._candidate_robot_diagnostics(
+                        candidate, robot_ready
                     )
-                    if (
-                        block := run_blocks.get(
-                            (planned.room_id, decision.eligibility.robot_id)
+                    plan_inputs.append(
+                        PlanningInput(
+                            candidate=candidate,
+                            decisions=diagnostics,
+                            ordinal=ordinal,
+                            battery_by_robot=tuple(
+                                (
+                                    decision.eligibility.robot_id,
+                                    self._robot_battery(
+                                        self.discovery.robots[
+                                            decision.eligibility.robot_id
+                                        ]
+                                    ),
+                                )
+                                for decision in diagnostics
+                            ),
+                            last_cleaned_at=self._room_data(
+                                candidate.room_id
+                            ).cleaning_completed_at,
                         )
                     )
-                    else decision
-                    for decision in decisions
-                )
-                planned = replace(
-                    planned,
-                    robot_eligibility=tuple(
-                        decision.eligibility for decision in decisions
-                    ),
-                )
-                self._room_evaluations[planned.room_id] = RoomEvaluation(
-                    now,
-                    planned,
-                    dict(plan.blocks).get(
-                        planned.room_id, "assigned to compatible robot"
-                    ),
-                    decisions,
-                    selected.get(planned.room_id),
-                )
-            for area_id, decision in self._room_evaluations.items():
-                room = self.discovery.rooms[area_id]
-                if self._room_settings(room).enabled:
-                    self._record_room_decision(room, decision.reason, now, 0)
-            for room_id, rejection in plan.blocks:
-                reasons.setdefault(room_id, rejection)
 
-            preview = {
-                "at": _iso(now),
-                "reason": reason,
-                "observe_only": self.observe_only,
-                "party_mode": self.party_mode,
-                "dispatch_halted": False,
-                "dispatch_limited": self.scheduler_limited,
-                "startup_state_settle_until": _iso(self._startup_state_settle_until),
-                "scheduler_fault": self.scheduler_fault_view(),
-                "candidates": [
+                plan = build_schedule_plan(tuple(plan_inputs))
+                plan, planned_runs = self._plan_cleaning_runs(
+                    plan, tuple(plan_inputs), now
+                )
+                candidates = list(plan.candidates)
+                assignments = [
+                    (self.discovery.robots[item.robot_id], item.candidate)
+                    for item in plan.assignments
+                ]
+                selected = {
+                    item.candidate.room_id: item.robot_id for item in plan.assignments
+                }
+                selected.update(
                     {
-                        "room": item.room_id,
-                        "room_name": self.discovery.rooms[item.room_id].name,
-                        "operation": (
-                            item.operation if item.occurrence else "cleaning"
-                        ),
-                        "due_at": _iso(item.due_at),
-                        "confidence": item.confidence,
-                        "basis": item.reason,
-                        "passes": item.passes,
-                        "selected_robot_id": self._room_evaluations[
-                            item.room_id
-                        ].selected_robot_id,
-                        "eligible": any(
-                            decision.eligibility.eligible
-                            for decision in self._room_evaluations[item.room_id].robots
-                        ),
-                        "robot_eligibility": [
-                            decision.as_attributes()
-                            for decision in self._room_evaluations[item.room_id].robots
-                        ],
+                        item.candidate.room_id: run.robot_id
+                        for run in planned_runs
+                        for item in run.rooms
                     }
-                    for item in candidates
-                ],
-                "assignments": [
-                    {
-                        "robot": robot.entity_id,
-                        "room": item.room_id,
-                        "operation": item.operation,
-                        "program": item.program,
-                        "stage_index": item.stage_index,
-                        "passes": item.passes,
-                        "adapter_id": robot.adapter_id,
-                        "cleaning_profile": (
-                            item.resolved_profile.to_mapping()
-                            if item.resolved_profile
-                            else None
+                )
+                run_blocks = {
+                    (area_id, robot_id): block
+                    for area_id, robot_id, block in plan.robot_blocks
+                }
+                for planned in plan.candidates:
+                    decisions = next(
+                        item.decisions
+                        for item in plan_inputs
+                        if item.candidate.room_id == planned.room_id
+                    )
+                    decisions = tuple(
+                        replace(
+                            decision,
+                            eligibility=replace(
+                                decision.eligibility, eligible=False, reason=block
+                            ),
+                            candidate=None,
+                        )
+                        if (
+                            block := run_blocks.get(
+                                (planned.room_id, decision.eligibility.robot_id)
+                            )
+                        )
+                        else decision
+                        for decision in decisions
+                    )
+                    planned = replace(
+                        planned,
+                        robot_eligibility=tuple(
+                            decision.eligibility for decision in decisions
                         ),
-                        "source": item.source,
-                    }
-                    for robot, item in assignments
-                ],
-                "runs": [run.as_attributes(now) for run in planned_runs],
-                "active_runs": {
-                    key: run.to_store() for key, run in self.state.cleaning_runs.items()
-                },
-                "blocks": reasons,
-                "legacy_deferral_review": self.legacy_deferral_report(),
-                "robots": {
-                    robot_id: {"ready": ready, "reason": ready_reason}
-                    for robot_id, (ready, ready_reason) in robot_ready.items()
-                },
-            }
-            self.state.evaluation.last_evaluation_at = now
-            self.state.evaluation.last_preview = FrozenJsonObject.from_mapping(preview)
+                    )
+                    self._room_evaluations[planned.room_id] = RoomEvaluation(
+                        now,
+                        planned,
+                        dict(plan.blocks).get(
+                            planned.room_id, "assigned to compatible robot"
+                        ),
+                        decisions,
+                        selected.get(planned.room_id),
+                    )
+                for area_id, decision in self._room_evaluations.items():
+                    room = self.discovery.rooms[area_id]
+                    if self._room_settings(room).enabled:
+                        self._record_room_decision(room, decision.reason, now, 0)
+                for room_id, rejection in plan.blocks:
+                    reasons.setdefault(room_id, rejection)
+
+                preview = {
+                    "at": _iso(now),
+                    "reason": reason,
+                    "observe_only": self.observe_only,
+                    "party_mode": self.party_mode,
+                    "dispatch_halted": False,
+                    "dispatch_limited": self.scheduler_limited,
+                    "startup_state_settle_until": _iso(
+                        self._startup_state_settle_until
+                    ),
+                    "scheduler_fault": self.scheduler_fault_view(),
+                    "candidates": [
+                        {
+                            "room": item.room_id,
+                            "room_name": self.discovery.rooms[item.room_id].name,
+                            "operation": (
+                                item.operation if item.occurrence else "cleaning"
+                            ),
+                            "due_at": _iso(item.due_at),
+                            "confidence": item.confidence,
+                            "basis": item.reason,
+                            "passes": item.passes,
+                            "selected_robot_id": self._room_evaluations[
+                                item.room_id
+                            ].selected_robot_id,
+                            "eligible": any(
+                                decision.eligibility.eligible
+                                for decision in self._room_evaluations[
+                                    item.room_id
+                                ].robots
+                            ),
+                            "robot_eligibility": [
+                                decision.as_attributes()
+                                for decision in self._room_evaluations[
+                                    item.room_id
+                                ].robots
+                            ],
+                        }
+                        for item in candidates
+                    ],
+                    "assignments": [
+                        {
+                            "robot": robot.entity_id,
+                            "room": item.room_id,
+                            "operation": item.operation,
+                            "program": item.program,
+                            "stage_index": item.stage_index,
+                            "passes": item.passes,
+                            "adapter_id": robot.adapter_id,
+                            "cleaning_profile": (
+                                item.resolved_profile.to_mapping()
+                                if item.resolved_profile
+                                else None
+                            ),
+                            "source": item.source,
+                        }
+                        for robot, item in assignments
+                    ],
+                    "runs": [run.as_attributes(now) for run in planned_runs],
+                    "active_runs": {
+                        key: run.to_store()
+                        for key, run in self.state.cleaning_runs.items()
+                    },
+                    "blocks": reasons,
+                    "legacy_deferral_review": self.legacy_deferral_report(),
+                    "robots": {
+                        robot_id: {"ready": ready, "reason": ready_reason}
+                        for robot_id, (ready, ready_reason) in robot_ready.items()
+                    },
+                }
+                self.state.evaluation.last_evaluation_at = now
+                self.state.evaluation.last_preview = FrozenJsonObject.from_mapping(
+                    preview
+                )
             await self._async_update_opportunities(now, dry_run=dry_run)
 
             dispatches: list[str] = []

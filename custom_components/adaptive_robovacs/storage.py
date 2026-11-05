@@ -53,10 +53,16 @@ class SchedulerStore:
             )
         return StateLoadResult(state=state, migrated=migrated)
 
-    async def async_save(self, state: SchedulerState) -> None:
-        """Serialize one validated aggregate to the existing Store envelope."""
+    async def async_save(
+        self, state: SchedulerState, *, payload: dict[str, object] | None = None
+    ) -> None:
+        """Validate once, then persist the detached payload used for comparison."""
 
-        await self._store.async_save(state.encode())
+        if payload is None:
+            payload = state.encode()
+        else:
+            SchedulerState._validate_current_schema(payload)
+        await self._store.async_save(payload)
 
     async def async_reset_unsafe_state(
         self, entry_data: Mapping[str, object]

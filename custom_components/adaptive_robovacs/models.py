@@ -1958,6 +1958,20 @@ def format_last_cleaned_age(last_cleaned: datetime | None, now: datetime) -> str
     return "1 day ago" if elapsed_days == 1 else f"{elapsed_days} days ago"
 
 
+def routine_cleaning_timer_progress(
+    previous: float | None, current: float | None
+) -> bool:
+    """Only finite, increasing timers can bypass a full safety evaluation."""
+
+    return bool(
+        previous is not None
+        and current is not None
+        and math.isfinite(previous)
+        and math.isfinite(current)
+        and 0 <= previous < current
+    )
+
+
 def forecast_vacancy(
     samples: Iterable[Mapping[str, object]],
     now: datetime,

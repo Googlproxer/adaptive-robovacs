@@ -58,13 +58,16 @@ ENTRY_DATA = {"observe_only": True, "forecast_confidence": 75}
 
 
 class MemoryStore:
-    """Retain the real encode boundary, excluding disk and executor latency."""
+    """Retain production validation, excluding disk and executor latency."""
 
     def __init__(self) -> None:
         self.writes = 0
 
-    async def async_save(self, state: SchedulerState) -> None:
-        state.encode()
+    async def async_save(self, state: SchedulerState, *, payload=None) -> None:
+        if payload is None:
+            state.encode()
+        else:
+            SchedulerState._validate_current_schema(payload)
         self.writes += 1
 
 

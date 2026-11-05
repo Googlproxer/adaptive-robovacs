@@ -14,6 +14,8 @@ STORAGE_KEY: Final = f"{DOMAIN}.data"
 
 PLATFORMS: Final = ("button", "number", "select", "sensor", "switch")
 SCAN_INTERVAL: Final = timedelta(minutes=15)
+# Routine timer increments remain durable, but need not replan/publish the house.
+CLEANING_PROGRESS_EVALUATION_INTERVAL: Final = timedelta(seconds=30)
 HISTORY_DAYS: Final = 56
 FALLBACK_SAMPLE_COUNT: Final = 6
 EXTRA_CLEAR_MINUTES: Final = 10

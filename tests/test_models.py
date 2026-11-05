@@ -20,6 +20,25 @@ sys.modules[SPEC.name] = models
 SPEC.loader.exec_module(models)
 
 
+class CleaningTimerDecisionTests(unittest.TestCase):
+    def test_only_finite_increasing_timer_values_are_routine_progress(self):
+        for previous, current, expected in (
+            (0, 0.1, True),
+            (2, 3, True),
+            (3, 0, False),
+            (3, 3, False),
+            (-1, 2, False),
+            (None, 2, False),
+            (2, None, False),
+            (float("nan"), 2, False),
+            (2, float("inf"), False),
+        ):
+            with self.subTest(previous=previous, current=current):
+                self.assertEqual(
+                    models.routine_cleaning_timer_progress(previous, current), expected
+                )
+
+
 class DockWaterDecisionTests(unittest.TestCase):
     def test_reported_conditions_are_flags_and_onboard_does_not_prove_dock_water(self):
         for status, ready, eligible, faults in (

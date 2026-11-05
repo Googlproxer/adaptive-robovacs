@@ -43,6 +43,67 @@ On Windows, run pytest with `-p no:homeassistant`: the plugin's automatic patch
 module imports Linux-only `fcntl`. The suite's explicit isolated Home Assistant
 context tests still run. Linux CI runs the ordinary plugin-enabled suite.
 
+The 2026-11-05 check found Core 2026.11.0 in the official stable feed, while
+the live Core update entity still offered 2026.10.4. The latest test plugin,
+0.13.375, still requires 2026.10.4 exactly. The compatible test pins therefore
+remain unchanged; the new comparison uses Python 3.14.9 locally as well as in CI.
+
+## Active-cleaning benchmark
+
+This fixed synthetic workload adds 17 rooms, two robots, 4,000 registry entities,
+and 800 generated vacancy samples per room, all within the retention window.
+It contains no captured household settings, native map data, or history. One
+observed manual job is already cleaning; the second robot is docked.
+
+```powershell
+$testPython = '.venv\validation\Scripts\python.exe'
+& $testPython -m benchmarks.cleaning --samples 30 --warmup 5 `
+  --output .venv/clean-performance-evidence/cleaning.json
+```
+
+The first row measures an active evaluation. The second awaits 16 timer events
+separately, advancing the clock one second per event. This represents sustained
+traffic rather than same-turn coalescing. Both rows run the actual command queue,
+observation, policy, checkpointing, snapshot, and publication code. Every progress
+batch must retain the active job and write a checkpoint with its latest observation.
+The report also records evaluation, Store-write, and publication counts from the
+last batch. Allocation tracing and heartbeat calls are separate from timed samples.
+
+All service calls are prohibited. The memory Store includes production-equivalent
+validation but excludes disk/executor latency. No Home Assistant entity platforms,
+Recorder, WebSocket clients, or native devices are mounted; their costs are excluded.
+Results describe local integration work, not a predicted percentage of VM CPU.
+
+Run the same command before and after a change with the same environment, then
+add `--baseline <before-json>` for comparison. Keep local evidence outside
+Playwright's default `test-results` directory: `npm run test:browser` clears that
+directory when it starts. The performance CI runs this benchmark independently
+and retains its report with the other performance artifacts.
+
+On 2026-11-05, sequential runs on the same Windows computer with Python 3.14.9
+and Core 2026.10.4 compared the unchanged v1.20.1 source with this implementation
+(30 samples, five warmups):
+
+| Workload | Before median / p95 | After median / p95 | Median reduction |
+| --- | ---: | ---: | ---: |
+| Active evaluation | 127.5 / 201.5 ms | 63.9 / 116.2 ms | 49.9% |
+| 16 sequential timer updates | 2,289.1 / 2,410.7 ms | 567.1 / 622.2 ms | 75.2% |
+
+The last measured timer batch changed from 16 evaluations, 17 Store writes,
+and 16 snapshot publications to zero evaluations, 16 Store writes, and zero
+publications. A batch crossing the 30-second evaluation boundary can still
+evaluate and publish. The write count deliberately retains restart-safe progress
+checkpoints. The timer batch's p95 remains above its advisory 500 ms budget;
+this is a measured improvement, not a claim that every performance target is met.
+
+The existing backend suite (25 samples, five warmups) reduced median preview
+evaluation time from 6.46 to 4.77 ms for small, 70.04 to 32.42 ms for medium, and
+606.04 to 138.40 ms for large. Large unchanged-save comparison fell from 75.52
+to 42.94 ms. Two initial medium snapshot/restore p95 comparison warnings did not
+reproduce in a paired 100-sample run; their medians remained close to baseline.
+The large scenario still exceeds several advisory budgets, including evaluation,
+encoding/restoration, unchanged-save comparison, and coalesced requests.
+
 ## Workloads
 
 | Case | Rooms | Robots | Registry entities | Vacancy samples per room |

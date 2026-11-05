@@ -8,7 +8,8 @@ candidates; dispatch remains a separate checkpointed transaction.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -123,6 +124,7 @@ class ApplicationPolicyMixin:
     _ready_since: dict[str, datetime]
     _ready_confirmation_timers: dict[str, Callable[[], None]]
     _room_evaluations: dict[str, RoomEvaluation]
+    _planning_forecasts: dict[tuple[str, datetime, float], Forecast] | None = None
 
     if TYPE_CHECKING:
 
@@ -537,9 +539,54 @@ class ApplicationPolicyMixin:
         estimate = self._duration_estimate(room, operation, passes, robot_id)
         return estimate.safe_minutes, estimate.sample_count
 
+    def _forecast_scope(self) -> AbstractContextManager[None]:
+        """Reuse forecasts only in a synchronous, fixed-observation planning pass."""
+
+        @contextmanager
+        def scope() -> Iterator[None]:
+            self._planning_forecasts = {}
+            try:
+                yield
+            finally:
+                # Never retain forecasts across a dispatch await or later command.
+                self._planning_forecasts = None
+
+        return scope()
+
+    def _routine_cleaning_jobs(self) -> list[ActiveJob]:
+        """Preserve house-wide observation checkpoints without reconciling holds."""
+
+        if (
+            self.state.robot_holds
+            or self.state.robot_faults
+            or self.state.room_faults
+            or self.state.room_recoveries
+        ):
+            return []
+        robots = {item.registry_id: item for item in self.discovery.robots.values()}
+        jobs = []
+        for registry_id, active in self.state.active_jobs.items():
+            if active is None:
+                continue
+            robot = robots.get(registry_id)
+            observed = self.hass.states.get(robot.entity_id) if robot else None
+            if (
+                not active.seen_cleaning
+                or active.phase != JobPhase.CLEANING
+                or observed is None
+                or observed.state != "cleaning"
+            ):
+                return []
+            jobs.append(active)
+        return jobs
+
     def _forecast(
         self, room: DiscoveredRoom, now: datetime, duration_minutes: float
     ) -> Forecast:
+        cache = self._planning_forecasts
+        key = (room.area_id, now, duration_minutes)
+        if cache is not None and key in cache:
+            return cache[key]
         detail = self._room_data(room.area_id)
         if detail.occupancy_source == "no_sensor":
             return Forecast(True, 1.0, "no-sensor policy")
@@ -548,7 +595,7 @@ class ApplicationPolicyMixin:
             for sample in detail.occupancy_samples
         ]
         settings = self._room_settings(room)
-        return forecast_vacancy(
+        forecast = forecast_vacancy(
             samples,
             _local(now),
             _local(detail.unoccupied_since) if detail.unoccupied_since else None,
@@ -559,6 +606,9 @@ class ApplicationPolicyMixin:
             fallback_enabled=settings.vacancy_fallback_enabled,
             fallback_minutes=settings.vacancy_fallback_minutes,
         )
+        if cache is not None:
+            cache[key] = forecast
+        return forecast
 
     def _vacancy_diagnostic(
         self, room: DiscoveredRoom, now: datetime, duration_minutes: float

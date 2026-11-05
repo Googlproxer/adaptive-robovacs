@@ -7,7 +7,7 @@ import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType, SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 from custom_components.adaptive_robovacs.adapters.base import AdapterEntityEvidence
 from custom_components.adaptive_robovacs.application import SchedulerApplication
@@ -488,7 +488,7 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_save_is_disabled_only_in_storage_safe_mode(self) -> None:
         app = state_application()
         await app._async_save()
-        app.storage.async_save.assert_awaited_once_with(app.state)
+        app.storage.async_save.assert_awaited_once_with(app.state, payload=ANY)
 
         app._storage_safe_mode = True
         await app._async_save()
@@ -505,7 +505,7 @@ class ApplicationStateTests(unittest.IsolatedAsyncioTestCase):
 
         app.state.global_settings.party_mode = True
         await app._async_save()
-        app.storage.async_save.assert_awaited_once_with(app.state)
+        app.storage.async_save.assert_awaited_once_with(app.state, payload=ANY)
 
         await app._async_save(force=True)
         self.assertEqual(app.storage.async_save.await_count, 2)

@@ -13,6 +13,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from ..commands import (
+    CommandResult,
     EvaluateCommand,
     ObservedManualCleanCommand,
     RefreshDiscoveryCommand,
@@ -242,6 +243,16 @@ class ApplicationEventsMixin:
                     new_state=new_value,
                     changed_at=(new_state.last_changed if new_state else None),
                     native_timer_minutes=native_timer_minutes,
+                    previous_native_timer_minutes=(
+                        cleaning_timer_minutes(
+                            old_value,
+                            old_state.attributes.get("unit_of_measurement", "min"),
+                        )
+                        if timer_entity
+                        and old_state is not None
+                        and not change.refresh_discovery
+                        else None
+                    ),
                 ),
                 capability_changed=change.refresh_discovery,
             )
@@ -255,7 +266,13 @@ class ApplicationEventsMixin:
     ) -> None:
         """Apply ordered transition effects, then request one settled evaluation."""
 
-        await self.async_execute(command)
+        result = await self.async_execute(command)
+        if (
+            not capability_changed
+            and isinstance(result, CommandResult)
+            and result.as_response().get("telemetry_only")
+        ):
+            return
         if capability_changed:
             await self.async_execute(RefreshDiscoveryCommand("capability-options"))
         # Allow callbacks from the same HA event burst to enqueue their cheap

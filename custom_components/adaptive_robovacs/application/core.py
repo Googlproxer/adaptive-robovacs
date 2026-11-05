@@ -54,6 +54,7 @@ from ..commands import (
     WaterConfirmationResponseCommand,
 )
 from ..const import (
+    CLEANING_PROGRESS_EVALUATION_INTERVAL,
     DOMAIN,
     SIGNAL_DISCOVERY_UPDATED,
     STARTUP_STATE_SETTLE_DELAY,
@@ -75,6 +76,7 @@ from ..models import (
     fault_can_retry,
     fault_retry_delay,
     native_timer_progress_observed,
+    routine_cleaning_timer_progress,
 )
 from ..notifications import NotificationService
 from ..observations import HomeAssistantObserver
@@ -404,6 +406,7 @@ class SchedulerApplication(
                 old_state=old_state,
                 new_state=new_state,
                 native_timer_minutes=native_timer_minutes,
+                previous_native_timer_minutes=previous_native_timer_minutes,
             ):
                 if native_timer_minutes is not None:
                     async with self._lock:
@@ -411,6 +414,7 @@ class SchedulerApplication(
                             if robot.profile.cleaning_time_entity_id != entity_id:
                                 continue
                             active = self.state.active_jobs.get(robot.registry_id)
+                            changed = False
                             if (
                                 active is not None
                                 and active.seen_cleaning
@@ -420,7 +424,40 @@ class SchedulerApplication(
                                 )
                             ):
                                 active.native_timer_progress_seen = True
+                                changed = True
+                            now = _now()
+                            progress_jobs = self._routine_cleaning_jobs()
+                            evaluated = self.state.evaluation.last_evaluation_at
+                            telemetry_only = bool(
+                                active is not None
+                                and any(job is active for job in progress_jobs)
+                                and sum(
+                                    item.profile.cleaning_time_entity_id == entity_id
+                                    for item in self.discovery.robots.values()
+                                )
+                                == 1
+                                and entity_id
+                                not in robot.adapter_capabilities.watched_entity_ids
+                                and entity_id != robot.profile.battery_entity_id
+                                and evaluated is not None
+                                and timedelta(0)
+                                <= now - evaluated
+                                < CLEANING_PROGRESS_EVALUATION_INTERVAL
+                                and routine_cleaning_timer_progress(
+                                    previous_native_timer_minutes, native_timer_minutes
+                                )
+                            )
+                            if telemetry_only:
+                                for job in progress_jobs:
+                                    job.last_observed_at = now
+                                changed = True
+                            if changed:
                                 await self._async_save()
+                            if telemetry_only:
+                                self.metrics.state_events["telemetry_only"] += 1
+                                return CommandResult.from_mapping(
+                                    {"telemetry_only": True}
+                                )
                 if old_state != new_state:
                     water_observation_changed = False
                     for robot in self.discovery.robots.values():
@@ -664,12 +701,18 @@ class SchedulerApplication(
         for listener in tuple(self._listeners):
             listener(snapshot)
 
-    def _durable_fingerprint(self, state: SchedulerState | None = None) -> str:
+    def _durable_fingerprint(
+        self,
+        state: SchedulerState | None = None,
+        *,
+        payload: dict[str, object] | None = None,
+    ) -> str:
         """Hash only restart-relevant state, excluding transient previews."""
 
-        payload = (state or self.state).encode()
-        payload.pop("evaluation", None)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        if payload is None:
+            payload = (state or self.state).to_store()
+        durable = {key: value for key, value in payload.items() if key != "evaluation"}
+        encoded = json.dumps(durable, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
     async def _async_save(self, *, force: bool = False) -> None:
@@ -684,11 +727,12 @@ class SchedulerApplication(
         if self._storage_safe_mode:
             self.metrics.storage_skips += 1
             return False
-        fingerprint = self._durable_fingerprint(state)
+        payload = state.to_store()
+        fingerprint = self._durable_fingerprint(payload=payload)
         if not force and fingerprint == self._last_durable_fingerprint:
             self.metrics.storage_skips += 1
             return False
-        await self.storage.async_save(state)
+        await self.storage.async_save(state, payload=payload)
         self._last_durable_fingerprint = fingerprint
         self.metrics.storage_writes += 1
         return True

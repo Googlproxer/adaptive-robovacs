@@ -6,7 +6,7 @@ import asyncio
 import unittest
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 from homeassistant.helpers import entity_registry as er
 
@@ -227,6 +227,7 @@ class ApplicationEventTests(unittest.IsolatedAsyncioTestCase):
         command = app.async_execute.await_args_list[0].args[0]
         self.assertIsInstance(command, StateChangedCommand)
         self.assertEqual(command.native_timer_minutes, 1.5)
+        self.assertEqual(command.previous_native_timer_minutes, 0)
 
     async def test_entity_registry_filters_noise_and_own_entities(self) -> None:
         app, tasks = event_application()
@@ -295,7 +296,7 @@ class ApplicationEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.expected_end, NOW + timedelta(minutes=12.5))
         self.assertEqual(job.manual_context_id, "context-1")
         self.assertEqual(app.state.audit.manual_events[-1].outcome, "requested")
-        app.storage.async_save.assert_awaited_once_with(app.state)
+        app.storage.async_save.assert_awaited_once_with(app.state, payload=ANY)
         app._notify_listeners.assert_called_once()
         self.assertIsInstance(app.async_execute.await_args.args[0], EvaluateCommand)
 
@@ -395,7 +396,7 @@ class PublicCommandApplicationTests(unittest.IsolatedAsyncioTestCase):
             app.state.audit.manual_events[-1].robot_registry_id,
             "registry-alpha",
         )
-        app.storage.async_save.assert_awaited_once_with(app.state)
+        app.storage.async_save.assert_awaited_once_with(app.state, payload=ANY)
         app._notify_listeners.assert_called_once()
 
     async def test_legacy_deferral_review_and_selective_clear(self) -> None:
@@ -412,7 +413,7 @@ class PublicCommandApplicationTests(unittest.IsolatedAsyncioTestCase):
         result = await app.async_clear_legacy_deferrals(["missing", "study"])
         self.assertEqual(result["cleared"], ["study:vacuum"])
         self.assertIn("mop", detail.deferrals)
-        app.storage.async_save.assert_awaited_once_with(app.state)
+        app.storage.async_save.assert_awaited_once_with(app.state, payload=ANY)
         app._notify_listeners.assert_called_once()
 
         app.storage.async_save.reset_mock()
@@ -483,7 +484,7 @@ class PublicCommandApplicationTests(unittest.IsolatedAsyncioTestCase):
         app._set_held_job_phase.assert_called_once_with(
             "vacuum.alpha", job, "cancelling", NOW
         )
-        app.storage.async_save.assert_awaited_once_with(app.state)
+        app.storage.async_save.assert_awaited_once_with(app.state, payload=ANY)
 
         app = state_application()
         app.gateway = SimpleNamespace(async_return_to_dock=AsyncMock())

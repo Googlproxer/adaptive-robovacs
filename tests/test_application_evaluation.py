@@ -106,6 +106,16 @@ async def evaluate_at_times(app: SchedulerApplication, *times):
 
 
 class EvaluationPreviewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_forecast_cache_is_discarded_before_any_persistence_await(self):
+        app = evaluation_application()
+
+        async def update_opportunities(*_args, **_kwargs):
+            self.assertIsNone(app._planning_forecasts)
+
+        app._async_update_opportunities = AsyncMock(side_effect=update_opportunities)
+        await evaluate(app, dry_run=True)
+        app._async_update_opportunities.assert_awaited_once()
+
     async def test_closing_and_shutdown_never_observe_or_dispatch(self) -> None:
         app = evaluation_application()
         app._closing = True

@@ -5,6 +5,22 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.20.2] - 2026-11-05
+
+### Changed
+
+- Keep routine native cleaning progress durable without replanning and publishing
+  the entire house on every timer increment. Full timer-driven evaluation resumes
+  on the next increment after 30 seconds; safety events, timer resets, and
+  uncertain jobs remain immediate.
+- Compare detached durable payloads before validation and validate actual writes
+  once. Retain forced checkpoints, Store validation, and write-failure retryability.
+- Reuse repeated vacancy forecasts within synchronous planning and skip unchanged
+  per-entity public values while retaining entity IDs and dashboard attributes.
+- Add an offline active-clean and sequential timer benchmark to performance CI.
+
+Detailed notes: [`docs/releases/v1.20.2.md`](docs/releases/v1.20.2.md).
+
 ## [1.20.1] - 2026-11-01
 
 ### Fixed
