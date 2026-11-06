@@ -50,6 +50,60 @@ The integration's own Store contracts exercise real atomic disk writes.
 
 ## Active-cleaning benchmark
 
+### Robot occupancy attribution: v1.21.0
+
+A matched 100-sample comparison on 2026-11-06 (ten warmups, Windows,
+Python 3.14.9, Core 2026.11.0) used frozen v1.20.3 production source and the
+v1.21.0 working tree with the same unchanged cleaning benchmark and fixture:
+
+| Workload | v1.20.3 median / p95 | v1.21.0 median / p95 |
+| --- | ---: | ---: |
+| Active evaluation | 38.23 / 79.11 ms | 36.67 / 68.34 ms |
+| 16 sequential timer updates | 211.35 / 243.60 ms | 203.16 / 250.92 ms |
+
+Both p95 budgets and baseline regression checks pass. The timer batch retained
+zero evaluations, 16 Store writes, zero publications, and zero decodes of
+unchanged occupancy samples. Its p95 increased 3.0%; this result preserves the
+v1.20.3 persistence improvement without establishing a live server CPU saving.
+
+The separate attribution benchmark uses 17 rooms, two robots, 4,000 entities
+and 800 vacancy samples per room. A 100-sample run with five warmups measured:
+
+| Normalized input | Median | p95 |
+| --- | ---: | ---: |
+| Same-room location heartbeat | 0.039 ms | 0.048 ms |
+| Robot pulse checkpoint | 0.105 ms | 0.115 ms |
+
+Heartbeat invariants require zero additional evaluations, Store saves or
+publications. Pulse invariants require the original vacancy anchor and learned
+samples to remain unchanged. These timings cover FIFO input handling and
+checkpoint preparation; they exclude native map parsing, device I/O, full
+schedule evaluation and disk latency. Meaningful room changes still request
+normal evaluation and persistence. No added polling or native refresh is used.
+Visits are bounded, transit routes are cached, and one deadline timer handles
+classification and traffic expiry.
+
+```powershell
+& $testPython -m benchmarks.occupancy --samples 100 --warmup 5 `
+  --output .venv/robot-occupancy-evidence/occupancy.json --check
+```
+
+The complete backend suite (25 samples, five warmups) passed all behavioural
+invariants. Small and medium cases met every advisory budget. The 96-room large
+case still exceeded budgets for evaluation, snapshot building, encoding,
+restoration, unchanged saves and coalesced requests; their p95 values were
+174.35, 25.57, 136.79, 126.71, 74.72 and 183.99 ms respectively. These are
+absolute workload limits, not a matched before/after attribution comparison.
+The Chromium dashboard suite (50 samples, five warmups) passed its invariants
+and all CPU budgets; the largest p95 was 7.10 ms for a 100-update large-case burst.
+
+Final local validation passed 689 pytest tests with 95.51% combined branch/line
+coverage, the same 689 unittest tests, Ruff formatting/lint, strict mypy,
+top-level and recursive compilation, 45 dashboard unit tests and ten browser
+regressions across Chromium, Android emulation and WebKit (two desktop touch
+tests intentionally skipped). Dashboard and icon copies remain byte-identical.
+No live deployment or device acceptance is included in these results.
+
 ### Persistence follow-up: v1.20.3
 
 A matched 50-sample comparison (five warmups, Python 3.14.9, Core 2026.11.0)

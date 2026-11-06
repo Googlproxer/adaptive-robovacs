@@ -16,7 +16,8 @@ automatically on supported versions.
 - Builds managed multi-room runs after learning battery consumption. It forecasts
   complete room programs in queue order and retains a 20% battery reserve plus
   an estimation margin. Pending rooms that become blocked stay due; the current
-  room can finish its configured program despite its own occupancy changes.
+  room can finish its configured program despite robot-attributed detections.
+  Classified human occupancy blocks the next physical stage.
 - Protects rooms from scheduled cleaning beside occupied or only briefly clear
   neighbours using the saved floor-plan links. Each room offers Off, Night only,
   or Always; the shared adjacency night interval defaults to 23:00–09:00 and is
@@ -44,14 +45,15 @@ automatically on supported versions.
 
 ## Installation
 
-Requires Home Assistant 2026.11.0 or newer. Version 1.20.3 reuses unchanged
-occupancy history during progress saves and encodes atomic checkpoints off the
-event loop, with explicit write acknowledgement and recovery safeguards.
+Requires Home Assistant 2026.11.0 or newer. Version 1.21.0 attributes short
+occupancy episodes to observed robot movements using registry area mappings,
+preserving human-vacancy timers and keeping robot pulses out of learning.
+It retains v1.20.3's cached history validation and atomic progress checkpoints.
 Water warnings, sparse dock-water snapshots,
 consolidated water notifications, automatic wash verification, managed multi-room
 queues, and learned battery budgeting remain available.
-See the [release notes](docs/releases/v1.20.3.md) and
-[migration guide](docs/migration-v1.20.0.md) before activation.
+See the [release notes](docs/releases/v1.21.0.md) and
+[migration guide](docs/migration-v1.21.0.md) before activation.
 
 1. Copy `custom_components/adaptive_robovacs` to your Home Assistant
    `custom_components` directory and restart Home Assistant.
@@ -101,6 +103,15 @@ with extensive poor historical samples; it never bypasses occupancy or other
 dispatch gates. Each observed neighbour uses its own settings.
 
 ## Safety
+
+Supported Roborock location observations use the vacuum's numeric map/segment
+identity and saved Home Assistant area mapping, never native room names. A
+matching robot pulse preserves the earlier vacancy anchor. New occupancy stays
+blocked while attribution is pending; established human occupancy and occupancy
+persisting beyond the robot's departure grace remain blocking. The bounded
+policy deliberately accepts that a person arriving and leaving with a robot
+may be missed. Raw sensor states remain available. See the
+[attribution policy](docs/migration-v1.21.0.md) for timing and fallback behavior.
 
 The integration does not stop a clean already in progress if a room becomes
 occupied. It never dispatches work in observe-only mode or Party Mode. By

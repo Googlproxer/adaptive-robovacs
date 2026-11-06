@@ -47,6 +47,7 @@ from custom_components.adaptive_robovacs.models import (
     CleaningProgram,
     EvaluationCause,
     EvaluationMode,
+    OccupancyAttribution,
     WaterReadiness,
 )
 from custom_components.adaptive_robovacs.runtime_data import (
@@ -532,6 +533,39 @@ class HomeAssistantSurfaceTests(unittest.IsolatedAsyncioTestCase):
         application.begin_shutdown()
         await application.async_shutdown()
         self.assertTrue(application._shutdown_started())
+
+    async def test_restart_censors_pending_robot_attribution_and_its_clear_anchor(self):
+        from custom_components.adaptive_robovacs.state import SchedulerState
+
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            entry_id="entry-attribution-restore",
+            data={"observe_only": True},
+        )
+        entry.add_to_hass(self.hass)
+        application = SchedulerApplication(self.hass, entry)
+        restored = SchedulerState.create(entry.data)
+        restored.ensure_room("synthetic-room", is_bedroom=False)
+        history = restored.room_history["synthetic-room"]
+        history.unoccupied_since = datetime.now(UTC) - timedelta(hours=2)
+        history.occupancy_attribution = OccupancyAttribution(
+            raw="occupied",
+            classification="pending",
+            started_at=datetime.now(UTC),
+            vacancy_since=history.unoccupied_since,
+        )
+        application.storage.async_load = AsyncMock(
+            return_value=SimpleNamespace(
+                state=restored, migrated=False, safe_mode=False
+            )
+        )
+        await application.async_initialize()
+        self.assertIsNone(history.occupancy_attribution)
+        self.assertIsNone(history.unoccupied_since)
+        self.assertEqual(history.occupancy, "unresolved")
+        self.assertEqual(history.occupancy_samples, [])
+        application.begin_shutdown()
+        await application.async_shutdown()
 
     async def test_real_registry_discovery_builds_and_assigns_a_preview(self) -> None:
         entry = MockConfigEntry(

@@ -455,6 +455,12 @@ class RoomView:
     adjacency_reason: str | None = None
     occupancy_sensitivity_minutes: int = 0
     vacancy_fallback_enabled: bool = True
+    raw_occupancy: str | None = None
+    occupancy_classification: str = "unfiltered"
+    occupancy_evidence: str = "none"
+    occupancy_robot_entity_ids: tuple[str, ...] = ()
+    occupancy_episode_started_at: datetime | None = None
+    occupancy_attribution_until: datetime | None = field(default=None, compare=False)
     vacancy_fallback_minutes: int = 0
     selected_robot_id: str | None = None
     decision_evaluated_at: datetime | None = field(default=None, compare=False)

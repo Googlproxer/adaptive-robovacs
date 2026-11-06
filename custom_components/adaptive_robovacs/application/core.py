@@ -40,6 +40,7 @@ from ..commands import (
     RefreshDiscoveryCommand,
     ResetIncompatibleSettingsCommand,
     ResetUnsafeStoreCommand,
+    RobotLocationCommand,
     SaveFloorPlanCommand,
     SchedulerCommand,
     SchedulerCommandResult,
@@ -104,6 +105,7 @@ from .events import ApplicationEventsMixin
 from .faults import ApplicationFaultMixin
 from .jobs import ApplicationJobsMixin
 from .legacy_map import ApplicationLegacyMapMixin
+from .occupancy import ApplicationOccupancyMixin
 from .opportunities import ApplicationOpportunityMixin
 from .policy import ApplicationPolicyMixin
 from .recovery import ApplicationRecoveryMixin
@@ -164,6 +166,7 @@ class SchedulerApplication(
     ApplicationDispatchMixin,
     ApplicationActionsMixin,
     ApplicationPolicyMixin,
+    ApplicationOccupancyMixin,
     ApplicationFaultMixin,
     ApplicationRecoveryMixin,
     ApplicationRoomRecoveryMixin,
@@ -187,6 +190,7 @@ class SchedulerApplication(
         self._listeners: set[EntityListener] = set()
         self._snapshot: IntegrationSnapshot | None = None
         self._room_evaluations: dict[str, RoomEvaluation] = {}
+        self._occupancy_deadlines: dict[str, datetime] = {}
         self._last_opportunity_observation: datetime | None = None
         self._schedule_clock = SchedulePresentationClock(hass, self._publish_snapshot)
         self._discovery_signal_pending = False
@@ -261,6 +265,7 @@ class SchedulerApplication(
         for history in self.state.room_history.values():
             history.unoccupied_since = None
             history.occupancy = "unresolved"
+            history.occupancy_attribution = None
         self._last_durable_fingerprint = self._durable_fingerprint()
         migrated = loaded.migrated
         if loaded.safe_mode:
@@ -327,6 +332,7 @@ class SchedulerApplication(
         self._stop_dock_water_timer()
         self._schedule_clock.stop()
         await self.lifecycle.async_stop()
+        self.observer.close_locations()
         await self.commands.async_close()
         while self._recovery_timers:
             self._recovery_timers.popitem()[1]()
@@ -360,6 +366,7 @@ class SchedulerApplication(
         self._stop_dock_water_timer()
         self._schedule_clock.stop()
         self.lifecycle.stop_adjacency_timer()
+        self.lifecycle.update_occupancy_deadline(None)
         self.commands.begin_shutdown()
 
     def cancel_shutdown(self) -> None:
@@ -369,6 +376,7 @@ class SchedulerApplication(
         self.commands.cancel_shutdown()
         self._sync_dock_water_checks(_now())
         self.lifecycle.update_adjacency_window()
+        self._sync_occupancy_deadline()
         if self._snapshot is not None:
             self._schedule_clock.update(self._snapshot)
 
@@ -388,6 +396,9 @@ class SchedulerApplication(
         """Dispatch a command after the queue has serialized it."""
 
         match command:
+            case RobotLocationCommand(location=location):
+                changed = self._receive_robot_location(location, _now())
+                return CommandResult.from_mapping({"telemetry_only": not changed})
             case CheckDockWaterCommand():
                 await self._async_check_dock_water()
             case EvaluateCommand():
@@ -411,6 +422,14 @@ class SchedulerApplication(
                 native_timer_minutes=native_timer_minutes,
                 previous_native_timer_minutes=previous_native_timer_minutes,
             ):
+                if command.occupancy_observations:
+                    observed_at = command.changed_at or _now()
+                    for area, observation in command.occupancy_observations:
+                        if area in self.observer.attribution_areas:
+                            self._observe_attributed_room(
+                                self.discovery.rooms[area], observation, observed_at
+                            )
+                    self._sync_occupancy_deadline()
                 if native_timer_minutes is not None:
                     async with self._lock:
                         for robot in self.discovery.robots.values():
@@ -792,8 +811,28 @@ class SchedulerApplication(
                 detail.unoccupied_since = None
                 detail.occupancy = "unresolved"
                 detail.occupancy_source = "sources_changed"
+                detail.occupancy_attribution = None
+                self._occupancy_deadlines.pop(room.area_id, None)
             detail.source_fingerprint = fingerprint
             self._room_settings(room)
+
+        prior_attribution_areas = self.observer.attribution_areas
+        self.observer.bind_locations(self.discovery, self._on_robot_location, _now)
+        for area in prior_attribution_areas - self.observer.attribution_areas:
+            if area in self.state.room_history:
+                history = self.state.room_history[area]
+                history.occupancy_attribution = None
+                history.occupancy = "unresolved"
+                history.unoccupied_since = None
+                history.occupancy_learning_version = 1
+            self._occupancy_deadlines.pop(area, None)
+        self.observer.set_location_topology(self.discovery, self.state.floor_plan.edges)
+        for area in self.observer.attribution_areas:
+            history = self.state.room_history[area]
+            if history.occupancy_learning_version < 2:
+                history.occupancy_samples.clear()
+                history.occupancy_attribution = None
+                history.occupancy_learning_version = 2
 
         for robot in self.discovery.robots.values():
             self._robot_settings(robot)

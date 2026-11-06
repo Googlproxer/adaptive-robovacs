@@ -195,6 +195,7 @@ def state_application() -> SchedulerApplication:
     app._watch_entity_ids = set()
     app._watch_capability_entity_ids = set()
     app._watch_specifications = {}
+    app._occupancy_deadlines = {}
     app._start_confirmation_timers = {}
     app._ready_confirmation_timers = {}
     app._ready_since = {}

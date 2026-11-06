@@ -2087,5 +2087,193 @@ class RoomRecoveryDecisionTests(unittest.TestCase):
             )
 
 
+class RobotOccupancyDecisionTests(unittest.TestCase):
+    now = datetime(2026, 1, 5, 10, tzinfo=UTC)
+
+    def clear(self, minutes=140):
+        return models.OccupancyAttribution(
+            raw="unoccupied", vacancy_since=self.now - timedelta(minutes=minutes)
+        )
+
+    def visit(self, *, entered=None, observed=None, left=None, robot="robot-a"):
+        return models.RobotVisit(
+            robot,
+            "room-b",
+            entered or self.now,
+            observed or self.now,
+            left,
+        )
+
+    def test_robot_pulse_preserves_anchor_and_does_not_complete_training_spell(self):
+        previous = self.clear()
+        visit = self.visit()
+        occupied = models.attribute_occupancy(previous, "occupied", self.now, (visit,))
+        self.assertEqual(occupied.occupancy, "unoccupied")
+        self.assertEqual(occupied.checkpoint.classification, "robot")
+        self.assertEqual(occupied.clear_since, previous.vacancy_since)
+        cleared = models.attribute_occupancy(
+            occupied.checkpoint,
+            "unoccupied",
+            self.now + timedelta(seconds=30),
+            (visit,),
+        )
+        self.assertIsNone(cleared.sample)
+        self.assertEqual(cleared.clear_since, previous.vacancy_since)
+        self.assertEqual(previous.raw, "unoccupied")
+
+    def test_return_pulse_no_longer_loses_complete_program_window(self):
+        anchor = self.now - timedelta(minutes=139)
+        pulse = self.now - timedelta(minutes=70)
+        previous = models.OccupancyAttribution(raw="unoccupied", vacancy_since=anchor)
+        visit = self.visit(
+            entered=pulse, observed=pulse, left=pulse + timedelta(seconds=30)
+        )
+        occupied = models.attribute_occupancy(previous, "occupied", pulse, (visit,))
+        cleared = models.attribute_occupancy(
+            occupied.checkpoint, "unoccupied", pulse + timedelta(seconds=30), (visit,)
+        )
+        forecast = models.forecast_vacancy(
+            [], self.now, cleared.clear_since, 107, 80, 6
+        )
+        self.assertTrue(forecast.allowed)
+        self.assertIsNone(cleared.sample)
+        for offset in (10, 20, 30):
+            at = self.now + timedelta(minutes=offset)
+            visit = self.visit(entered=at, observed=at)
+            occupied = models.attribute_occupancy(
+                cleared.checkpoint, "occupied", at, (visit,)
+            )
+            cleared = models.attribute_occupancy(
+                occupied.checkpoint, "unoccupied", at + timedelta(seconds=30), (visit,)
+            )
+            self.assertEqual(cleared.clear_since, anchor)
+            self.assertIsNone(cleared.sample)
+
+    def test_pending_blocks_until_late_location_explains_an_already_cleared_pulse(self):
+        previous = self.clear()
+        pending = models.attribute_occupancy(previous, "occupied", self.now, ())
+        self.assertEqual(pending.occupancy, "occupied")
+        self.assertEqual(pending.deadline, self.now + timedelta(seconds=120))
+        cleared = models.attribute_occupancy(
+            pending.checkpoint, "unoccupied", self.now + timedelta(seconds=30), ()
+        )
+        late = self.visit(
+            entered=self.now + timedelta(seconds=100),
+            observed=self.now + timedelta(seconds=100),
+            left=self.now + timedelta(seconds=100),
+        )
+        resolved = models.attribute_occupancy(
+            cleared.checkpoint, "unoccupied", self.now + timedelta(seconds=105), (late,)
+        )
+        self.assertEqual(resolved.clear_since, previous.vacancy_since)
+        self.assertIsNone(resolved.sample)
+
+    def test_unmatched_human_pulse_ends_sample_at_original_onset_exactly_once(self):
+        previous = self.clear()
+        pending = models.attribute_occupancy(previous, "occupied", self.now, ())
+        human = models.attribute_occupancy(
+            pending.checkpoint, "occupied", self.now + timedelta(seconds=120), ()
+        )
+        self.assertEqual(human.sample, (previous.vacancy_since, self.now))
+        self.assertIsNone(human.clear_since)
+        repeat = models.attribute_occupancy(
+            human.checkpoint,
+            "occupied",
+            self.now + timedelta(minutes=5),
+            (self.visit(),),
+        )
+        self.assertEqual(repeat.occupancy, "occupied")
+        self.assertIsNone(repeat.sample)
+        off = models.attribute_occupancy(
+            repeat.checkpoint, "unoccupied", self.now + timedelta(minutes=6), ()
+        )
+        self.assertEqual(off.clear_since, self.now + timedelta(minutes=6))
+
+    def test_unmatched_short_pulse_is_resolved_without_extending_its_clear_time(self):
+        pending = models.attribute_occupancy(self.clear(), "occupied", self.now, ())
+        ended = self.now + timedelta(seconds=20)
+        off = models.attribute_occupancy(pending.checkpoint, "unoccupied", ended, ())
+        final = models.attribute_occupancy(
+            off.checkpoint, "unoccupied", self.now + timedelta(seconds=120), ()
+        )
+        self.assertEqual(final.clear_since, ended)
+        self.assertIsNotNone(final.sample)
+
+    def test_preexisting_human_presence_cannot_be_erased_by_robot_arrival(self):
+        pending = models.attribute_occupancy(self.clear(), "occupied", self.now, ())
+        human = models.attribute_occupancy(
+            pending.checkpoint, "occupied", self.now + timedelta(minutes=3), ()
+        )
+        at = self.now + timedelta(minutes=4)
+        result = models.attribute_occupancy(
+            human.checkpoint, "occupied", at, (self.visit(entered=at, observed=at),)
+        )
+        self.assertEqual(result.occupancy, "occupied")
+        self.assertEqual(result.checkpoint.classification, "human")
+
+    def test_persistent_post_departure_occupancy_is_censored_and_latched(self):
+        visit = self.visit(left=self.now)
+        robot = models.attribute_occupancy(self.clear(), "occupied", self.now, (visit,))
+        human = models.attribute_occupancy(
+            robot.checkpoint, "occupied", self.now + timedelta(seconds=180), (visit,)
+        )
+        self.assertEqual(human.occupancy, "occupied")
+        self.assertEqual(human.checkpoint.classification, "uncertain")
+        self.assertIsNone(human.sample)
+        off = models.attribute_occupancy(
+            human.checkpoint, "unoccupied", self.now + timedelta(minutes=4), ()
+        )
+        self.assertEqual(off.clear_since, self.now + timedelta(minutes=4))
+
+    def test_stale_locations_unknown_sources_and_missing_clear_checkpoint_never_clear(
+        self,
+    ):
+        stale = self.visit(
+            entered=self.now - timedelta(minutes=4),
+            observed=self.now - timedelta(minutes=4),
+        )
+        result = models.attribute_occupancy(
+            self.clear(), "occupied", self.now, (stale,)
+        )
+        self.assertEqual(result.occupancy, "occupied")
+        for raw in ("unresolved", "unavailable"):
+            with self.subTest(raw=raw):
+                result = models.attribute_occupancy(self.clear(), raw, self.now, ())
+                self.assertEqual(result.occupancy, "unresolved")
+                self.assertIsNone(result.clear_since)
+                self.assertIsNone(result.sample)
+        result = models.attribute_occupancy(
+            models.OccupancyAttribution(), "occupied", self.now, (self.visit(),)
+        )
+        self.assertEqual(result.occupancy, "occupied")
+        clear = models.attribute_occupancy(
+            models.OccupancyAttribution(), "unoccupied", self.now, ()
+        )
+        self.assertEqual(clear.clear_since, self.now)
+
+    def test_overlapping_robots_and_later_radar_changes_share_one_episode(self):
+        first = self.visit(left=self.now)
+        second = self.visit(robot="robot-b", observed=self.now + timedelta(seconds=60))
+        on = models.attribute_occupancy(
+            self.clear(), "occupied", self.now, (first, second)
+        )
+        self.assertEqual(on.checkpoint.robot_ids, ("robot-a", "robot-b"))
+        continued = models.attribute_occupancy(
+            on.checkpoint,
+            "occupied",
+            self.now + timedelta(seconds=190),
+            (first, second),
+        )
+        self.assertEqual(continued.occupancy, "unoccupied")
+        self.assertEqual(continued.checkpoint.robot_ids, ("robot-b",))
+
+    def test_only_unavoidable_mapped_intermediate_rooms_are_inferred(self):
+        edges = (("a", "b"), ("b", "c"), ("c", "d"), ("b", "d"))
+        self.assertEqual(models.mandatory_transit_areas("a", "d", edges), ("b",))
+        self.assertEqual(models.mandatory_transit_areas("b", "d", edges), ())
+        self.assertEqual(models.mandatory_transit_areas("a", "missing", edges), ())
+        self.assertEqual(models.mandatory_transit_areas("a", "a", edges), ())
+
+
 if __name__ == "__main__":
     unittest.main()

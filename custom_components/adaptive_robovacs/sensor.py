@@ -369,6 +369,18 @@ class _RoomStatusSensor(AdaptiveEntity, SensorEntity):
             "operation": candidate.operation.value if candidate else None,
             "forecast_confidence": room.vacancy_diagnostic.forecast_confidence,
             "occupancy": room.occupancy,
+            "raw_occupancy": room.raw_occupancy or room.occupancy,
+            "occupancy_classification": room.occupancy_classification,
+            "occupancy_evidence": room.occupancy_evidence,
+            "occupancy_robot_entity_ids": list(room.occupancy_robot_entity_ids),
+            "occupancy_episode_started_at": (
+                room.occupancy_episode_started_at.isoformat()
+                if room.occupancy_episode_started_at
+                else None
+            ),
+            "occupancy_attribution_until": room.occupancy_attribution_until.isoformat()
+            if room.occupancy_attribution_until
+            else None,
             "adjacency_mode": room.adjacency_mode.value,
             "adjacency_active": room.adjacency_active,
             "adjacency_blocked": room.adjacency_reason is not None,
@@ -500,7 +512,8 @@ class _RoomOccupancySensor(AdaptiveEntity, SensorEntity):
 
     @property
     def native_value(self) -> str:
-        return self.room_view(self.area_id).occupancy
+        room = self.room_view(self.area_id)
+        return room.raw_occupancy or room.occupancy
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -511,6 +524,9 @@ class _RoomOccupancySensor(AdaptiveEntity, SensorEntity):
             "radars": list(room.radar_entity_ids),
             "motion_fallbacks": list(room.fallback_entity_ids),
             "unavailable_radars": room.unavailable_radars,
+            "effective_occupancy": room.occupancy,
+            "classification": room.occupancy_classification,
+            "robot_entity_ids": list(room.occupancy_robot_entity_ids),
         }
 
 

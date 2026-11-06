@@ -408,6 +408,19 @@ test("water evidence wraps, identifies the stored report, and opens status detai
   row.disconnectedCallback();
 });
 
+test("occupancy evidence distinguishes robot, pending and human presence", () => {
+  const EvidenceRow = elements.get("adaptive-robovacs-evidence-row");
+  for (const [classification, expected] of [
+    ["robot", /Robot detected; vacancy preserved/],
+    ["pending", /Checking robot presence; new cleaning blocked/],
+    ["human", /Human occupancy blocks cleaning/],
+    ["uncertain", /Occupancy attribution uncertain/],
+  ]) {
+    const state = { state: "Overdue", attributes: { occupancy_classification: classification } };
+    assert.match(EvidenceRow.display(state, 0, "occupancy"), expected);
+  }
+});
+
 test("vacuum card ignores retired map controls and never offers map actions", () => {
   const states = baseStates();
   for (const role of [

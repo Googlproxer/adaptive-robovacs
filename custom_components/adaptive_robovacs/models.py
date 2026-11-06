@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from itertools import pairwise
@@ -363,6 +363,198 @@ class RoomObservation:
     occupancy: str
     source: str
     unavailable_radars: int = 0
+
+
+ROBOT_OCCUPANCY_MATCH = timedelta(seconds=120)
+ROBOT_OCCUPANCY_TAIL = timedelta(seconds=180)
+ROBOT_LOCATION_MAX_AGE = timedelta(seconds=180)
+
+
+@dataclass(frozen=True, slots=True)
+class RobotLocation:
+    """One adapter-resolved location; native map identifiers never escape I/O."""
+
+    robot_id: str
+    area_id: str | None
+    observed_at: datetime
+    moving: bool
+    valid: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class RobotVisit:
+    """A bounded observed or unavoidable transit through a registered area."""
+
+    robot_id: str
+    area_id: str
+    entered_at: datetime
+    observed_at: datetime
+    left_at: datetime | None = None
+    inferred: bool = False
+
+    @property
+    def expires_at(self) -> datetime:
+        expires = self.observed_at + ROBOT_LOCATION_MAX_AGE
+        return (
+            min(expires, self.left_at + ROBOT_OCCUPANCY_TAIL)
+            if self.left_at
+            else expires
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class OccupancyAttribution:
+    """Small durable checkpoint for an occupancy episode awaiting attribution."""
+
+    raw: str = "unresolved"
+    classification: str = "clear"
+    started_at: datetime | None = None
+    cleared_at: datetime | None = None
+    vacancy_since: datetime | None = None
+    robot_ids: tuple[str, ...] = ()
+    evidence: str = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class AttributedOccupancy:
+    """Pure occupancy result, including at most one completed training spell."""
+
+    checkpoint: OccupancyAttribution
+    occupancy: str
+    clear_since: datetime | None
+    sample: tuple[datetime, datetime] | None = None
+    deadline: datetime | None = None
+
+
+def attribute_occupancy(
+    previous: OccupancyAttribution,
+    raw: str,
+    now: datetime,
+    visits: tuple[RobotVisit, ...],
+) -> AttributedOccupancy:
+    """Delay learning until a pulse is human, robot-only, or censored.
+
+    Human presence latches until clear. A robot may explain a new episode, never
+    erase an established human one. Mixed/stale episodes are not training data.
+    """
+
+    if raw not in {"occupied", "unoccupied"}:
+        checkpoint = OccupancyAttribution(raw="unresolved", classification="uncertain")
+        return AttributedOccupancy(checkpoint, "unresolved", None)
+    episode = previous
+    if episode.started_at is None:
+        if raw == "unoccupied":
+            checkpoint = OccupancyAttribution(
+                raw=raw, vacancy_since=episode.vacancy_since or now
+            )
+            return AttributedOccupancy(checkpoint, raw, checkpoint.vacancy_since)
+        episode = OccupancyAttribution(
+            raw=raw,
+            classification="pending" if episode.vacancy_since is not None else "human",
+            started_at=now,
+            vacancy_since=episode.vacancy_since,
+        )
+    elif raw != episode.raw:
+        episode = replace(
+            episode, raw=raw, cleared_at=now if raw == "unoccupied" else None
+        )
+    assert episode.started_at is not None
+    if episode.classification in {"human", "uncertain"}:
+        if raw == "occupied":
+            return AttributedOccupancy(episode, "occupied", None)
+        checkpoint = OccupancyAttribution(
+            raw=raw, vacancy_since=episode.cleared_at or now
+        )
+        return AttributedOccupancy(checkpoint, raw, checkpoint.vacancy_since)
+    evidence_at = episode.cleared_at or now
+    matches = tuple(
+        visit
+        for visit in visits
+        if visit.entered_at - ROBOT_OCCUPANCY_MATCH <= episode.started_at
+        and (
+            visit.left_at is None
+            or episode.started_at <= visit.left_at + ROBOT_OCCUPANCY_TAIL
+        )
+        and visit.entered_at <= evidence_at + ROBOT_OCCUPANCY_MATCH
+        and evidence_at < visit.expires_at
+    )
+    if matches:
+        robots = tuple(sorted({visit.robot_id for visit in matches}))
+        if raw == "unoccupied":
+            checkpoint = OccupancyAttribution(
+                raw=raw, vacancy_since=episode.vacancy_since or episode.cleared_at
+            )
+            return AttributedOccupancy(checkpoint, raw, checkpoint.vacancy_since)
+        checkpoint = replace(
+            episode,
+            classification="robot",
+            robot_ids=robots,
+            evidence="inferred_transit"
+            if all(visit.inferred for visit in matches)
+            else "observed_location",
+        )
+        return AttributedOccupancy(
+            checkpoint,
+            "unoccupied",
+            episode.vacancy_since,
+            deadline=max(visit.expires_at for visit in matches),
+        )
+    if (
+        episode.classification == "pending"
+        and now < episode.started_at + ROBOT_OCCUPANCY_MATCH
+    ):
+        return AttributedOccupancy(
+            episode,
+            "occupied",
+            episode.vacancy_since,
+            deadline=episode.started_at + ROBOT_OCCUPANCY_MATCH,
+        )
+    # A stale location or an occupancy that outlasts a robot is mixed evidence.
+    # Censor it; do not retroactively call the robot's arrival a human arrival.
+    sample = (
+        (episode.vacancy_since, episode.started_at)
+        if episode.classification == "pending" and episode.vacancy_since is not None
+        else None
+    )
+    if raw == "unoccupied":
+        checkpoint = OccupancyAttribution(raw=raw, vacancy_since=episode.cleared_at)
+        return AttributedOccupancy(checkpoint, raw, checkpoint.vacancy_since, sample)
+    checkpoint = replace(
+        episode,
+        classification="human" if episode.classification == "pending" else "uncertain",
+        vacancy_since=None,
+    )
+    return AttributedOccupancy(checkpoint, "occupied", None, sample)
+
+
+def mandatory_transit_areas(
+    start: str, end: str, edges: tuple[tuple[str, str], ...]
+) -> tuple[str, ...]:
+    """Find unavoidable intermediate areas without choosing a guessed route."""
+
+    graph: dict[str, set[str]] = {}
+    for first, second in edges:
+        graph.setdefault(first, set()).add(second)
+        graph.setdefault(second, set()).add(first)
+
+    def reachable(excluded: str | None) -> bool:
+        pending = [start]
+        seen = {start, excluded}
+        while pending:
+            current = pending.pop()
+            if current == end:
+                return True
+            for neighbor in graph.get(current, ()):
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    pending.append(neighbor)
+        return False
+
+    if start == end or not reachable(None):
+        return ()
+    return tuple(
+        sorted(area for area in graph.keys() - {start, end} if not reachable(area))
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,6 +5,27 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.21.0] - 2026-11-06
+
+- Attribute short robot-aligned occupancy episodes through registry mappings,
+  preserve vacancy anchors, and exclude robot/mixed episodes from learning.
+- Keep established human occupancy, stale/ambiguous evidence and final physical
+  traffic checks blocking. Expose raw and effective occupancy separately.
+- Add Store schema 22 migration, passive native map listeners, bounded deadline
+  wakeups and attribution performance regressions while retaining v1.20.3 caches.
+
+Detailed notes: [`docs/releases/v1.21.0.md`](docs/releases/v1.21.0.md).
+
+## [1.20.3] - 2026-11-06
+
+- Reuse validated occupancy history and fingerprints during progress checkpoints;
+  retain detached payloads, full restore validation and every required write.
+- Encode atomic Store writes off the event loop; acknowledge completed writes,
+  drain cancelled writes and preserve failed-write retryability.
+- Validate directly on Home Assistant Core 2026.11.0.
+
+Detailed notes: [`docs/releases/v1.20.3.md`](docs/releases/v1.20.3.md).
+
 ## [1.20.2] - 2026-11-05
 
 ### Changed

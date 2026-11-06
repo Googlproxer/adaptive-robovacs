@@ -10,7 +10,13 @@ from typing import Any
 from homeassistant.core import Context
 
 from .floor_plans import FloorPlanWrite
-from .models import EvaluationCause, EvaluationMode, ManualCleanRequest
+from .models import (
+    EvaluationCause,
+    EvaluationMode,
+    ManualCleanRequest,
+    RobotLocation,
+    RoomObservation,
+)
 from .state import FrozenJsonObject
 
 
@@ -47,6 +53,14 @@ class StateChangedCommand:
     changed_at: datetime | None
     native_timer_minutes: float | None = None
     previous_native_timer_minutes: float | None = None
+    occupancy_observations: tuple[tuple[str, RoomObservation], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RobotLocationCommand:
+    """One immutable, normalized native map observation in event order."""
+
+    location: RobotLocation
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +268,7 @@ type SchedulerCommand = (
     EvaluateCommand
     | CheckDockWaterCommand
     | StateChangedCommand
+    | RobotLocationCommand
     | RefreshDiscoveryCommand
     | SetGlobalCommand
     | SetRoomSettingCommand

@@ -194,6 +194,12 @@ def room_view(area_id: str = "study", name: str = "Study"):
         effective_profiles=(),
         latest_manual_request=None,
         occupancy="unoccupied",
+        raw_occupancy=None,
+        occupancy_classification="unfiltered",
+        occupancy_evidence="none",
+        occupancy_robot_entity_ids=(),
+        occupancy_episode_started_at=None,
+        occupancy_attribution_until=None,
         occupancy_source="radar",
         unavailable_radars=0,
         last_cleaned=WHEN - timedelta(days=2),
@@ -287,6 +293,29 @@ class _Coordinator:
 
 
 class EntityPresentationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_robot_attribution_preserves_raw_occupancy_entity_state(self):
+        room = self.coordinator.data.rooms[0]
+        room.raw_occupancy = "occupied"
+        room.occupancy = "unoccupied"
+        room.occupancy_classification = "robot"
+        room.occupancy_robot_entity_ids = ("vacuum.alpha",)
+        room.occupancy_episode_started_at = WHEN
+        room.occupancy_attribution_until = WHEN + timedelta(minutes=3)
+        occupancy = sensor._RoomOccupancySensor(self.coordinator, "study", "Study")
+        status = sensor._RoomStatusSensor(self.coordinator, "study", "Study")
+        self.assertEqual(occupancy.native_value, "occupied")
+        self.assertEqual(
+            occupancy.extra_state_attributes["effective_occupancy"], "unoccupied"
+        )
+        self.assertEqual(status.extra_state_attributes["raw_occupancy"], "occupied")
+        self.assertEqual(
+            status.extra_state_attributes["occupancy_classification"], "robot"
+        )
+        self.assertEqual(
+            status.extra_state_attributes["occupancy_episode_started_at"],
+            WHEN.isoformat(),
+        )
+
     def test_run_and_learning_attributes_keep_queued_rooms_separate_from_activity(self):
         from custom_components.adaptive_robovacs.snapshots import CleaningRunView
 

@@ -103,6 +103,16 @@ class ApplicationRunsMixin:
         )
 
     def _run_occupancy_exempt(self, area_id: str) -> bool:
+        history = self.state.room_history.get(area_id)
+        if (
+            history
+            and history.occupancy_attribution
+            and history.occupancy != "unoccupied"
+        ):
+            # The old current-program exemption explains the robot's own
+            # detections. It must never override classified human/unknown
+            # occupancy when starting the next physical stage.
+            return False
         reservation = self._run_for_room(area_id)
         occurrence = self.state.occurrences.get(area_id)
         return bool(

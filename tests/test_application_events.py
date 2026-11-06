@@ -332,6 +332,8 @@ class ApplicationEventTests(unittest.IsolatedAsyncioTestCase):
         old_sample = SimpleNamespace(started_at=NOW - timedelta(days=100), minutes=5)
         history.occupancy_samples = [old_sample]
         app.observer = SimpleNamespace(
+            locations=app.observer.locations,
+            attribution_areas=frozenset(),
             house=Mock(
                 return_value=HouseObservation(
                     rooms=(

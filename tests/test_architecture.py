@@ -133,6 +133,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 "ApplicationDispatchMixin",
                 "ApplicationActionsMixin",
                 "ApplicationPolicyMixin",
+                "ApplicationOccupancyMixin",
                 "ApplicationFaultMixin",
                 "ApplicationRecoveryMixin",
                 "ApplicationRoomRecoveryMixin",

@@ -62,6 +62,8 @@ class SchedulerRuntime:
         self._night_deadline: datetime | None = None
         self._opportunity_cancel: Callable[[], None] | None = None
         self._opportunity_deadline: datetime | None = None
+        self._occupancy_cancel: Callable[[], None] | None = None
+        self._occupancy_deadline: datetime | None = None
         self._running = False
 
     async def async_start(self, settle_until: datetime) -> None:
@@ -256,6 +258,7 @@ class SchedulerRuntime:
         """Unsubscribe every external callback exactly once."""
 
         self.update_opportunity_deadline(None)
+        self.update_occupancy_deadline(None)
         self._running = False
         if self._state_cancel:
             self._state_cancel()
@@ -263,3 +266,36 @@ class SchedulerRuntime:
         self.stop_adjacency_timer()
         while self._unsubscribers:
             self._unsubscribers.pop()()
+
+    @callback
+    def update_occupancy_deadline(self, deadline: datetime | None) -> None:
+        """One attribution wakeup; no periodic classification polling."""
+        if not self._running or deadline == self._occupancy_deadline:
+            return
+        if self._occupancy_cancel:
+            self._occupancy_cancel()
+            self._occupancy_cancel = None
+        self._occupancy_deadline = deadline
+        if deadline is None:
+            return
+
+        @callback
+        def reached(_timestamp: datetime) -> None:
+            if not self._running or self._occupancy_deadline != deadline:
+                return
+            self._occupancy_cancel = None
+            self._occupancy_deadline = None
+            self._create_task(
+                self._submit(
+                    EvaluateCommand(
+                        mode=EvaluationMode.DISPATCH,
+                        cause=EvaluationCause.STATE_CHANGE,
+                        detail="occupancy-boundary",
+                        coalesce=True,
+                    )
+                )
+            )
+
+        self._occupancy_cancel = async_track_point_in_utc_time(
+            self._hass, reached, deadline
+        )

@@ -767,6 +767,27 @@ def room_view(source: ProjectionSource, area_id: str) -> RoomView:
         effective_profiles=tuple(effective_profiles),
         latest_manual_request=_manual_audit_view(source, latest_manual),
         occupancy=detail.occupancy,
+        raw_occupancy=detail.occupancy_attribution.raw
+        if detail.occupancy_attribution
+        else None,
+        occupancy_classification=detail.occupancy_attribution.classification
+        if detail.occupancy_attribution
+        else "unfiltered",
+        occupancy_evidence=detail.occupancy_attribution.evidence
+        if detail.occupancy_attribution
+        else "none",
+        occupancy_robot_entity_ids=tuple(
+            robot.entity_id
+            for robot in source.discovery.robots.values()
+            if detail.occupancy_attribution
+            and robot.registry_id in detail.occupancy_attribution.robot_ids
+        ),
+        occupancy_episode_started_at=detail.occupancy_attribution.started_at
+        if detail.occupancy_attribution
+        else None,
+        occupancy_attribution_until=getattr(source, "_occupancy_deadlines", {}).get(
+            area_id
+        ),
         occupancy_source=detail.occupancy_source,
         unavailable_radars=detail.unavailable_radars,
         last_cleaned=detail.cleaning_completed_at,

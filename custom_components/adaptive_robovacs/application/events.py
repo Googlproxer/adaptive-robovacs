@@ -17,6 +17,7 @@ from ..commands import (
     EvaluateCommand,
     ObservedManualCleanCommand,
     RefreshDiscoveryCommand,
+    RobotLocationCommand,
     SchedulerCommand,
     SchedulerCommandResult,
     StateChangedCommand,
@@ -31,9 +32,11 @@ from ..models import (
     JobPhase,
     JobSource,
     ManualCleanRequest,
+    RobotLocation,
     cleaning_timer_minutes,
     parse_manual_clean_request,
 )
+from ..observations import HomeAssistantObserver
 from ..state import ActiveJob, ManualAuditRecord, SchedulerState
 from ..watch import WatchSpecification
 
@@ -56,6 +59,28 @@ class ApplicationEventsMixin:
     _watch_capability_entity_ids: set[str]
     _watch_specifications: dict[str, WatchSpecification]
     metrics: RuntimeMetrics
+    observer: HomeAssistantObserver
+    _closing: bool
+
+    @callback
+    def _on_robot_location(self, location: RobotLocation) -> None:
+        if not self._closing:
+            self._async_create_task(self._async_handle_robot_location(location))
+
+    async def _async_handle_robot_location(self, location: RobotLocation) -> None:
+        result = await self.async_execute(RobotLocationCommand(location))
+        if isinstance(result, CommandResult) and result.as_response().get(
+            "telemetry_only"
+        ):
+            return
+        await self.async_execute(
+            EvaluateCommand(
+                mode=EvaluationMode.DISPATCH,
+                cause=EvaluationCause.STATE_CHANGE,
+                detail="robot-location",
+                coalesce=True,
+            )
+        )
 
     if TYPE_CHECKING:
 
@@ -253,6 +278,9 @@ class ApplicationEventsMixin:
                         and not change.refresh_discovery
                         else None
                     ),
+                    occupancy_observations=self.observer.capture_occupancy(
+                        entity_id, new_value
+                    ),
                 ),
                 capability_changed=change.refresh_discovery,
             )
@@ -303,18 +331,19 @@ class ApplicationEventsMixin:
             entity_id = event.data.get("entity_id") or event.data.get("old_entity_id")
             if not isinstance(entity_id, str):
                 return
-            if action == "update" and changes.isdisjoint(
-                {
-                    "area_id",
-                    "device_id",
-                    "disabled_by",
-                    "entity_id",
-                    "labels",
-                    "name",
-                    "original_name",
-                    "platform",
-                }
-            ):
+            relevant = {
+                "area_id",
+                "device_id",
+                "disabled_by",
+                "entity_id",
+                "labels",
+                "name",
+                "original_name",
+                "platform",
+            }
+            if entity_id in self.discovery.robots:
+                relevant.add("options")
+            if action == "update" and changes.isdisjoint(relevant):
                 return
             registry_entry = er.async_get(self.hass).async_get(entity_id)
             if registry_entry and registry_entry.platform == DOMAIN:

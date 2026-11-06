@@ -39,6 +39,7 @@ from .models import (
     FaultCode,
     JobPhase,
     JobSource,
+    OccupancyAttribution,
     OccurrenceSource,
     RequestedCleaningProfile,
     ResolvedCleaningProfile,
@@ -50,7 +51,7 @@ from .models import (
 )
 from .run_state import BatteryUsageSample, CleaningRun
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 RETIRED_GLOBAL_SETTINGS = frozenset({"hall_start", "hall_end"})
 DAILY_WINDOW_VERSION = 1
 
@@ -848,6 +849,71 @@ class OccupancyTransition:
         return {"at": _iso(self.at), "vacancy_seconds": self.vacancy_seconds}
 
 
+def decode_occupancy_learning_version(value: object) -> int:
+    if type(value) is not int or value not in {1, 2}:
+        raise StateSchemaError("invalid occupancy learning version")
+    return value
+
+
+def decode_occupancy_attribution(value: object) -> OccupancyAttribution | None:
+    if value is None:
+        return None
+    record = _mapping(value, "occupancy attribution")
+    raw = record.get("raw")
+    classification = record.get("classification")
+    robots = record.get("robot_ids", [])
+    evidence = record.get("evidence", "none")
+    if (
+        not isinstance(raw, str)
+        or raw not in {"occupied", "unoccupied", "unresolved"}
+        or not isinstance(classification, str)
+        or classification not in {"clear", "pending", "robot", "human", "uncertain"}
+        or not isinstance(robots, list)
+        or len(robots) > 128
+        or any(not isinstance(robot, str) or not robot for robot in robots)
+        or not isinstance(evidence, str)
+        or evidence not in {"none", "observed_location", "inferred_transit"}
+    ):
+        raise StateSchemaError("invalid occupancy attribution")
+    started, cleared, vacancy = (
+        _opportunity_time(record.get(key))
+        for key in ("started_at", "cleared_at", "vacancy_since")
+    )
+    if (
+        (classification in {"pending", "robot", "human"} and started is None)
+        or (classification == "clear" and started is not None)
+        or (classification == "robot" and not robots)
+        or (cleared is not None and (started is None or cleared < started))
+        or (started is not None and vacancy is not None and vacancy > started)
+    ):
+        raise StateSchemaError("inconsistent occupancy attribution")
+    return OccupancyAttribution(
+        str(raw),
+        str(classification),
+        started,
+        cleared,
+        vacancy,
+        tuple(robots),
+        evidence,
+    )
+
+
+def encode_occupancy_attribution(
+    value: OccupancyAttribution | None,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        "raw": value.raw,
+        "classification": value.classification,
+        "started_at": _iso(value.started_at),
+        "cleared_at": _iso(value.cleared_at),
+        "vacancy_since": _iso(value.vacancy_since),
+        "robot_ids": list(value.robot_ids),
+        "evidence": value.evidence,
+    }
+
+
 @dataclass(slots=True)
 class RoomHistory:
     cleaning_completed_at: datetime | None = None
@@ -869,6 +935,8 @@ class RoomHistory:
     last_stage_summary: str | None = None
     opportunity: RoomOpportunity = field(default_factory=RoomOpportunity)
     occupancy_transitions: list[OccupancyTransition] = field(default_factory=list)
+    occupancy_attribution: OccupancyAttribution | None = None
+    occupancy_learning_version: int = 1
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> RoomHistory:
@@ -953,6 +1021,12 @@ class RoomHistory:
                 OccupancyTransition.from_mapping(_mapping(item, "transition"))
                 for item in transitions
             ],
+            occupancy_attribution=decode_occupancy_attribution(
+                value.get("occupancy_attribution")
+            ),
+            occupancy_learning_version=decode_occupancy_learning_version(
+                value.get("occupancy_learning_version", 1)
+            ),
         )
 
     def to_store(
@@ -991,6 +1065,10 @@ class RoomHistory:
             "occupancy_transitions": [
                 item.to_store() for item in self.occupancy_transitions
             ],
+            "occupancy_attribution": encode_occupancy_attribution(
+                self.occupancy_attribution
+            ),
+            "occupancy_learning_version": self.occupancy_learning_version,
         }
 
     def to_runtime(self) -> dict[str, object]:
@@ -2283,14 +2361,15 @@ class SchedulerState:
             isinstance(schema_version, bool) or not isinstance(schema_version, int)
         ):
             raise StateSchemaError("schema_version must be an integer")
-        if schema_version in {16, 17, 18, 19, 20}:
+        if schema_version in {16, 17, 18, 19, 20, 21}:
             # Validate the full former current schema before any permissive
             # legacy parsing. Retired settings remain ignored by that validator.
             upgraded = {**data, "schema_version": SCHEMA_VERSION}
-            if schema_version != 20:
+            if schema_version < 20:
                 upgraded["cleaning_runs"] = {}
                 upgraded["battery_samples"] = {}
-            upgraded["robot_water"] = {}
+            if schema_version < 21:
+                upgraded["robot_water"] = {}
             if schema_version == 16:
                 upgraded["room_recoveries"] = {}
             cls._validate_current_schema(upgraded)

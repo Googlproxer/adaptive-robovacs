@@ -432,8 +432,14 @@ class AdaptiveRoboVacsEvidenceRow extends AdaptiveRoboVacsStatusRow {
     }
     if (kind === "occupancy") {
       const quality = attrs.occupancy_quality || {};
+      const attribution = {
+        robot: "Robot detected; vacancy preserved. ",
+        pending: "Checking robot presence; new cleaning blocked. ",
+        human: "Human occupancy blocks cleaning. ",
+        uncertain: "Occupancy attribution uncertain; using normal occupancy blocking. ",
+      }[attrs.occupancy_classification] || "";
       const median = Number.isFinite(quality.median_vacancy_seconds) ? `${Math.round(quality.median_vacancy_seconds)} s` : "unavailable";
-      return `Last 24 h: ${quality.transitions_24h || 0}${quality.transition_limit_reached ? "+" : ""} observed changes; ${quality.subminute_vacancies_24h || 0} vacancies under 1 min; median ${median}. ${quality.retained_forecast_samples || 0} retained forecast samples (56 days).`;
+      return `${attribution}Last 24 h: ${quality.transitions_24h || 0}${quality.transition_limit_reached ? "+" : ""} observed changes; ${quality.subminute_vacancies_24h || 0} vacancies under 1 min; median ${median}. ${quality.retained_forecast_samples || 0} retained forecast samples (56 days).`;
     }
     const decisions = attrs.robot_eligibility || [];
     const evidence = decisions.filter((item) => item.vacancy_diagnostic);
