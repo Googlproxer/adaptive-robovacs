@@ -23,10 +23,6 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.helpers import label_registry as lr
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_test_home_assistant,
-)
 
 from benchmarks.report import environment, finish, parser, statistics_ms
 from benchmarks.setup_case import cases
@@ -52,6 +48,10 @@ from custom_components.adaptive_robovacs.state import (
     SchedulerState,
 )
 from custom_components.adaptive_robovacs.watch import WatchSpecification
+from tests.ha_runtime import (
+    MockConfigEntry,
+    async_test_home_assistant,
+)
 
 NOW = datetime(2026, 10, 26, 12, tzinfo=UTC)
 ENTRY_DATA = {"observe_only": True, "forecast_confidence": 75}

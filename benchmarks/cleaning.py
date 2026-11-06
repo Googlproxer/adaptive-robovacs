@@ -13,7 +13,6 @@ from types import MappingProxyType
 from unittest.mock import patch
 
 from homeassistant.core import Event, State
-from pytest_homeassistant_custom_component.common import async_test_home_assistant
 
 from benchmarks.__main__ import NOW, measure, synthetic_application
 from benchmarks.report import environment, finish, positive_int
@@ -25,8 +24,9 @@ from custom_components.adaptive_robovacs.models import (
     JobPhase,
     JobSource,
 )
-from custom_components.adaptive_robovacs.state import ActiveJob
+from custom_components.adaptive_robovacs.state import ActiveJob, OccupancySample
 from custom_components.adaptive_robovacs.watch import WatchSpecification
+from tests.ha_runtime import async_test_home_assistant
 
 
 async def run(args) -> int:
@@ -120,6 +120,7 @@ async def run(args) -> int:
                         writes = app.storage.writes
                         publications = app.metrics.snapshot_publications
                         for _ in range(16):
+                            checkpoint_writes = app.storage.writes
                             old = (clock[0] - NOW).total_seconds() / 60 + 2
                             clock[0] += timedelta(seconds=1)
                             new = (clock[0] - NOW).total_seconds() / 60 + 2
@@ -135,6 +136,9 @@ async def run(args) -> int:
                             )
                             app._on_state_changed(event)
                             await tasks.pop()
+                            assert app.storage.writes > checkpoint_writes, (
+                                "a timer update lost its durable checkpoint"
+                            )
                         assert app.state.active_jobs[robot.registry_id] is job
                         assert job.last_observed_at == clock[0]
                         assert app.storage.writes - writes >= 16, (
@@ -163,6 +167,21 @@ async def run(args) -> int:
                         }
                         if operation is telemetry:
                             row["last_invocation_counts"] = telemetry.counts
+                            # Outside timing: the real validation boundary must
+                            # not reconstruct unchanged vacancy history again.
+                            with patch.object(
+                                OccupancySample,
+                                "from_mapping",
+                                wraps=OccupancySample.from_mapping,
+                            ) as decode:
+                                await telemetry()
+                                assert decode.call_count == 0, (
+                                    "timer progress decoded unchanged occupancy history"
+                                )
+                                row["unchanged_occupancy_samples_decoded"] = (
+                                    decode.call_count
+                                )
+                            row["history_cache_verification_counts"] = telemetry.counts
                         results.append(row)
                 finally:
                     app.begin_shutdown()

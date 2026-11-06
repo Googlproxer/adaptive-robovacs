@@ -32,6 +32,7 @@ from custom_components.adaptive_robovacs.models import (
     WaterReadiness,
 )
 from custom_components.adaptive_robovacs.observations import HomeAssistantObserver
+from custom_components.adaptive_robovacs.persistence import StatePersistenceEncoder
 from custom_components.adaptive_robovacs.state import (
     ActiveJob,
     CleaningOccurrence,
@@ -186,6 +187,7 @@ def state_application() -> SchedulerApplication:
     app._storage_safe_mode = False
     app.metrics = RuntimeMetrics()
     app._last_durable_fingerprint = None
+    app._persistence_encoder = StatePersistenceEncoder()
     app._closing = False
     app._identity_migrated = False
     app._discovery_signal_pending = False

@@ -955,7 +955,9 @@ class RoomHistory:
             ],
         )
 
-    def to_store(self) -> dict[str, object]:
+    def to_store(
+        self, *, occupancy_samples: list[dict[str, object]] | None = None
+    ) -> dict[str, object]:
         return {
             "cleaning_completed_at": _iso(self.cleaning_completed_at),
             "vacuum_completed_at": _iso(self.vacuum_completed_at),
@@ -972,9 +974,11 @@ class RoomHistory:
             "occupancy_source": self.occupancy_source,
             "unavailable_radars": self.unavailable_radars,
             "unoccupied_since": _iso(self.unoccupied_since),
-            "occupancy_samples": [
-                sample.to_store() for sample in self.occupancy_samples
-            ],
+            "occupancy_samples": (
+                occupancy_samples
+                if occupancy_samples is not None
+                else [sample.to_store() for sample in self.occupancy_samples]
+            ),
             "source_fingerprint": self.source_fingerprint,
             "map_status": self.map_status,
             "map_error": self.map_error,
@@ -2153,6 +2157,85 @@ class FloorPlanState:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ValidatedOccupancySamples:
+    """Immutable wire values already checked by the complete history parser."""
+
+    rows: tuple[tuple[str | None, int], ...]
+
+    @classmethod
+    def from_samples(cls, samples: list[OccupancySample]) -> ValidatedOccupancySamples:
+        rows = tuple((_iso(sample.started_at), sample.minutes) for sample in samples)
+        result = cls(rows)
+        RoomHistory.from_mapping({"occupancy_samples": result.to_store()})
+        return result
+
+    def to_store(self) -> list[dict[str, object]]:
+        """Return a fresh payload; callers can never mutate the certificate."""
+
+        return [{"start": start, "minutes": minutes} for start, minutes in self.rows]
+
+    def matches(self, value: object) -> bool:
+        return (
+            isinstance(value, list)
+            and len(value) == len(self.rows)
+            and all(
+                isinstance(record, dict)
+                and len(record) == 2
+                and record.get("start") == start
+                and type(record.get("minutes")) is type(minutes)
+                and record.get("minutes") == minutes
+                for record, (start, minutes) in zip(value, self.rows, strict=True)
+            )
+        )
+
+
+class PreparedStorePayload(dict[str, object]):
+    """Detached Store payload with private, immutable validation evidence.
+
+    Metadata is not part of the dictionary or the persisted schema. Exact value
+    comparisons reject stale evidence, including mutations of a prepared payload.
+    """
+
+    def __init__(
+        self,
+        payload: dict[str, object],
+        occupancy: Mapping[str, ValidatedOccupancySamples],
+        fingerprints: Mapping[str, str],
+    ) -> None:
+        super().__init__(payload)
+        self._occupancy = dict(occupancy)
+        self._fingerprints = dict(fingerprints)
+
+    def history_for_validation(
+        self, area_id: str, record: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        certificate = self._occupancy.get(area_id)
+        if certificate is not None and certificate.matches(
+            record.get("occupancy_samples")
+        ):
+            return {**record, "occupancy_samples": []}
+        return record
+
+    def fingerprint_data(self) -> dict[str, object]:
+        """Hash cached history digests along with every other durable field."""
+
+        durable = {key: value for key, value in self.items() if key != "evaluation"}
+        histories = _mapping(self.get("room_history"), "room_history")
+        compact: dict[str, object] = {}
+        for area_id, value in histories.items():
+            record = _mapping(value, "room history")
+            certificate = self._occupancy.get(area_id)
+            compact[area_id] = (
+                {**record, "occupancy_samples": self._fingerprints[area_id]}
+                if certificate is not None
+                and certificate.matches(record.get("occupancy_samples"))
+                else record
+            )
+        durable["room_history"] = compact
+        return durable
+
+
 @dataclass(slots=True)
 class SchedulerState:
     global_settings: GlobalSettings
@@ -2339,7 +2422,13 @@ class SchedulerState:
                 value, RobotSettings.defaults(False)
             ),
         )
-        require_records("room_history", room_history, RoomHistory.from_mapping)
+        for area_id, value in room_history.items():
+            record = _mapping(value, f"room_history.{area_id}")
+            RoomHistory.from_mapping(
+                data.history_for_validation(area_id, record)
+                if isinstance(data, PreparedStorePayload)
+                else record
+            )
         require_records(
             "active_jobs",
             active_jobs,
@@ -2913,7 +3002,11 @@ class SchedulerState:
             RobotSettings.defaults(supports_mopping),
         )
 
-    def to_store(self) -> dict[str, object]:
+    def to_store(
+        self,
+        *,
+        occupancy_samples: Mapping[str, list[dict[str, object]]] | None = None,
+    ) -> dict[str, object]:
         return {
             "schema_version": SCHEMA_VERSION,
             "robot_water": {
@@ -2937,7 +3030,13 @@ class SchedulerState:
                 for entity_id, settings in self.robot_settings.items()
             },
             "room_history": {
-                area_id: history.to_store()
+                area_id: history.to_store(
+                    occupancy_samples=(
+                        occupancy_samples.get(area_id)
+                        if occupancy_samples is not None
+                        else None
+                    )
+                )
                 for area_id, history in self.room_history.items()
             },
             "active_jobs": {

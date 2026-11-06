@@ -129,7 +129,6 @@ class CleaningProgressTests(unittest.IsolatedAsyncioTestCase):
     ):
         app, _ = progress_application()
         await app._async_save()
-        fingerprint = app._last_durable_fingerprint
         checkpoint = app.storage._store.payload
         with (
             patch.object(
@@ -139,7 +138,7 @@ class CleaningProgressTests(unittest.IsolatedAsyncioTestCase):
         ):
             await progress(app)
         self.assertIs(app.storage._store.payload, checkpoint)
-        self.assertEqual(app._last_durable_fingerprint, fingerprint)
+        self.assertIsNone(app._last_durable_fingerprint)
         app.async_evaluate.assert_not_awaited()
         await progress(app, seconds=2)
         restored, _ = SchedulerState.from_store(app.storage._store.payload, ENTRY_DATA)
@@ -301,7 +300,7 @@ class PreparedPersistenceTests(unittest.IsolatedAsyncioTestCase):
         app.state.room_settings["study"].expected_minutes = -1
         with self.assertRaises(ValueError):
             await app._async_save()
-        self.assertEqual(app._last_durable_fingerprint, fingerprint)
+        self.assertIsNone(app._last_durable_fingerprint)
         self.assertEqual(len(app.storage._store.saved), 1)
         app.state.room_settings["study"].expected_minutes = 25
         original = app.storage._store.async_save
@@ -312,7 +311,7 @@ class PreparedPersistenceTests(unittest.IsolatedAsyncioTestCase):
             self.assertRaises(OSError),
         ):
             await app._async_save()
-        self.assertEqual(app._last_durable_fingerprint, fingerprint)
+        self.assertIsNone(app._last_durable_fingerprint)
         app.storage._store.async_save = original
         await app._async_save()
         self.assertNotEqual(app._last_durable_fingerprint, fingerprint)

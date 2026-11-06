@@ -21,10 +21,6 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.helpers import issue_registry as ir
 from probatio.error import MultipleInvalid
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_test_home_assistant,
-)
 
 from custom_components.adaptive_robovacs.application import SchedulerApplication
 from custom_components.adaptive_robovacs.commands import (
@@ -62,6 +58,10 @@ from custom_components.adaptive_robovacs.snapshots import (
     FrozenJsonObject,
     IntegrationSnapshot,
     SchedulerView,
+)
+from tests.ha_runtime import (
+    MockConfigEntry,
+    async_test_home_assistant,
 )
 
 

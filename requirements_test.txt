@@ -1,11 +1,7 @@
-# Install the first five packages normally, then install pytest with
-# ``--no-deps``. pytest-homeassistant-custom-component 0.13.375 declares an
-# exact pytest 9.0.3 dependency, while the v1.20.0 acceptance environment is
-# pinned to pytest 9.2.0. CI documents and verifies that intentional two-phase
-# setup.
-homeassistant==2026.10.4
-pytest-homeassistant-custom-component==0.13.375
+# Test directly against the supported Core runtime; isolated test helpers live
+# in tests/ha_runtime.py and do not depend on an older external fixture plugin.
+homeassistant==2026.11.0
 pytest-cov==7.1.0
-ruff==0.17.3
+ruff==0.17.4
 mypy==2.4.1
 pytest==9.2.0

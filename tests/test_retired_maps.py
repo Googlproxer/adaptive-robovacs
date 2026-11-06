@@ -14,10 +14,6 @@ from unittest.mock import AsyncMock, Mock, patch
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_test_home_assistant,
-)
 
 from custom_components.adaptive_robovacs.commands import AcknowledgeRetiredMapCommand
 from custom_components.adaptive_robovacs.const import DOMAIN
@@ -39,6 +35,10 @@ from custom_components.adaptive_robovacs.state import (
     UnresolvedRobotReference,
 )
 from custom_components.adaptive_robovacs.storage import SchedulerStore
+from tests.ha_runtime import (
+    MockConfigEntry,
+    async_test_home_assistant,
+)
 from tests.test_application_state import ENTRY_DATA, NOW, state_application
 from tests.test_ha_integration import _FakeApplication
 

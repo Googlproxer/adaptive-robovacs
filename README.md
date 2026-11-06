@@ -44,12 +44,13 @@ automatically on supported versions.
 
 ## Installation
 
-Requires Home Assistant 2026.10.0 or newer. Version 1.20.2 reduces scheduling,
-persistence, and entity-publication work during cleaning while keeping progress
-checkpoints durable. Water warnings, sparse dock-water snapshots,
+Requires Home Assistant 2026.11.0 or newer. Version 1.20.3 reuses unchanged
+occupancy history during progress saves and encodes atomic checkpoints off the
+event loop, with explicit write acknowledgement and recovery safeguards.
+Water warnings, sparse dock-water snapshots,
 consolidated water notifications, automatic wash verification, managed multi-room
 queues, and learned battery budgeting remain available.
-See the [release notes](docs/releases/v1.20.2.md) and
+See the [release notes](docs/releases/v1.20.3.md) and
 [migration guide](docs/migration-v1.20.0.md) before activation.
 
 1. Copy `custom_components/adaptive_robovacs` to your Home Assistant

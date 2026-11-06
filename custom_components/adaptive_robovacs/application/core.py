@@ -80,6 +80,7 @@ from ..models import (
 )
 from ..notifications import NotificationService
 from ..observations import HomeAssistantObserver
+from ..persistence import StatePersistenceEncoder
 from ..planner import RoomEvaluation
 from ..projections import (
     build_snapshot,
@@ -88,6 +89,7 @@ from ..repair_service import RepairService
 from ..schedule_clock import SchedulePresentationClock
 from ..snapshots import IntegrationSnapshot
 from ..state import (
+    PreparedStorePayload,
     SchedulerState,
     UnresolvedRobotReference,
     migrate_robot_identity,
@@ -178,6 +180,7 @@ class SchedulerApplication(
         self.state = SchedulerState.create(entry.data)
         self.metrics = RuntimeMetrics()
         self._last_durable_fingerprint: str | None = None
+        self._persistence_encoder = StatePersistenceEncoder()
         self._storage_safe_mode = False
         self.discovery = DiscoverySnapshot.empty()
         self._lock = asyncio.Lock()
@@ -710,8 +713,12 @@ class SchedulerApplication(
         """Hash only restart-relevant state, excluding transient previews."""
 
         if payload is None:
-            payload = (state or self.state).to_store()
-        durable = {key: value for key, value in payload.items() if key != "evaluation"}
+            payload = self._persistence_encoder.prepare(state or self.state)
+        durable = (
+            payload.fingerprint_data()
+            if isinstance(payload, PreparedStorePayload)
+            else {key: value for key, value in payload.items() if key != "evaluation"}
+        )
         encoded = json.dumps(durable, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
@@ -727,12 +734,19 @@ class SchedulerApplication(
         if self._storage_safe_mode:
             self.metrics.storage_skips += 1
             return False
-        payload = state.to_store()
+        payload = self._persistence_encoder.prepare(state)
         fingerprint = self._durable_fingerprint(payload=payload)
         if not force and fingerprint == self._last_durable_fingerprint:
             self.metrics.storage_skips += 1
             return False
-        await self.storage.async_save(state, payload=payload)
+        try:
+            await self.storage.async_save(state, payload=payload)
+        except BaseException:
+            # A cancelled/failed write can have reached the filesystem before
+            # acknowledgement. Do not subsequently skip an unchanged current
+            # state after an uncommitted replacement checkpoint.
+            self._last_durable_fingerprint = None
+            raise
         self._last_durable_fingerprint = fingerprint
         self.metrics.storage_writes += 1
         return True

@@ -54,7 +54,7 @@ class SchedulerStoreTests(unittest.IsolatedAsyncioTestCase):
             return backup
 
         with patch(
-            "custom_components.adaptive_robovacs.storage.Store",
+            "custom_components.adaptive_robovacs.storage._CheckpointStore",
             side_effect=make_backup,
         ):
             state, key = await store.async_reset_unsafe_state(ENTRY_DATA)
@@ -74,7 +74,7 @@ class SchedulerStoreTests(unittest.IsolatedAsyncioTestCase):
         backup.async_load = lambda: self._wrong_backup()
         with (
             patch(
-                "custom_components.adaptive_robovacs.storage.Store",
+                "custom_components.adaptive_robovacs.storage._CheckpointStore",
                 return_value=backup,
             ),
             self.assertRaisesRegex(ValueError, "backup could not be verified"),

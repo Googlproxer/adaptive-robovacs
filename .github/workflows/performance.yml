@@ -7,6 +7,7 @@ on:
     paths:
       - custom_components/**
       - benchmarks/**
+      - tests/ha_runtime.py
       - requirements_test.txt
       - requirements_benchmark.txt
       - .github/workflows/performance.yml
@@ -14,6 +15,7 @@ on:
     paths:
       - custom_components/**
       - benchmarks/**
+      - tests/ha_runtime.py
       - requirements_test.txt
       - requirements_benchmark.txt
       - .github/workflows/performance.yml
@@ -37,17 +39,7 @@ jobs:
           cache: pip
       - name: Install the existing pinned test environment and browser tooling
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          import subprocess
-          import sys
-          pins = [line for line in Path("requirements_test.txt").read_text().splitlines()
-                  if line.strip() and not line.startswith("#")]
-          pytest_pin = next(pin for pin in pins if pin.startswith("pytest=="))
-          subprocess.check_call([sys.executable, "-m", "pip", "install",
-                                 *[pin for pin in pins if pin != pytest_pin]])
-          subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-deps", pytest_pin])
-          PY
+          python -m pip install -r requirements_test.txt
           python -m pip install -r requirements_benchmark.txt
           python -m playwright install --with-deps chromium
       - name: Check benchmark tooling

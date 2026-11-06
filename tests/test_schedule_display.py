@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from homeassistant.helpers.template import Template
-from pytest_homeassistant_custom_component.common import async_test_home_assistant
 
 from custom_components.adaptive_robovacs.sensor import _RoomScheduleSensor
+from tests.ha_runtime import async_test_home_assistant
 from tests.test_entities import _Coordinator
 
 TEMPLATE = (

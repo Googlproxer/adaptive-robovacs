@@ -8,9 +8,11 @@ No instrumentation is installed on the server.
 
 ## Run locally
 
-Use the Python environment pinned in `requirements_test.txt`. That file explains
-the two-phase pytest installation needed by the HA test plugin. For example, in
-PowerShell from the repository root:
+Use the Python environment pinned in `requirements_test.txt`. Starting with
+v1.20.3 it targets Core 2026.11.0 directly, using the small repository-owned
+runtime fixture in `tests/ha_runtime.py`. Install the requirements normally;
+no external HA pytest plugin or dependency overrides are needed. For example,
+in PowerShell from the repository root:
 
 ```powershell
 $testPython = '.venv\Scripts\python.exe'
@@ -39,16 +41,46 @@ The initial toolchain check on 2026-10-31 found Home Assistant stable 2026.10.4
 and current compatible repository pins. The local environment was refreshed to
 those pins. CI uses Python 3.14.9; reports record the actual Python, HA, browser,
 platform, architecture, commit, and working-tree status used for each run.
-On Windows, run pytest with `-p no:homeassistant`: the plugin's automatic patch
-module imports Linux-only `fcntl`. The suite's explicit isolated Home Assistant
-context tests still run. Linux CI runs the ordinary plugin-enabled suite.
-
-The 2026-11-05 check found Core 2026.11.0 in the official stable feed, while
-the live Core update entity still offered 2026.10.4. The latest test plugin,
-0.13.375, still requires 2026.10.4 exactly. The compatible test pins therefore
-remain unchanged; the new comparison uses Python 3.14.9 locally as well as in CI.
+The 2026-11-06 check found Core 2026.11.0 running and in the official stable
+feed. Requirements and CI now use that Core version, Python 3.14.9, and Ruff
+0.17.4. The earlier fixture plugin pinned an older Core and is no longer used;
+ordinary pytest works on Windows and Linux. Core registries and config entries
+remain real, while registry persistence is disabled in the isolated fixture.
+The integration's own Store contracts exercise real atomic disk writes.
 
 ## Active-cleaning benchmark
+
+### Persistence follow-up: v1.20.3
+
+A matched 50-sample comparison (five warmups, Python 3.14.9, Core 2026.11.0)
+used unchanged v1.20.2 production source and the optimized source with the same
+isolated runtime fixture and generated data. Median / nearest-rank p95 times:
+
+| Workload | v1.20.2 | v1.20.3 | Median reduction |
+| --- | ---: | ---: | ---: |
+| Active evaluation | 62.6 / 106.4 ms | 33.3 / 72.9 ms | 46.7% |
+| 16 sequential timer updates | 501.1 / 543.5 ms | 189.2 / 218.8 ms | 62.2% |
+
+Both cleaning p95 budgets pass. The separate, untimed history-cache verification
+retained 16 Store writes and decoded zero unchanged occupancy samples. Each
+timer update must independently produce a checkpoint; a scheduled full
+evaluation can add work and writes beyond those 16 required checkpoints.
+
+The application caches immutable occupancy wire values, their validation
+evidence, and history fingerprints. Every save receives detached containers.
+Value-based keys detect in-place edits, replacement, timezone/DST-fold changes,
+pruning and clearing. All other schema and cross-record checks still run, and
+startup/JSON loads retain full validation. Actual checkpoints use atomic Store
+writes and executor JSON encoding; write failures and cancelled writes must not
+advance the saved fingerprint or overtake newer checkpoints.
+
+These timings include production preparation and validation using the memory
+Store. They exclude filesystem latency, executor scheduling, Recorder, devices
+and clients. Real-Store contract tests independently check atomic persistence,
+off-loop encoding, failed writes, retry, cancellation ordering and full restore.
+The measurements do not establish a percentage reduction in live server CPU.
+
+### Workload and command
 
 This fixed synthetic workload adds 17 rooms, two robots, 4,000 registry entities,
 and 800 generated vacancy samples per room, all within the retention window.
@@ -81,7 +113,7 @@ directory when it starts. The performance CI runs this benchmark independently
 and retains its report with the other performance artifacts.
 
 On 2026-11-05, sequential runs on the same Windows computer with Python 3.14.9
-and Core 2026.10.4 compared the unchanged v1.20.1 source with this implementation
+and Core 2026.10.4 compared unchanged v1.20.1 source with the v1.20.2 implementation
 (30 samples, five warmups):
 
 | Workload | Before median / p95 | After median / p95 | Median reduction |
