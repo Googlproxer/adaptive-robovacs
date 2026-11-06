@@ -9,6 +9,9 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from roborock.devices.traits.v1.home import HomeTrait
+from roborock.devices.traits.v1.map_content import MapContentTrait
+
 from custom_components.adaptive_robovacs.adapters.location import (
     RoborockLocationSource,
     location_source,
@@ -52,11 +55,12 @@ class NativeTrait:
 
 def native_source(mapping=None):
     vacuum = replace(robot(), platform="roborock")
-    content = NativeTrait(map_data=SimpleNamespace(vacuum_room=11))
+    # python-roborock 7.12.0 MapContentTrait has no listener API.
+    content = SimpleNamespace(map_data=SimpleNamespace(vacuum_room=11))
     api = SimpleNamespace(
         map_content=content,
         maps=SimpleNamespace(current_map=9),
-        home=SimpleNamespace(
+        home=NativeTrait(
             current_map_data=SimpleNamespace(
                 map_flag=9,
                 rooms=[
@@ -76,7 +80,55 @@ def native_source(mapping=None):
     return source, api, coordinator
 
 
+def emit_map(api):
+    api.map_content.map_data = SimpleNamespace(
+        vacuum_room=api.map_content.map_data.vacuum_room
+    )
+    api.home.emit()
+
+
 class RobotLocationContractTests(unittest.TestCase):
+    def test_real_native_home_listener_ignores_cached_replay_and_unchanged_frames(self):
+        source, api, coordinator = native_source()
+        content = MapContentTrait()
+        self.assertFalse(hasattr(content, "add_update_listener"))
+        content.map_data = SimpleNamespace(vacuum_room=11)
+        home = HomeTrait(Mock(), api.maps, content, Mock(), Mock())
+        home._home_map_info = {9: api.home.current_map_data}
+        api.map_content, api.home = content, home
+        clock, received = [NOW], []
+        source.start(lambda: clock[0], lambda: "cleaning", received.append)
+        self.assertFalse(received[-1].valid)
+        self.assertIsNone(source._frame_at)
+        clock[0] += timedelta(seconds=30)
+        coordinator.emit()
+        home._notify_update()
+        self.assertIsNone(source._frame_at)
+        content.map_data = SimpleNamespace(vacuum_room=11)
+        home._notify_update()
+        self.assertTrue(received[-1].valid)
+        self.assertEqual(received[-1].area_id, "study")
+        self.assertEqual(source._frame_at, clock[0])
+        clock[0] += timedelta(seconds=180)
+        coordinator.emit()
+        self.assertFalse(received[-1].valid)
+        source.close()
+        observed_count = len(received)
+        content.map_data = SimpleNamespace(vacuum_room=12)
+        home._notify_update()
+        self.assertEqual(len(received), observed_count)
+
+    def test_missing_map_frame_clears_freshness_without_polling(self):
+        source, api, coordinator = native_source()
+        source.start(lambda: NOW, lambda: "cleaning", Mock())
+        emit_map(api)
+        self.assertEqual(source._frame_at, NOW)
+        api.map_content.map_data = None
+        coordinator.emit()
+        self.assertIsNone(source._frame_at)
+        self.assertFalse(source.read(NOW, "cleaning").valid)
+        source.close()
+
     def test_numeric_registry_mapping_ignores_duplicate_native_names(self):
         source, api, _ = native_source()
         self.assertFalse(source.read(NOW, "cleaning").valid)
@@ -128,13 +180,15 @@ class RobotLocationContractTests(unittest.TestCase):
         clock, state = [NOW], ["cleaning"]
         receive = Mock()
         source.start(lambda: clock[0], lambda: state[0], receive)
-        api.map_content.emit()
+        emit_map(api)
         first = receive.call_args.args[0]
         clock[0] += timedelta(seconds=30)
         coordinator.emit()
         self.assertEqual(receive.call_count, 1)
         self.assertEqual(first.observed_at, NOW)
-        api.map_content.emit()
+        api.home.emit()
+        self.assertEqual(receive.call_count, 1)
+        emit_map(api)
         self.assertEqual(receive.call_count, 2)
         state[0] = "docked"
         coordinator.emit()
@@ -145,7 +199,7 @@ class RobotLocationContractTests(unittest.TestCase):
         coordinator.emit()
         self.assertEqual(receive.call_count, 3)
         source.close()
-        self.assertEqual(api.map_content.listeners, [])
+        self.assertEqual(api.home.listeners, [])
         self.assertEqual(coordinator.listeners, [])
 
     def test_binding_requires_same_device_valid_registry_mapping_and_native_contract(
@@ -191,7 +245,7 @@ class RobotLocationContractTests(unittest.TestCase):
         ):
             observer.bind_locations(app.discovery, receive, lambda: NOW)
             self.assertIn("study", observer.attribution_areas)
-            self.assertEqual(len(source.api.map_content.listeners), 1)
+            self.assertEqual(len(source.api.home.listeners), 1)
             replacement, _, _ = native_source()
             replacement.entity = source.entity
             replacement.mapping_key = source.mapping_key
@@ -207,7 +261,7 @@ class RobotLocationContractTests(unittest.TestCase):
                 return_value=replacement,
             ):
                 observer.bind_locations(app.discovery, receive, lambda: NOW)
-            self.assertEqual(source.api.map_content.listeners, [])
+            self.assertEqual(source.api.home.listeners, [])
         with patch(
             "custom_components.adaptive_robovacs.observations.location_source",
             return_value=None,
@@ -253,13 +307,13 @@ class RobotLocationContractTests(unittest.TestCase):
         now = [NOW]
         receive = Mock()
         source.start(lambda: now[0], lambda: "cleaning", receive)
-        api.map_content.emit()
+        emit_map(api)
         api.maps.current_map = 10
         api.home.current_map_data.map_flag = 10
         coordinator.emit()
         self.assertFalse(receive.call_args.args[0].valid)
         now[0] += timedelta(seconds=1)
-        api.map_content.emit()
+        emit_map(api)
         self.assertTrue(receive.call_args.args[0].valid)
         self.assertFalse(receive.call_args_list[-2].args[0].valid)
         source.close()

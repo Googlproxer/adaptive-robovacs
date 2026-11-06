@@ -52,6 +52,21 @@ The integration's own Store contracts exercise real atomic disk writes.
 
 ### Robot occupancy attribution: v1.21.0
 
+The v1.21.1 activation correction uses the native Home-trait listener rather than
+the map-content trait, which has no listener API in python-roborock 7.12.0.
+Cached subscription replay and unchanged frame objects never refresh location
+freshness. The native boundary adds only an object-identity comparison and uses
+the existing native updates. Tests now exercise the actual pinned native traits.
+
+After that correction, the repeated matched 100-sample cleaning comparison
+(ten warmups, same v1.20.3 baseline/environment below) measured median / p95
+35.72 / 58.05 ms for active evaluation and 203.41 / 254.84 ms for 16 timer
+updates. Budgets and regression checks pass. The 100-sample attribution run
+(five warmups) measured heartbeat median / p95 0.039 / 0.046 ms and pulse
+checkpoint 0.106 / 0.115 ms, with zero added heartbeat evaluations, saves or
+publications. Full local validation passes 691 Python tests with 95.51% coverage;
+dashboard/browser, typing, formatting, compilation and parity checks also pass.
+
 A matched 100-sample comparison on 2026-11-06 (ten warmups, Windows,
 Python 3.14.9, Core 2026.11.0) used frozen v1.20.3 production source and the
 v1.21.0 working tree with the same unchanged cleaning benchmark and fixture:

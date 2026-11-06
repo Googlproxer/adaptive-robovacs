@@ -6,8 +6,11 @@ are unchanged.
 
 ## Attribution policy
 
-The Roborock V1 adapter listens to existing native map-content and coordinator
-updates. It reads cached numeric map/segment evidence and resolves it through
+From v1.21.1, the Roborock V1 adapter listens to existing native Home-trait and
+coordinator updates. Only replacement parsed map frames refresh location age;
+cached subscription replays and unchanged status frames do not. v1.21.0's
+listener contract did not bind on Core 2026.11.0 and retained ordinary occupancy
+handling. The adapter reads cached numeric map/segment evidence and resolves it through
 the vacuum entity registry's saved area mapping. Native room names are never
 matched to Home Assistant room names. Unsupported contracts retain ordinary
 occupancy handling; no additional robot queries or map captures are requested.

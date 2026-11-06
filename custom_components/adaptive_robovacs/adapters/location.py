@@ -46,11 +46,12 @@ class RoborockLocationSource:
         self.areas = frozenset(self.reverse.values())
         self._frame_at: datetime | None = None
         self._frame_map: int | None = None
+        self._map_data: object | None = None
         self._last: RobotLocation | None = None
         self._cancels: list[Callable[[], None]] = []
 
     def read(self, now: datetime, raw_state: str | None) -> RobotLocation:
-        """Only a map-content notification may refresh moving-location age."""
+        """Only a newly observed parsed map may refresh moving-location age."""
 
         if raw_state == "docked":
             return RobotLocation(
@@ -94,16 +95,23 @@ class RoborockLocationSource:
         state: Callable[[], str | None],
         receive: Callable[[RobotLocation], None],
     ) -> None:
-        def capture(*, frame: bool = False) -> None:
+        # HomeTrait, not MapContentTrait, owns the native update listener.
+        # Its subscription can immediately replay cached home data. Remember
+        # that frame first, so a replay/status heartbeat cannot make it fresh.
+        self._map_data = getattr(self.api.map_content, "map_data", None)
+
+        def capture() -> None:
             now = clock()
-            if frame:
+            map_data = getattr(self.api.map_content, "map_data", None)
+            if map_data is not self._map_data:
+                self._map_data = map_data
                 map_flag = getattr(self.api.maps, "current_map", None)
                 if self._frame_map is not None and map_flag != self._frame_map:
                     receive(
                         RobotLocation(self.robot.registry_id, None, now, False, False)
                     )
-                self._frame_map = map_flag
-                self._frame_at = now
+                self._frame_map = map_flag if map_data is not None else None
+                self._frame_at = now if map_data is not None else None
             location = self.read(now, state())
             # Dock/unchanged native status heartbeats are not new observations.
             if (
@@ -118,7 +126,7 @@ class RoborockLocationSource:
                 receive(location)
 
         self._cancels = [
-            self.api.map_content.add_update_listener(lambda: capture(frame=True)),
+            self.api.home.add_update_listener(capture),
             self.coordinator.async_add_listener(capture),
         ]
 
@@ -139,10 +147,10 @@ def location_source(hass: Any, robot: DiscoveredRobot) -> RoborockLocationSource
     api = getattr(coordinator, "properties_api", None)
     if (
         api is None
+        or not hasattr(api, "map_content")
         or not callable(
-            getattr(getattr(api, "map_content", None), "add_update_listener", None)
+            getattr(getattr(api, "home", None), "add_update_listener", None)
         )
-        or not hasattr(api, "home")
         or not hasattr(api, "maps")
         or not callable(getattr(coordinator, "async_add_listener", None))
     ):

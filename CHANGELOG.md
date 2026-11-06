@@ -5,6 +5,16 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.21.1] - 2026-11-06
+
+- Bind passive Roborock location updates through the native Home trait. The
+  map-content trait has no listener API in Core 2026.11.0's pinned library;
+  v1.21.0 therefore left these rooms on ordinary occupancy handling.
+- Ignore cached subscription replays and unchanged parsed frames when tracking
+  location freshness. Add regression coverage using the actual pinned traits.
+
+Detailed notes: [`docs/releases/v1.21.1.md`](docs/releases/v1.21.1.md).
+
 ## [1.21.0] - 2026-11-06
 
 - Attribute short robot-aligned occupancy episodes through registry mappings,
