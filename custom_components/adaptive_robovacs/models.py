@@ -368,6 +368,124 @@ class RoomObservation:
 ROBOT_OCCUPANCY_MATCH = timedelta(seconds=120)
 ROBOT_OCCUPANCY_TAIL = timedelta(seconds=180)
 ROBOT_LOCATION_MAX_AGE = timedelta(seconds=180)
+ROBOT_DOCK_OCCUPANCY_COOLDOWN = timedelta(seconds=180)
+
+
+@dataclass(frozen=True, slots=True)
+class CleaningOccupancySession:
+    """Observed physical work, independent of job completion and reservations."""
+
+    started_at: datetime
+    areas: tuple[str, ...] = ()
+    dock_area_id: str | None = None
+    docked_at: datetime | None = None
+    source: str = "unknown"
+    location_expires_at: datetime | None = None
+    cooldown_until: datetime | None = None
+
+    @property
+    def deadline(self) -> datetime | None:
+        return min(
+            (
+                value
+                for value in (self.cooldown_until, self.location_expires_at)
+                if value is not None
+            ),
+            default=None,
+        )
+
+    def covers(self, area_id: str, now: datetime) -> bool:
+        return bool(
+            (
+                area_id == self.dock_area_id
+                and self.cooldown_until
+                and now < self.cooldown_until
+            )
+            or (
+                self.docked_at is None
+                and area_id in self.areas
+                and (self.location_expires_at is None or now < self.location_expires_at)
+            )
+        )
+
+
+def advance_cleaning_occupancy(
+    previous: CleaningOccupancySession | None,
+    state: str | None,
+    now: datetime,
+    *,
+    areas: tuple[str, ...] = (),
+    dock_area_id: str | None = None,
+    location_area: str | None = None,
+    location_expires_at: datetime | None = None,
+) -> CleaningOccupancySession | None:
+    """Only observed cleaning starts a session; only observed docking cools it."""
+
+    if state == "docked":
+        if previous is None or previous.docked_at is not None:
+            return (
+                previous
+                if previous and previous.covers(dock_area_id or "", now)
+                else None
+            )
+        return (
+            replace(
+                previous,
+                docked_at=now,
+                location_expires_at=None,
+                cooldown_until=now + ROBOT_DOCK_OCCUPANCY_COOLDOWN,
+            )
+            if dock_area_id is not None
+            else None
+        )
+    if state == "returning":
+        if (
+            previous
+            and previous.docked_at is None
+            and previous.source == "location"
+            and location_expires_at
+        ):
+            return replace(previous, location_expires_at=location_expires_at)
+        return previous if previous and previous.docked_at is None else None
+    if state != "cleaning":
+        if previous is None or previous.docked_at is not None:
+            return previous
+        # Remember that a physical clean occurred so a later real dock can
+        # cool its home room. Interruptions provide no ongoing room exemption.
+        if not previous.areas and previous.source == "unknown":
+            return previous
+        return replace(previous, areas=(), source="unknown", location_expires_at=None)
+    session = (
+        previous
+        if previous and previous.docked_at is None
+        else CleaningOccupancySession(
+            now,
+            dock_area_id=dock_area_id,
+            cooldown_until=previous.cooldown_until if previous else None,
+        )
+    )
+    if areas:
+        if session.source == "job" and all(area in session.areas for area in areas):
+            return session
+        return replace(
+            session,
+            areas=tuple(sorted(set((*session.areas, *areas)))),
+            source="job",
+            location_expires_at=None,
+        )
+    if session.source != "job" and location_area is not None:
+        if (
+            location_area in session.areas
+            and session.location_expires_at == location_expires_at
+        ):
+            return session
+        return replace(
+            session,
+            areas=tuple(sorted(set((*session.areas, location_area)))),
+            source="location",
+            location_expires_at=location_expires_at,
+        )
+    return session
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +542,72 @@ class AttributedOccupancy:
     clear_since: datetime | None
     sample: tuple[datetime, datetime] | None = None
     deadline: datetime | None = None
+
+
+def attribute_cleaning_occupancy(
+    previous: OccupancyAttribution,
+    raw: str,
+    now: datetime,
+    visits: tuple[RobotVisit, ...] = (),
+    *,
+    robots: tuple[str, ...] = (),
+    cooldown_until: datetime | None = None,
+    boundary: datetime | None = None,
+    continuous: bool = True,
+) -> AttributedOccupancy:
+    """Exclude a clean's detections and split unchanged signals at its boundary."""
+
+    masked = previous.classification in {"cleaning", "dock_cooldown"}
+    if robots:
+        # Earlier established occupancy is never explained away by a new clean.
+        if (
+            previous.classification in {"human", "uncertain"}
+            and previous.raw == "occupied"
+        ):
+            return attribute_occupancy(previous, raw, now, ())
+        vacancy = previous.vacancy_since if continuous else None
+        if raw == "unoccupied" and vacancy is None:
+            vacancy = now
+        if raw not in {"occupied", "unoccupied"}:
+            raw, vacancy = "unresolved", None
+        checkpoint = OccupancyAttribution(
+            raw=raw,
+            classification="dock_cooldown" if cooldown_until else "cleaning",
+            started_at=previous.started_at
+            if masked and previous.vacancy_since is not None
+            else now,
+            vacancy_since=vacancy,
+            robot_ids=robots,
+            evidence="dock_return" if cooldown_until else "physical_clean",
+        )
+        return AttributedOccupancy(
+            checkpoint,
+            "unoccupied" if vacancy is not None else "unresolved",
+            vacancy,
+            deadline=cooldown_until,
+        )
+    if masked:
+        ended = boundary or now
+        vacancy = previous.vacancy_since if continuous else None
+        if raw == "unoccupied":
+            checkpoint = OccupancyAttribution(raw=raw, vacancy_since=vacancy or ended)
+            return AttributedOccupancy(checkpoint, raw, checkpoint.vacancy_since)
+        if raw == "occupied":
+            checkpoint = OccupancyAttribution(
+                raw=raw,
+                classification="human" if continuous else "uncertain",
+                started_at=ended,
+            )
+            sample = (
+                (vacancy, ended) if vacancy is not None and ended > vacancy else None
+            )
+            return AttributedOccupancy(checkpoint, "occupied", None, sample)
+        return AttributedOccupancy(
+            OccupancyAttribution(raw="unresolved", classification="uncertain"),
+            "unresolved",
+            None,
+        )
+    return attribute_occupancy(previous, raw, now, visits)
 
 
 def attribute_occupancy(

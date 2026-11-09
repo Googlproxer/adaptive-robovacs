@@ -10,9 +10,10 @@ import argparse
 import asyncio
 import importlib.metadata
 import tempfile
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import patch
 
 from benchmarks.__main__ import NOW, measure, synthetic_application
@@ -22,10 +23,14 @@ from custom_components.adaptive_robovacs.commands import (
     StateChangedCommand,
 )
 from custom_components.adaptive_robovacs.models import (
+    CleaningOperation,
+    JobPhase,
+    JobSource,
     OccupancyAttribution,
     RobotLocation,
     RoomObservation,
 )
+from custom_components.adaptive_robovacs.state import ActiveJob
 from tests.ha_runtime import async_test_home_assistant
 
 
@@ -102,6 +107,37 @@ async def run(args) -> int:
 
                     await location()
                     await occupancy("occupied")
+                    if args.cleaning_sessions:
+                        dock = next(
+                            item
+                            for item in app.discovery.rooms.values()
+                            if item.floor_id == robot.floor_id
+                            and item.area_id != room.area_id
+                        )
+                        robot = replace(robot, dock_area_id=dock.area_id)
+                        app.discovery = replace(
+                            app.discovery,
+                            robots=MappingProxyType(
+                                {**app.discovery.robots, robot.entity_id: robot}
+                            ),
+                        )
+                        app.state.active_jobs[robot.registry_id] = ActiveJob(
+                            room.area_id,
+                            [room.area_id],
+                            CleaningOperation.VACUUM,
+                            JobPhase.CLEANING,
+                            JobSource.SCHEDULER,
+                        )
+                        hass.states.async_set(robot.entity_id, "cleaning")
+                        await app.async_execute(
+                            StateChangedCommand(
+                                robot.entity_id,
+                                "docked",
+                                "cleaning",
+                                clock[0],
+                                cleaning_room_ids=(room.area_id,),
+                            )
+                        )
                     counts = (
                         sum(app.metrics.evaluations.values()),
                         app.storage.writes,
@@ -155,7 +191,9 @@ async def run(args) -> int:
                     await hass.async_stop()
     env = environment()
     env["homeassistant"] = importlib.metadata.version("homeassistant")
-    return finish(args, "occupancy", env, rows)
+    return finish(
+        args, "cleaning_sessions" if args.cleaning_sessions else "occupancy", env, rows
+    )
 
 
 if __name__ == "__main__":
@@ -165,4 +203,5 @@ if __name__ == "__main__":
     options.add_argument("--output", type=Path, required=True)
     options.add_argument("--baseline", type=Path)
     options.add_argument("--check", action="store_true")
+    options.add_argument("--cleaning-sessions", action="store_true")
     raise SystemExit(asyncio.run(run(options.parse_args())))

@@ -45,15 +45,18 @@ automatically on supported versions.
 
 ## Installation
 
-Requires Home Assistant 2026.11.0 or newer. Version 1.21.1 attributes short
-occupancy episodes to observed robot movements using registry area mappings,
-preserving human-vacancy timers and keeping robot pulses out of learning.
+Requires Home Assistant 2026.11.0 or newer. Version 1.22.0 excludes
+cleaning detections until observed docking, then rechecks persistent occupancy.
+The robot's registry-assigned home room receives a three-minute sensor cooldown.
+Known physical jobs supply room identity even without native location reporting;
+external cleans require supported registry-mapped room evidence. Short transit
+attribution remains available. Pre-existing human occupancy stays blocking.
 It retains v1.20.3's cached history validation and atomic progress checkpoints.
 Water warnings, sparse dock-water snapshots,
 consolidated water notifications, automatic wash verification, managed multi-room
 queues, and learned battery budgeting remain available.
-See the [release notes](docs/releases/v1.21.1.md) and
-[migration guide](docs/migration-v1.21.0.md) before activation.
+See the [release notes](docs/releases/v1.22.0.md) and
+[migration guide](docs/migration-v1.22.0.md) before activation.
 
 1. Copy `custom_components/adaptive_robovacs` to your Home Assistant
    `custom_components` directory and restart Home Assistant.

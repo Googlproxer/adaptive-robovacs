@@ -5,6 +5,19 @@ All notable changes to Adaptive RoboVacs are documented here. The project uses
 index; detailed upgrade, deployment, and validation notes for releases from
 v1.3.0 onward remain in [`docs/releases`](docs/releases/).
 
+## [1.22.0] - 2026-11-09
+
+- Exclude detections in confirmed cleaning rooms until observed docking, using
+  known physical jobs when native room reporting is unavailable.
+- Rebase persistent occupancy at docking and add a three-minute cooldown only
+  in the robot's registry-assigned home room. Recheck unchanged sensors at both
+  boundaries; preserve valid vacancy windows and existing human occupancy.
+- Add Store schema 23 checkpoints, conservative interruption/restart handling,
+  explicit scheduling gates and passive-heartbeat performance checks.
+- Refresh CI to Python 3.14.10; retain native dependency pins matching Core.
+
+Detailed notes: [`docs/releases/v1.22.0.md`](docs/releases/v1.22.0.md).
+
 ## [1.21.1] - 2026-11-06
 
 - Bind passive Roborock location updates through the native Home trait. The

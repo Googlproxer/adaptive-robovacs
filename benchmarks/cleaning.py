@@ -92,6 +92,16 @@ async def run(args) -> int:
                     )
                     app.state.active_jobs[robot.registry_id] = job
                     app._watch_specifications[timer] = WatchSpecification(timer)
+                    # Activate any one-time learning migration before restoring
+                    # the synthetic history. Baseline and candidate must retain
+                    # the same sample count throughout measured invocations.
+                    retained_history = {
+                        area: list(history.occupancy_samples)
+                        for area, history in app.state.room_history.items()
+                    }
+                    app._observe_occupancy(clock[0])
+                    for area, samples in retained_history.items():
+                        app.state.room_history[area].occupancy_samples = samples
                     await app.commands.async_start()
                     command = EvaluateCommand(
                         mode=EvaluationMode.PREVIEW,

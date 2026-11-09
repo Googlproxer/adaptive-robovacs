@@ -54,6 +54,7 @@ class StateChangedCommand:
     native_timer_minutes: float | None = None
     previous_native_timer_minutes: float | None = None
     occupancy_observations: tuple[tuple[str, RoomObservation], ...] = ()
+    cleaning_room_ids: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)

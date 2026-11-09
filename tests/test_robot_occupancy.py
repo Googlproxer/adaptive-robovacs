@@ -611,7 +611,7 @@ class RobotOccupancyApplicationTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(changes=changes), self.assertRaises(StateSchemaError):
                 decode_occupancy_attribution({**valid, **changes})
-        for version in (0, 3, True, "2"):
+        for version in (0, 4, True, "2"):
             with self.subTest(version=version), self.assertRaises(StateSchemaError):
                 RoomHistory.from_mapping({"occupancy_learning_version": version})
 

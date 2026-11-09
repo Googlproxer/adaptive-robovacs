@@ -39,16 +39,56 @@ increase `--samples` to 100 or more and repeat the run.
 
 The initial toolchain check on 2026-10-31 found Home Assistant stable 2026.10.4
 and current compatible repository pins. The local environment was refreshed to
-those pins. CI uses Python 3.14.9; reports record the actual Python, HA, browser,
+those pins. CI then used Python 3.14.9; reports record the actual Python, HA, browser,
 platform, architecture, commit, and working-tree status used for each run.
 The 2026-11-06 check found Core 2026.11.0 running and in the official stable
-feed. Requirements and CI now use that Core version, Python 3.14.9, and Ruff
+feed. Requirements and CI were refreshed to that Core version, Python 3.14.9, and Ruff
 0.17.4. The earlier fixture plugin pinned an older Core and is no longer used;
 ordinary pytest works on Windows and Linux. Core registries and config entries
 remain real, while registry persistence is disabled in the isolated fixture.
 The integration's own Store contracts exercise real atomic disk writes.
 
 ## Active-cleaning benchmark
+
+### Cleaning session occupancy v1.22.0
+
+On 2026-11-09, v1.22.0 was compared with v1.21.1 (`ae9c44f`) on the
+same Windows computer, Python 3.14.10, Core 2026.11.0 and pinned native libraries.
+CI now also uses Python 3.14.10. Runs were sequential, with 100 samples and ten
+warmups. Both versions used the same benchmark harness and retained identical
+synthetic sample counts after any one-time learning migration. The workload has
+17 rooms, two robots, 4,000 entities and 800 samples per room.
+
+| Workload | v1.21.1 p95 ms | v1.22.0 p95 ms | Change |
+| --- | ---: | ---: | ---: |
+| Active evaluation | 76.990 | 76.663 | -0.4% |
+| 16 sequential timer updates | 233.446 | 228.202 | -2.2% |
+| Transit location heartbeat | 0.048 | 0.056 | +0.007 ms |
+| Transit pulse checkpoint | 0.119 | 0.146 | +0.027 ms |
+
+The existing cleaning budgets and matched regression checks pass. Active
+evaluation medians were 33.831 / 34.316 ms; timer-batch medians were
+210.687 / 209.094 ms. Small microsecond-scale differences should not be treated
+as predictions of live server CPU use.
+
+The new active-session run measured heartbeat median / p95 0.041 / 0.051 ms
+and pulse checkpoint 0.107 / 0.145 ms. Heartbeats added zero evaluations, Store
+saves or publications; robot pulses preserved the vacancy anchor and completed
+no training samples. Timer-progress cache assertions continue to require zero
+decodes of unchanged occupancy history. The new session benchmark runs in the
+performance workflow alongside the existing transit benchmark:
+
+```powershell
+& $testPython -m benchmarks.occupancy --cleaning-sessions `
+  --samples 100 --warmup 10 --check `
+  --output test-results/performance/cleaning-sessions.json
+```
+
+Local matched reports are retained under `test-results/performance/` as
+`v1.21.1-cleaning.json`, `v1.22.0-cleaning.json`, `v1.21.1-occupancy.json`,
+`v1.22.0-occupancy.json` and `v1.22.0-cleaning-sessions.json`. They contain only
+generated data. The broader historical results below retain their original
+environment and scope.
 
 ### Robot occupancy attribution: v1.21.0
 

@@ -262,10 +262,7 @@ class SchedulerApplication(
         self.state = loaded.state
         # Persisted vacancy is history, not proof that nobody entered while HA
         # was offline. Fresh observations start a new continuous clear period.
-        for history in self.state.room_history.values():
-            history.unoccupied_since = None
-            history.occupancy = "unresolved"
-            history.occupancy_attribution = None
+        self._restore_cleaning_occupancy(_now())
         self._last_durable_fingerprint = self._durable_fingerprint()
         migrated = loaded.migrated
         if loaded.safe_mode:
@@ -422,10 +419,21 @@ class SchedulerApplication(
                 native_timer_minutes=native_timer_minutes,
                 previous_native_timer_minutes=previous_native_timer_minutes,
             ):
+                observed_at = command.changed_at or _now()
+                self._expire_cleaning_occupancy(observed_at)
+                if old_state != new_state:
+                    for robot in self.discovery.robots.values():
+                        if entity_id == robot.entity_id:
+                            self._observe_robot_cleaning_occupancy(
+                                robot,
+                                new_state,
+                                observed_at,
+                                areas=command.cleaning_room_ids,
+                                observations=dict(command.occupancy_observations),
+                            )
                 if command.occupancy_observations:
-                    observed_at = command.changed_at or _now()
                     for area, observation in command.occupancy_observations:
-                        if area in self.observer.attribution_areas:
+                        if self._uses_occupancy_attribution(area):
                             self._observe_attributed_room(
                                 self.discovery.rooms[area], observation, observed_at
                             )
@@ -824,7 +832,8 @@ class SchedulerApplication(
                 history.occupancy_attribution = None
                 history.occupancy = "unresolved"
                 history.unoccupied_since = None
-                history.occupancy_learning_version = 1
+                if history.occupancy_learning_version < 3:
+                    history.occupancy_learning_version = 1
             self._occupancy_deadlines.pop(area, None)
         self.observer.set_location_topology(self.discovery, self.state.floor_plan.edges)
         for area in self.observer.attribution_areas:
@@ -833,6 +842,7 @@ class SchedulerApplication(
                 history.occupancy_samples.clear()
                 history.occupancy_attribution = None
                 history.occupancy_learning_version = 2
+        self._prune_cleaning_occupancy()
 
         for robot in self.discovery.robots.values():
             self._robot_settings(robot)

@@ -31,9 +31,11 @@ from .dock_water_state import RobotWaterRecord, decode_robot_water
 from .models import (
     FLOOR_PLAN_MAX_GRID_COORDINATE,
     FLOOR_PLAN_MIN_ROOM_SPAN,
+    ROBOT_DOCK_OCCUPANCY_COOLDOWN,
     ROBOT_ERROR_CATEGORIES,
     ROOM_PROFILE_OVERRIDE_KEYS,
     AdjacencyMode,
+    CleaningOccupancySession,
     CleaningOperation,
     CleaningProgram,
     FaultCode,
@@ -51,7 +53,7 @@ from .models import (
 )
 from .run_state import BatteryUsageSample, CleaningRun
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 RETIRED_GLOBAL_SETTINGS = frozenset({"hall_start", "hall_end"})
 DAILY_WINDOW_VERSION = 1
 
@@ -850,7 +852,7 @@ class OccupancyTransition:
 
 
 def decode_occupancy_learning_version(value: object) -> int:
-    if type(value) is not int or value not in {1, 2}:
+    if type(value) is not int or value not in {1, 2, 3}:
         raise StateSchemaError("invalid occupancy learning version")
     return value
 
@@ -867,12 +869,28 @@ def decode_occupancy_attribution(value: object) -> OccupancyAttribution | None:
         not isinstance(raw, str)
         or raw not in {"occupied", "unoccupied", "unresolved"}
         or not isinstance(classification, str)
-        or classification not in {"clear", "pending", "robot", "human", "uncertain"}
+        or classification
+        not in {
+            "clear",
+            "pending",
+            "robot",
+            "human",
+            "uncertain",
+            "cleaning",
+            "dock_cooldown",
+        }
         or not isinstance(robots, list)
         or len(robots) > 128
         or any(not isinstance(robot, str) or not robot for robot in robots)
         or not isinstance(evidence, str)
-        or evidence not in {"none", "observed_location", "inferred_transit"}
+        or evidence
+        not in {
+            "none",
+            "observed_location",
+            "inferred_transit",
+            "physical_clean",
+            "dock_return",
+        }
     ):
         raise StateSchemaError("invalid occupancy attribution")
     started, cleared, vacancy = (
@@ -880,9 +898,12 @@ def decode_occupancy_attribution(value: object) -> OccupancyAttribution | None:
         for key in ("started_at", "cleared_at", "vacancy_since")
     )
     if (
-        (classification in {"pending", "robot", "human"} and started is None)
+        (
+            classification in {"pending", "robot", "human", "cleaning", "dock_cooldown"}
+            and started is None
+        )
         or (classification == "clear" and started is not None)
-        or (classification == "robot" and not robots)
+        or (classification in {"robot", "cleaning", "dock_cooldown"} and not robots)
         or (cleared is not None and (started is None or cleared < started))
         or (started is not None and vacancy is not None and vacancy > started)
     ):
@@ -911,6 +932,68 @@ def encode_occupancy_attribution(
         "vacancy_since": _iso(value.vacancy_since),
         "robot_ids": list(value.robot_ids),
         "evidence": value.evidence,
+    }
+
+
+def decode_cleaning_occupancy_sessions(
+    value: object,
+) -> dict[str, CleaningOccupancySession]:
+    """Strict, bounded checkpoints keyed only by stable robot registry identity."""
+
+    records = _mapping(value, "cleaning occupancy sessions")
+    sessions: dict[str, CleaningOccupancySession] = {}
+    if len(records) > 128:
+        raise StateSchemaError("too many cleaning occupancy sessions")
+    for robot_id, item in records.items():
+        record = _mapping(item, "cleaning occupancy session")
+        areas = record.get("areas")
+        source = record.get("source")
+        dock = record.get("dock_area_id")
+        started = _opportunity_time(record.get("started_at"))
+        docked = _opportunity_time(record.get("docked_at"))
+        expires = _opportunity_time(record.get("location_expires_at"))
+        cooldown = _opportunity_time(record.get("cooldown_until"))
+        if (
+            not isinstance(robot_id, str)
+            or not robot_id
+            or started is None
+            or not isinstance(areas, list)
+            or len(areas) > 512
+            or any(not isinstance(area, str) or not area for area in areas)
+            or len(set(areas)) != len(areas)
+            or not isinstance(source, str)
+            or source not in {"job", "location", "unknown"}
+            or (dock is not None and (not isinstance(dock, str) or not dock))
+            or (
+                docked is not None
+                and (docked < started or dock is None or expires is not None)
+            )
+            or (expires is not None and (expires < started or source != "location"))
+            or (source == "location" and docked is None and expires is None)
+            or (cooldown is not None and dock is None)
+            or (
+                docked is not None
+                and cooldown != docked + ROBOT_DOCK_OCCUPANCY_COOLDOWN
+            )
+        ):
+            raise StateSchemaError("invalid cleaning occupancy session")
+        sessions[robot_id] = CleaningOccupancySession(
+            started, tuple(areas), dock, docked, source, expires, cooldown
+        )
+    return sessions
+
+
+def encode_cleaning_occupancy_session(
+    value: CleaningOccupancySession,
+) -> dict[str, object]:
+    return {
+        "started_at": _iso(value.started_at),
+        "areas": list(value.areas),
+        "dock_area_id": value.dock_area_id,
+        "docked_at": _iso(value.docked_at),
+        "source": value.source,
+        "location_expires_at": _iso(value.location_expires_at),
+        "cooldown_until": _iso(value.cooldown_until),
     }
 
 
@@ -2342,6 +2425,9 @@ class SchedulerState:
     cleaning_runs: dict[str, CleaningRun] = field(default_factory=dict)
     battery_samples: dict[str, list[BatteryUsageSample]] = field(default_factory=dict)
     robot_water: dict[str, RobotWaterRecord] = field(default_factory=dict)
+    cleaning_occupancy_sessions: dict[str, CleaningOccupancySession] = field(
+        default_factory=dict
+    )
 
     @classmethod
     def create(cls, entry_data: Mapping[str, object]) -> SchedulerState:
@@ -2361,10 +2447,11 @@ class SchedulerState:
             isinstance(schema_version, bool) or not isinstance(schema_version, int)
         ):
             raise StateSchemaError("schema_version must be an integer")
-        if schema_version in {16, 17, 18, 19, 20, 21}:
+        if schema_version in {16, 17, 18, 19, 20, 21, 22}:
             # Validate the full former current schema before any permissive
             # legacy parsing. Retired settings remain ignored by that validator.
             upgraded = {**data, "schema_version": SCHEMA_VERSION}
+            upgraded["cleaning_occupancy_sessions"] = {}
             if schema_version < 20:
                 upgraded["cleaning_runs"] = {}
                 upgraded["battery_samples"] = {}
@@ -2427,6 +2514,7 @@ class SchedulerState:
 
         cls._decode_runs(data)
         cls._decode_water(data)
+        decode_cleaning_occupancy_sessions(data.get("cleaning_occupancy_sessions", {}))
 
         room_settings = _mapping(data.get("room_settings"), "room_settings")
         robot_settings = _mapping(data.get("robot_settings"), "robot_settings")
@@ -2837,6 +2925,9 @@ class SchedulerState:
             },
             first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
             robot_water=cls._decode_water(data),
+            cleaning_occupancy_sessions=decode_cleaning_occupancy_sessions(
+                data.get("cleaning_occupancy_sessions", {})
+            ),
             cleaning_runs=cls._decode_runs(data)[0],
             battery_samples=cls._decode_runs(data)[1],
         )
@@ -3015,6 +3106,9 @@ class SchedulerState:
             },
             robot_water=cls._decode_water(data),
             first_scheduler_online_at=_timestamp(data.get("first_scheduler_online_at")),
+            cleaning_occupancy_sessions=decode_cleaning_occupancy_sessions(
+                data.get("cleaning_occupancy_sessions", {})
+            ),
             cleaning_runs=cls._decode_runs(data)[0],
             battery_samples=cls._decode_runs(data)[1],
         )
@@ -3088,6 +3182,10 @@ class SchedulerState:
     ) -> dict[str, object]:
         return {
             "schema_version": SCHEMA_VERSION,
+            "cleaning_occupancy_sessions": {
+                key: encode_cleaning_occupancy_session(session)
+                for key, session in self.cleaning_occupancy_sessions.items()
+            },
             "robot_water": {
                 key: record.to_store() for key, record in self.robot_water.items()
             },

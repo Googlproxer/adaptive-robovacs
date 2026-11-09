@@ -75,6 +75,8 @@ def routed_application() -> SchedulerApplication:
     app._notify_listeners = Mock()
     app._reset_room_recovery_dock = Mock()
     app._sync_dock_water_checks = Mock(return_value=False)
+    app._expire_cleaning_occupancy = Mock()
+    app._observe_robot_cleaning_occupancy = Mock()
     app.has_notification_targets = Mock(return_value=True)
     app.repairs = SimpleNamespace(set_notification_delivery_issue=Mock())
     return app

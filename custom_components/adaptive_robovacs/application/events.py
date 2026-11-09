@@ -260,6 +260,35 @@ class ApplicationEventsMixin:
         self.metrics.state_events["meaningful"] += 1
         if change.refresh_discovery:
             self.metrics.state_events["capability_changes"] += 1
+        robot_change = next(
+            (
+                robot
+                for robot in self.discovery.robots.values()
+                if robot.entity_id == entity_id and old_value != new_value
+            ),
+            None,
+        )
+        occupancy_observations = self.observer.capture_occupancy(entity_id, new_value)
+        cleaning_room_ids = None
+        if robot_change:
+            # Freeze boundary inputs before later sensor events or job cleanup.
+            occupancy_observations = tuple(
+                (room.area_id, self.observer.room(room))
+                for room in self.discovery.rooms.values()
+            )
+            job = self.state.active_jobs.get(robot_change.registry_id)
+            cleaning_room_ids = (
+                tuple(job.room_ids)
+                if job
+                and job.phase
+                in {
+                    JobPhase.DISPATCHING,
+                    JobPhase.ACCEPTED,
+                    JobPhase.MOP_WASHING,
+                    JobPhase.CLEANING,
+                }
+                else ()
+            )
         self._async_create_task(
             self._async_handle_watched_state_change(
                 StateChangedCommand(
@@ -278,9 +307,8 @@ class ApplicationEventsMixin:
                         and not change.refresh_discovery
                         else None
                     ),
-                    occupancy_observations=self.observer.capture_occupancy(
-                        entity_id, new_value
-                    ),
+                    occupancy_observations=occupancy_observations,
+                    cleaning_room_ids=cleaning_room_ids,
                 ),
                 capability_changed=change.refresh_discovery,
             )

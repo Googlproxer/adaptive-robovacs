@@ -434,6 +434,8 @@ class AdaptiveRoboVacsEvidenceRow extends AdaptiveRoboVacsStatusRow {
       const quality = attrs.occupancy_quality || {};
       const attribution = {
         robot: "Robot detected; vacancy preserved. ",
+        cleaning: "Cleaning detections excluded; new cleaning blocked until docking. ",
+        dock_cooldown: "Dock room sensor cooling off; occupancy resumes after cooldown. ",
         pending: "Checking robot presence; new cleaning blocked. ",
         human: "Human occupancy blocks cleaning. ",
         uncertain: "Occupancy attribution uncertain; using normal occupancy blocking. ",

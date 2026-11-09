@@ -412,6 +412,8 @@ test("occupancy evidence distinguishes robot, pending and human presence", () =>
   const EvidenceRow = elements.get("adaptive-robovacs-evidence-row");
   for (const [classification, expected] of [
     ["robot", /Robot detected; vacancy preserved/],
+    ["cleaning", /Cleaning detections excluded; new cleaning blocked until docking/],
+    ["dock_cooldown", /Dock room sensor cooling off/],
     ["pending", /Checking robot presence; new cleaning blocked/],
     ["human", /Human occupancy blocks cleaning/],
     ["uncertain", /Occupancy attribution uncertain/],

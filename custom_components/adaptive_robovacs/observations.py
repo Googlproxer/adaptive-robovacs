@@ -102,8 +102,7 @@ class HomeAssistantObserver:
         self.locations.retain(set(sources))
         self.attribution_areas = frozenset(areas)
         entities: dict[str, list[DiscoveredRoom]] = {}
-        for area in areas:
-            room = discovery.rooms[area]
+        for room in discovery.rooms.values():
             for entity in (*room.radar_entity_ids, *room.fallback_entity_ids):
                 entities.setdefault(entity, []).append(room)
         self.occupancy_entities = {

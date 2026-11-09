@@ -2275,5 +2275,156 @@ class RobotOccupancyDecisionTests(unittest.TestCase):
         self.assertEqual(models.mandatory_transit_areas("a", "a", edges), ())
 
 
+class CleaningOccupancyDecisionTests(unittest.TestCase):
+    now = datetime(2026, 1, 5, 10, tzinfo=UTC)
+
+    def clear(self):
+        return models.OccupancyAttribution(
+            raw="unoccupied", vacancy_since=self.now - timedelta(hours=2)
+        )
+
+    def test_only_physical_cleaning_starts_coverage_and_return_retains_it(self):
+        for state in ("docked", "returning", "idle", "paused", "error", None):
+            self.assertIsNone(
+                models.advance_cleaning_occupancy(
+                    None, state, self.now, areas=("a",), dock_area_id="home"
+                )
+            )
+        session = models.advance_cleaning_occupancy(
+            None, "cleaning", self.now, areas=("a",), dock_area_id="home"
+        )
+        self.assertTrue(session.covers("a", self.now + timedelta(hours=2)))
+        self.assertFalse(session.covers("queued", self.now))
+        self.assertIs(
+            models.advance_cleaning_occupancy(session, "returning", self.now), session
+        )
+        self.assertIs(
+            models.advance_cleaning_occupancy(
+                session, "cleaning", self.now, areas=("a",)
+            ),
+            session,
+        )
+
+    def test_only_dock_room_has_cooldown_and_heartbeats_do_not_extend_it(self):
+        session = models.advance_cleaning_occupancy(
+            None, "cleaning", self.now, areas=("a",), dock_area_id="home"
+        )
+        docked = models.advance_cleaning_occupancy(
+            session, "docked", self.now, dock_area_id="home"
+        )
+        self.assertFalse(docked.covers("a", self.now))
+        self.assertTrue(docked.covers("home", self.now + timedelta(seconds=179)))
+        self.assertFalse(docked.covers("home", self.now + timedelta(seconds=180)))
+        self.assertIs(
+            models.advance_cleaning_occupancy(
+                docked, "docked", self.now + timedelta(seconds=30), dock_area_id="home"
+            ),
+            docked,
+        )
+        self.assertIsNone(
+            models.advance_cleaning_occupancy(
+                docked, "docked", self.now + timedelta(seconds=180), dock_area_id="home"
+            )
+        )
+
+    def test_new_departure_keeps_only_the_remaining_previous_dock_cooldown(self):
+        session = models.CleaningOccupancySession(self.now, ("a",), "home")
+        docked = models.advance_cleaning_occupancy(
+            session, "docked", self.now, dock_area_id="home"
+        )
+        resumed = models.advance_cleaning_occupancy(
+            docked,
+            "cleaning",
+            self.now + timedelta(seconds=30),
+            areas=("b",),
+            dock_area_id="home",
+        )
+        self.assertTrue(resumed.covers("home", self.now + timedelta(seconds=179)))
+        self.assertFalse(resumed.covers("home", self.now + timedelta(seconds=180)))
+        self.assertTrue(resumed.covers("b", self.now + timedelta(minutes=30)))
+        self.assertFalse(resumed.covers("a", self.now + timedelta(seconds=30)))
+
+    def test_mask_preserves_anchor_without_claiming_unknown_evidence_clear(self):
+        clear = self.clear()
+        for raw in ("occupied", "unoccupied"):
+            result = models.attribute_cleaning_occupancy(
+                clear, raw, self.now, robots=("r",)
+            )
+            self.assertEqual(result.clear_since, clear.vacancy_since)
+            self.assertIsNone(result.sample)
+            self.assertEqual(result.checkpoint.classification, "cleaning")
+        unknown = models.attribute_cleaning_occupancy(
+            clear, "unresolved", self.now, robots=("r",)
+        )
+        self.assertEqual(unknown.occupancy, "unresolved")
+        self.assertIsNone(unknown.clear_since)
+        occupied = models.attribute_cleaning_occupancy(
+            unknown.checkpoint, "occupied", self.now, robots=("r",)
+        )
+        self.assertEqual(occupied.occupancy, "unresolved")
+
+    def test_occupied_boundary_rebases_onset_and_completes_exactly_one_spell(self):
+        original = self.clear()
+        masked = models.attribute_cleaning_occupancy(
+            original, "occupied", self.now, robots=("r",)
+        )
+        end = self.now + timedelta(minutes=30)
+        ended = models.attribute_cleaning_occupancy(
+            masked.checkpoint, "occupied", end, boundary=end
+        )
+        self.assertEqual(ended.checkpoint.started_at, end)
+        self.assertEqual(ended.sample, (original.vacancy_since, end))
+        again = models.attribute_cleaning_occupancy(ended.checkpoint, "occupied", end)
+        self.assertIsNone(again.sample)
+        clear = models.attribute_cleaning_occupancy(
+            again.checkpoint, "unoccupied", end + timedelta(minutes=5)
+        )
+        self.assertEqual(clear.clear_since, end + timedelta(minutes=5))
+
+    def test_clear_boundary_preserves_window_and_uncertainty_censors_it(self):
+        masked = models.attribute_cleaning_occupancy(
+            self.clear(), "occupied", self.now, robots=("r",)
+        )
+        for raw, continuous, expected in (
+            ("unoccupied", True, self.clear().vacancy_since),
+            ("unoccupied", False, self.now),
+            ("unresolved", True, None),
+            ("occupied", False, None),
+        ):
+            result = models.attribute_cleaning_occupancy(
+                masked.checkpoint, raw, self.now, continuous=continuous
+            )
+            self.assertEqual(result.clear_since, expected)
+            self.assertIsNone(result.sample)
+
+    def test_preexisting_humans_stay_blocking_through_clean_and_cooldown(self):
+        prior = models.OccupancyAttribution(
+            raw="occupied",
+            classification="human",
+            started_at=self.now - timedelta(minutes=10),
+        )
+        for cooldown in (None, self.now + timedelta(minutes=3)):
+            result = models.attribute_cleaning_occupancy(
+                prior, "occupied", self.now, robots=("r",), cooldown_until=cooldown
+            )
+            self.assertEqual(result.checkpoint, prior)
+            self.assertEqual(result.occupancy, "occupied")
+
+    def test_location_only_sessions_expire_but_known_jobs_do_not(self):
+        session = models.advance_cleaning_occupancy(
+            None,
+            "cleaning",
+            self.now,
+            location_area="a",
+            location_expires_at=self.now + timedelta(seconds=180),
+        )
+        self.assertFalse(session.covers("a", self.now + timedelta(seconds=180)))
+        known = models.advance_cleaning_occupancy(
+            session, "cleaning", self.now, areas=("a", "b")
+        )
+        self.assertIsNone(known.deadline)
+        self.assertTrue(known.covers("a", self.now + timedelta(hours=2)))
+
+
 if __name__ == "__main__":
     unittest.main()

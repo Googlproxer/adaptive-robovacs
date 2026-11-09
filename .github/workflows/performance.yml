@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.14.9"
+          python-version: "3.14.10"
           cache: pip
       - name: Install the existing pinned test environment and browser tooling
         run: |
@@ -66,6 +66,10 @@ jobs:
         run: >-
           python -u -m benchmarks.occupancy --samples 100 --warmup 5
           --output test-results/performance/occupancy.json
+      - name: Cleaning session heartbeat and pulse invariants
+        run: >-
+          python -u -m benchmarks.occupancy --cleaning-sessions --samples 100 --warmup 5
+          --output test-results/performance/cleaning-sessions.json
       - name: Retain benchmark evidence
         if: always()
         uses: actions/upload-artifact@v7

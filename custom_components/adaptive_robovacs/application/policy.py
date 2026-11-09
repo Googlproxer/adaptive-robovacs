@@ -130,10 +130,24 @@ class ApplicationPolicyMixin:
     if TYPE_CHECKING:
 
         def _observe_attributed_room(
-            self, room: DiscoveredRoom, observed: RoomObservation, now: datetime
+            self,
+            room: DiscoveredRoom,
+            observed: RoomObservation,
+            now: datetime,
+            *,
+            boundary: datetime | None = None,
+            continuous: bool = True,
         ) -> bool: ...
 
         def _sync_occupancy_deadline(self) -> None: ...
+
+        def _sync_cleaning_occupancy(self, now: datetime) -> None: ...
+
+        def _uses_occupancy_attribution(self, area_id: str) -> bool: ...
+
+        def _cleaning_occupancy_block(
+            self, area_id: str, now: datetime
+        ) -> str | None: ...
 
         def _water_verification_pending(self, registry_id: str) -> bool: ...
 
@@ -199,6 +213,7 @@ class ApplicationPolicyMixin:
         """Update durable occupancy history from one typed house observation."""
 
         cutoff = now - timedelta(days=HISTORY_DAYS)
+        self._sync_cleaning_occupancy(now)
         if self.observer.attribution_areas:
             self.observer.set_location_topology(
                 self.discovery, self.state.floor_plan.edges
@@ -207,7 +222,7 @@ class ApplicationPolicyMixin:
         for observed_room in observation.rooms:
             detail = self._room_data(observed_room.area_id)
             observed = observed_room.observation
-            if observed_room.area_id in self.observer.attribution_areas:
+            if self._uses_occupancy_attribution(observed_room.area_id):
                 self._observe_attributed_room(
                     self.discovery.rooms[observed_room.area_id], observed, now
                 )
@@ -261,8 +276,7 @@ class ApplicationPolicyMixin:
                 for sample in detail.occupancy_samples
                 if sample.started_at >= cutoff
             ]
-        if self.observer.attribution_areas:
-            self._sync_occupancy_deadline()
+        self._sync_occupancy_deadline()
 
     def _robot_battery(self, robot: DiscoveredRobot) -> float | None:
         return self.observer.robot(robot).battery
@@ -833,7 +847,10 @@ class ApplicationPolicyMixin:
         settings = self.state.global_settings
         floors = {key: item.floor_id for key, item in self.discovery.rooms.items()}
         occupancy = {
-            key: item.occupancy for key, item in self.state.room_history.items()
+            key: "unresolved"
+            if self._cleaning_occupancy_block(key, now)
+            else item.occupancy
+            for key, item in self.state.room_history.items()
         }
         decision = resolve_adjacency(
             room.area_id,
@@ -872,11 +889,14 @@ class ApplicationPolicyMixin:
         """Reobserve after profile/checkpoint awaits and before the start call."""
 
         if candidate.manual_override:
-            return None
+            self._sync_cleaning_occupancy(now)
+            return self._cleaning_occupancy_block(candidate.room_id, now)
         room = self.discovery.rooms.get(candidate.room_id)
         if room is None:
             return "room is no longer discovered"
         self._observe_occupancy(now)
+        if reason := self._cleaning_occupancy_block(room.area_id, now):
+            return reason
         if run_reason := self._run_dispatch_block(candidate, now):
             return run_reason
         detail = self._room_data(room.area_id)
@@ -937,6 +957,8 @@ class ApplicationPolicyMixin:
             return None, "room recovery blocked pending Repair"
         occurrence = self.state.occurrences.get(room.area_id)
         manual_override = bool(occurrence and occurrence.manual_override)
+        if reason := self._cleaning_occupancy_block(room.area_id, now):
+            return None, reason
         occupancy_exempt = not manual_override and self._run_occupancy_exempt(
             room.area_id
         )

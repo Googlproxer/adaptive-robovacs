@@ -76,6 +76,16 @@ These items are implemented or explicitly closed by the user. Historical release
 records remain in [releases](../releases/) and Git history. Partial plans have
 their remaining work retained above.
 
+### Cleaning session occupancy
+
+The [cleaning session plan](cleaning-session-occupancy.md) is implemented
+for v1.22.0: confirmed job rooms remain covered until observed docking,
+persistent signals resume from that boundary, and the registry-assigned home
+room receives a three-minute cooldown. Store schema 23 retains bounded
+checkpoints and conservative restart handling. See the
+[release notes](../releases/v1.22.0.md) and
+[migration guide](../migration-v1.22.0.md).
+
 ### Occupancy investigation
 
 The October investigation recommendations are implemented in
