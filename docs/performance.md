@@ -9,7 +9,7 @@ No instrumentation is installed on the server.
 ## Run locally
 
 Use the Python environment pinned in `requirements_test.txt`. Starting with
-v1.20.3 it targets Core 2026.11.0 directly, using the small repository-owned
+v1.22.1 it targets Core 2026.11.1 directly, using the small repository-owned
 runtime fixture in `tests/ha_runtime.py`. Install the requirements normally;
 no external HA pytest plugin or dependency overrides are needed. For example,
 in PowerShell from the repository root:

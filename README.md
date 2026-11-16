@@ -45,8 +45,11 @@ automatically on supported versions.
 
 ## Installation
 
-Requires Home Assistant 2026.11.0 or newer. Version 1.22.0 excludes
-cleaning detections until observed docking, then rechecks persistent occupancy.
+Requires Home Assistant 2026.11.0 or newer. Version 1.22.1 restores the
+desired-window policy for rooms with unavailable occupancy sensors in managed
+cleaning runs, including queue rechecks and previews. It retains v1.22.0's
+exclusion of cleaning detections until observed docking, then rechecks
+persistent occupancy.
 The robot's registry-assigned home room receives a three-minute sensor cooldown.
 Known physical jobs supply room identity even without native location reporting;
 external cleans require supported registry-mapped room evidence. Short transit
@@ -55,7 +58,7 @@ It retains v1.20.3's cached history validation and atomic progress checkpoints.
 Water warnings, sparse dock-water snapshots,
 consolidated water notifications, automatic wash verification, managed multi-room
 queues, and learned battery budgeting remain available.
-See the [release notes](docs/releases/v1.22.0.md) and
+See the [release notes](docs/releases/v1.22.1.md) and
 [migration guide](docs/migration-v1.22.0.md) before activation.
 
 1. Copy `custom_components/adaptive_robovacs` to your Home Assistant

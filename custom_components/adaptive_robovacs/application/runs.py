@@ -413,10 +413,10 @@ class ApplicationRunsMixin:
                     # Bypass only the reservation, retaining normal room gates.
                     candidate = self._queued_candidate(room, now) if room else None
                 option = self._run_room_option(robot, candidate) if candidate else None
-                if option is None or (
-                    area_id != run.started_room_id
-                    and option.vacancy.occupancy != "unoccupied"
-                ):
+                # Fresh room candidates and the queue forecast below share the
+                # unresolved-occupancy window policy; do not reject it again
+                # using a raw clear-state check.
+                if option is None:
                     if not active or active.room_id != area_id:
                         run.remove(
                             area_id, "pending room is no longer clear or compatible"

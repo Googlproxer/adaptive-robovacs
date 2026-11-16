@@ -183,6 +183,59 @@ def observed_job(app, *, stage_index=0):
 
 
 class OrderedRunTests(unittest.TestCase):
+    def test_unresolved_room_uses_window_policy_in_queue_and_preview(self):
+        base = option()
+        item = replace(
+            base,
+            vacancy=replace(base.vacancy, occupancy="unresolved", clear_since=None),
+            window_start="09:00",
+            window_end="20:00",
+        )
+        queue, blocks = build_run_queue((item,), NOW, 100)
+        self.assertEqual(queue, (item,))
+        self.assertFalse(blocks)
+        timing = PlannedCleaningRun("robot", queue).as_attributes(NOW)["timings"][0]
+        self.assertEqual(
+            timing["forecast_reason"], "unresolved occupancy desired-window policy"
+        )
+        self.assertEqual(timing["forecast_confidence"], 0)
+
+    def test_unresolved_policy_rechecks_now_and_each_delayed_stage_window(self):
+        base = option()
+        item = replace(
+            base,
+            candidate=replace(base.candidate, unresolved_window_allowed=True),
+            vacancy=replace(base.vacancy, occupancy="unresolved", clear_since=None),
+            window_start="09:00",
+            window_end="10:10",
+        )
+        for now, delay, stages in (
+            (NOW, 15, (10,)),
+            (NOW, 0, (10, 10)),
+            (NOW.replace(hour=8), 120, (10,)),
+            (NOW.replace(hour=21), 0, (10,)),
+        ):
+            with self.subTest(now=now, delay=delay, stages=stages):
+                self.assertIsNotNone(
+                    replace(item, stage_minutes=stages).block_reason(now, delay)
+                )
+
+    def test_unresolved_room_permission_never_applies_to_humans_or_neighbors(self):
+        base = option()
+        item = replace(
+            base,
+            candidate=replace(base.candidate, unresolved_window_allowed=True),
+            vacancy=replace(base.vacancy, occupancy="occupied"),
+        )
+        self.assertIn("room is not clear", item.block_reason(NOW, 0))
+        item = replace(
+            item,
+            vacancy=replace(base.vacancy, occupancy="unresolved", clear_since=None),
+            adjacency_mode=AdjacencyMode.ALWAYS,
+            neighbors=(replace(base.vacancy, occupancy="unresolved"),),
+        )
+        self.assertIn("adjacency", item.block_reason(NOW, 0))
+
     def test_real_elapsed_minutes_cross_daylight_saving_boundary(self):
         start = datetime(2026, 10, 4, 1, 50, tzinfo=ZoneInfo("Australia/Sydney"))
         item = replace(
@@ -265,6 +318,38 @@ class OrderedRunTests(unittest.TestCase):
 
 
 class RunLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unresolved_room_is_planned_reserved_and_revalidated_in_window(self):
+        source, planned = queued_application()
+        for area_id in ("study", "hall"):
+            history = source.state.room_history[area_id]
+            history.occupancy = "unresolved"
+            history.occupancy_source = "unavailable"
+            history.unoccupied_since = None
+            settings = source.state.room_settings[area_id]
+            settings.desired_window_start = "09:00"
+            settings.desired_window_end = "20:00"
+        app = evaluation_application()
+        app.discovery = source.discovery
+        app.state = source.state
+        preview = await evaluate(app, dry_run=True)
+        self.assertEqual(preview["runs"][0]["rooms"], ["study", "hall"])
+        self.assertTrue(preview["candidates"][0]["eligible"])
+
+        head = await source._async_start_cleaning_run(planned, NOW)
+        self.assertIsNotNone(head)
+        self.assertIsNone(source._run_dispatch_block(head, NOW))
+        run = source.state.cleaning_runs["registry-alpha"]
+        self.assertEqual(run.rooms, ["study", "hall"])
+        source.state.room_history["study"].occupancy = "occupied"
+        self.assertIsNotNone(source._run_dispatch_block(head, NOW))
+        self.assertEqual(run.rooms, ["hall"])
+        source._reconcile_cleaning_runs(NOW.replace(hour=21))
+        self.assertFalse(source.state.cleaning_runs)
+        self.assertEqual(
+            source.state.room_history["hall"].cleaning_completed_at,
+            NOW - timedelta(days=7),
+        )
+
     async def test_actual_recharge_reconciliation_does_not_credit_the_room(self):
         app, planned = queued_application()
         await app._async_start_cleaning_run(planned, NOW)
@@ -501,7 +586,7 @@ class RunLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_profile_or_room_changes_are_revalidated_before_queue_commit(self):
         app, planned = queued_application()
         app.state.room_history["study"].occupancy = "occupied"
-        app.state.room_history["hall"].occupancy = "unresolved"
+        app.state.room_history["hall"].occupancy = "occupied"
         self.assertIsNone(await app._async_start_cleaning_run(planned, NOW))
         self.assertFalse(app.state.cleaning_runs)
         self.assertFalse(app.state.occurrences)
@@ -605,12 +690,12 @@ class RunLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(app.state.cleaning_runs)
         self.assertFalse(app._run_continuation(app.discovery.robots["vacuum.alpha"]))
 
-    async def test_pending_sensor_loss_and_new_global_modes_end_reservations(self):
+    async def test_pending_human_occupancy_and_new_global_modes_end_reservations(self):
         for setting in ("observe_only", "party_mode"):
             app, planned = queued_application()
             await app._async_start_cleaning_run(planned, NOW)
             observed_job(app)
-            app.state.room_history["hall"].occupancy = "unresolved"
+            app.state.room_history["hall"].occupancy = "occupied"
             app._reconcile_cleaning_runs(NOW)
             self.assertEqual(app.state.cleaning_runs["registry-alpha"].rooms, ["study"])
             setattr(app.state.global_settings, setting, True)

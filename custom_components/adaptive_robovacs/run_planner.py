@@ -15,6 +15,7 @@ from .models import (
     in_daytime_window,
     run_battery_fits,
     run_vacancy_horizon,
+    unresolved_occupancy_allowed,
 )
 from .planner import ScheduleCandidate
 
@@ -68,6 +69,14 @@ class RunRoomOption:
             self.stage_minutes
         )
 
+    def forecast(self, now: datetime, delay: float) -> Forecast:
+        """Use the room's live window policy for admission and previews."""
+        if unresolved_occupancy_allowed(
+            self.vacancy.occupancy, now, self.window_start, self.window_end
+        ):
+            return Forecast(True, 0.0, "unresolved occupancy desired-window policy")
+        return self.vacancy.forecast(now, self.duration_minutes, delay)
+
     def block_reason(
         self, now: datetime, delay: float, *, current: bool = False
     ) -> str | None:
@@ -78,6 +87,11 @@ class RunRoomOption:
             )
             if not desired_window_allows(
                 self.ignore_window, start, self.window_start, self.window_end
+            ) or (
+                self.vacancy.occupancy == "unresolved"
+                and not unresolved_occupancy_allowed(
+                    self.vacancy.occupancy, start, self.window_start, self.window_end
+                )
             ):
                 return "waiting for desired cleaning window"
             adjacency_active = self.adjacency_mode == AdjacencyMode.ALWAYS or (
@@ -90,7 +104,7 @@ class RunRoomOption:
                         return "queued room adjacency is blocked"
             stage_offset += duration + RUN_TURNAROUND_MINUTES
         if not current:
-            forecast = self.vacancy.forecast(now, self.duration_minutes, delay)
+            forecast = self.forecast(now, delay)
             if not forecast.allowed:
                 return f"queued room vacancy: {forecast.reason}"
         return None
@@ -115,7 +129,7 @@ class PlannedCleaningRun:
         delay = 0.0
         timings: list[dict[str, object]] = []
         for room in self.rooms:
-            forecast = room.vacancy.forecast(now, room.duration_minutes, delay)
+            forecast = room.forecast(now, delay)
             timings.append(
                 {
                     "room": room.candidate.room_id,

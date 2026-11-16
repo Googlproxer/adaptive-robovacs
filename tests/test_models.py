@@ -1152,6 +1152,27 @@ class CadenceTests(unittest.TestCase):
             )
         )
 
+    def test_unresolved_window_boundaries_and_overnight_policy(self) -> None:
+        for start, end, hour, minute, expected in (
+            ("09:00", "20:00", 8, 59, False),
+            ("09:00", "20:00", 9, 0, True),
+            ("09:00", "20:00", 19, 59, True),
+            ("09:00", "20:00", 20, 0, False),
+            ("22:00", "06:00", 23, 0, True),
+            ("22:00", "06:00", 5, 59, True),
+            ("22:00", "06:00", 6, 0, False),
+        ):
+            with self.subTest(start=start, end=end, hour=hour, minute=minute):
+                now = self.now.replace(hour=hour, minute=minute)
+                self.assertEqual(
+                    models.unresolved_occupancy_allowed("unresolved", now, start, end),
+                    expected,
+                )
+                for occupancy in ("occupied", "unknown", "unavailable"):
+                    self.assertFalse(
+                        models.unresolved_occupancy_allowed(occupancy, now, start, end)
+                    )
+
     def test_room_window_bounds_inherit_independently(self) -> None:
         inherited = models.resolve_daily_window(None, None, "09:00", "20:00")
         partial = models.resolve_daily_window("10:15", None, "09:00", "20:00")
